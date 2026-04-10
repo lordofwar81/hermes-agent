@@ -38,7 +38,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -489,56 +489,56 @@ class AIAgent:
 
     def __init__(
         self,
-        base_url: str = None,
-        api_key: str = None,
-        provider: str = None,
-        api_mode: str = None,
-        acp_command: str = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        acp_command: Optional[str] = None,
         acp_args: list[str] | None = None,
-        command: str = None,
+        command: Optional[str] = None,
         args: list[str] | None = None,
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
-        ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt: Optional[str] = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
-        provider_sort: str = None,
+        providers_allowed: Optional[List[str]] = None,
+        providers_ignored: Optional[List[str]] = None,
+        providers_order: Optional[List[str]] = None,
+        provider_sort: Optional[str] = None,
         provider_require_parameters: bool = False,
-        provider_data_collection: str = None,
-        session_id: str = None,
-        tool_progress_callback: callable = None,
-        tool_start_callback: callable = None,
-        tool_complete_callback: callable = None,
-        thinking_callback: callable = None,
-        reasoning_callback: callable = None,
-        clarify_callback: callable = None,
-        step_callback: callable = None,
-        stream_delta_callback: callable = None,
-        tool_gen_callback: callable = None,
-        status_callback: callable = None,
-        max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
-        service_tier: str = None,
-        request_overrides: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
-        platform: str = None,
-        user_id: str = None,
+        provider_data_collection: Optional[str] = None,
+        session_id: Optional[str] = None,
+        tool_progress_callback: Optional[Callable[..., Any]] = None,
+        tool_start_callback: Optional[Callable[..., Any]] = None,
+        tool_complete_callback: Optional[Callable[..., Any]] = None,
+        thinking_callback: Optional[Callable[..., Any]] = None,
+        reasoning_callback: Optional[Callable[..., Any]] = None,
+        clarify_callback: Optional[Callable[..., Any]] = None,
+        step_callback: Optional[Callable[..., Any]] = None,
+        stream_delta_callback: Optional[Callable[..., Any]] = None,
+        tool_gen_callback: Optional[Callable[..., Any]] = None,
+        status_callback: Optional[Callable[..., Any]] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_config: Optional[Dict[str, Any]] = None,
+        service_tier: Optional[str] = None,
+        request_overrides: Optional[Dict[str, Any]] = None,
+        prefill_messages: Optional[List[Dict[str, Any]]] = None,
+        platform: Optional[str] = None,
+        user_id: Optional[str] = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
-        session_db=None,
-        parent_session_id: str = None,
-        iteration_budget: "IterationBudget" = None,
-        fallback_model: Dict[str, Any] = None,
-        credential_pool=None,
+        session_db: Any = None,
+        parent_session_id: Optional[str] = None,
+        iteration_budget: Optional["IterationBudget"] = None,
+        fallback_model: Optional[Dict[str, Any]] = None,
+        credential_pool: Any = None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
@@ -690,12 +690,12 @@ class AIAgent:
 
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
-        self._interrupt_message = None  # Optional message that triggered interrupt
+        self._interrupt_message: str | None = None  # Optional message that triggered interrupt
         self._client_lock = threading.RLock()
 
         # Subagent delegation state
         self._delegate_depth = 0  # 0 = top-level agent, incremented for children
-        self._active_children = []  # Running child AIAgents (for interrupt propagation)
+        self._active_children: list[Any] = []  # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
 
         # Store OpenRouter provider preferences
@@ -752,7 +752,8 @@ class AIAgent:
 
         # Rate limit tracking — updated from x-ratelimit-* response headers
         # after each API call.  Accessed by /usage slash command.
-        self._rate_limit_state: Optional["RateLimitState"] = None
+        self._rate_limit_state: Any = None
+        self._ephemeral_max_output_tokens: int | None = None
 
         # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
@@ -781,7 +782,7 @@ class AIAgent:
 
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
-        self._stream_callback = None
+        self._stream_callback: Optional[Callable[..., Any]] = None
         # Deferred paragraph break flag — set after tool iterations so a
         # single "\n\n" is prepended to the next real text delta.
         self._stream_needs_break = False
@@ -789,8 +790,8 @@ class AIAgent:
         # Optional current-turn user-message override used when the API-facing
         # user message intentionally differs from the persisted transcript
         # (e.g. CLI voice mode adds a temporary prefix for the live call only).
-        self._persist_user_message_idx = None
-        self._persist_user_message_override = None
+        self._persist_user_message_idx: Optional[int] = None
+        self._persist_user_message_override: Optional[str] = None
 
         # Cache anthropic image-to-text fallbacks per image payload/URL so a
         # single tool loop does not repeatedly re-run auxiliary vision on the
@@ -826,7 +827,7 @@ class AIAgent:
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
 
             self._is_anthropic_oauth = _is_oat(effective_key)
-            self._anthropic_client = build_anthropic_client(effective_key, base_url)
+            self._anthropic_client = build_anthropic_client(effective_key, base_url or "")
             # No OpenAI client needed for Anthropic mode
             self.client = None
             self._client_kwargs = {}
@@ -840,7 +841,7 @@ class AIAgent:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
+                client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
@@ -916,7 +917,7 @@ class AIAgent:
                 "openrouter" in _effective_base
                 and "claude" in (self.model or "").lower()
             ):
-                headers = client_kwargs.get("default_headers") or {}
+                headers: dict[str, Any] = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
                 _FINE_GRAINED = "fine-grained-tool-streaming-2025-05-14"
                 if _FINE_GRAINED not in existing_beta:
@@ -951,7 +952,7 @@ class AIAgent:
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
         if isinstance(fallback_model, list):
-            self._fallback_chain = [
+            self._fallback_chain: list[dict[str, Any]] = [
                 f
                 for f in fallback_model
                 if isinstance(f, dict) and f.get("provider") and f.get("model")
@@ -1327,7 +1328,7 @@ class AIAgent:
             protect_first_n=3,
             protect_last_n=compression_protect_last,
             summary_target_ratio=compression_target_ratio,
-            summary_model_override=compression_summary_model,
+            summary_model_override=compression_summary_model or "",
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
@@ -1403,7 +1404,7 @@ class AIAgent:
         # preferred model gets a fresh attempt each time.  Uses a single dict
         # so new state fields are easy to add without N individual attributes.
         _cc = self.context_compressor
-        self._primary_runtime = {
+        self._primary_runtime: dict[str, Any] = {
             "model": self.model,
             "provider": self.provider,
             "base_url": self.base_url,
@@ -1523,7 +1524,7 @@ class AIAgent:
             )
             self._anthropic_client = build_anthropic_client(
                 effective_key,
-                self._anthropic_base_url,
+                self._anthropic_base_url or "",
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key)
             self.client = None
@@ -1708,7 +1709,7 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+    def _is_direct_openai_url(self, base_url: Optional[str] = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         url = (base_url or self._base_url_lower).lower()
         return "api.openai.com" in url and "openrouter" not in url
@@ -2144,7 +2145,7 @@ class AIAgent:
                 msg["content"] = override
 
     def _persist_session(
-        self, messages: List[Dict], conversation_history: List[Dict] = None
+        self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None
     ):
         """Save session state to both JSON log and SQLite on any exit path.
 
@@ -2159,7 +2160,7 @@ class AIAgent:
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _flush_messages_to_session_db(
-        self, messages: List[Dict], conversation_history: List[Dict] = None
+        self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None
     ):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -2361,7 +2362,7 @@ class AIAgent:
                     trajectory.append({"from": "gpt", "value": content.rstrip()})
 
                     # Collect all subsequent tool responses
-                    tool_responses = []
+                    tool_responses: list[str] = []
                     j = i + 1
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
@@ -2548,7 +2549,7 @@ class AIAgent:
             retry_after = payload.get("retry_after")
             if retry_after not in (None, "") and "reset_at" not in context:
                 try:
-                    context["reset_at"] = time.time() + float(retry_after)
+                    context["reset_at"] = time.time() + float(retry_after or 0)
                 except (TypeError, ValueError):
                     pass
 
@@ -2717,7 +2718,7 @@ class AIAgent:
         content = re.sub(r"(</think>)\n+", r"\1\n", content)
         return content.strip()
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: Optional[List[Dict[str, Any]]] = None):
         """
         Save the full raw session to a JSON file.
 
@@ -2788,7 +2789,7 @@ class AIAgent:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
 
-    def interrupt(self, message: str = None) -> None:
+    def interrupt(self, message: Optional[str] = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
 
@@ -2889,7 +2890,7 @@ class AIAgent:
             "budget_max": self.iteration_budget.max_total,
         }
 
-    def shutdown_memory_provider(self, messages: list = None) -> None:
+    def shutdown_memory_provider(self, messages: Optional[list] = None) -> None:
         """Shut down the memory provider — call at actual session boundaries.
 
         This calls on_session_end() then shutdown_all() on the memory
@@ -2945,7 +2946,7 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt(self, system_message: Optional[str] = None) -> str:
         """
         Assemble the full system prompt from all layers.
 
@@ -3171,9 +3172,9 @@ class AIAgent:
         result_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
+                cid2: Any = msg.get("tool_call_id")
+                if cid2:
+                    result_call_ids.add(cid2)
 
         # 1. Drop tool results with no matching assistant call
         orphaned_results = result_call_ids - surviving_call_ids
@@ -3356,9 +3357,9 @@ class AIAgent:
         if not value:
             return None, None
         if "|" in value:
-            call_id, response_item_id = value.split("|", 1)
-            call_id = call_id.strip() or None
-            response_item_id = response_item_id.strip() or None
+            _call_id_str, _resp_id_str = value.split("|", 1)
+            call_id: str | None = _call_id_str.strip() or None
+            response_item_id: str | None = _resp_id_str.strip() or None
             return call_id, response_item_id
         if value.startswith("fc_"):
             return None, value
@@ -3562,7 +3563,7 @@ class AIAgent:
             if item_type == "reasoning":
                 encrypted = item.get("encrypted_content")
                 if isinstance(encrypted, str) and encrypted:
-                    reasoning_item = {
+                    reasoning_item: dict[str, Any] = {
                         "type": "reasoning",
                         "encrypted_content": encrypted,
                     }
@@ -3871,7 +3872,7 @@ class AIAgent:
                 # subsequent turns to maintain coherent reasoning chains.
                 encrypted = getattr(item, "encrypted_content", None)
                 if isinstance(encrypted, str) and encrypted:
-                    raw_item = {"type": "reasoning", "encrypted_content": encrypted}
+                    raw_item: dict[str, Any] = {"type": "reasoning", "encrypted_content": encrypted}
                     item_id = getattr(item, "id", None)
                     if isinstance(item_id, str) and item_id:
                         raw_item["id"] = item_id
@@ -4043,7 +4044,7 @@ class AIAgent:
         ).startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 
-            client = CopilotACPClient(**client_kwargs)
+            client: Any = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
                 reason,
@@ -4261,7 +4262,7 @@ class AIAgent:
         self._close_openai_client(client, reason=reason, shared=False)
 
     def _run_codex_stream(
-        self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None
+        self, api_kwargs: dict, client: Any = None, on_first_delta: Optional[Callable[..., Any]] = None
     ):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -4602,13 +4603,14 @@ class AIAgent:
             return False
 
         try:
-            self._anthropic_client.close()
+            if self._anthropic_client is not None:
+                self._anthropic_client.close()
         except Exception:
             pass
 
         try:
             self._anthropic_client = build_anthropic_client(
-                new_token, getattr(self, "_anthropic_base_url", None)
+                new_token, getattr(self, "_anthropic_base_url", None) or ""
             )
         except Exception as exc:
             logger.warning(
@@ -4654,21 +4656,22 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
             try:
-                self._anthropic_client.close()
+                if self._anthropic_client is not None:
+                    self._anthropic_client.close()
             except Exception:
                 pass
 
-            self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
-            self._anthropic_client = build_anthropic_client(runtime_key, runtime_base)
+            self._anthropic_api_key = runtime_key or ""
+            self._anthropic_base_url = runtime_base or ""
+            self._anthropic_client = build_anthropic_client(runtime_key or "", runtime_base or "")
             self._is_anthropic_oauth = (
-                _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+                _is_oauth_token(runtime_key or "") if self.provider == "anthropic" else False
             )
-            self.api_key = runtime_key
-            self.base_url = runtime_base
+            self.api_key = runtime_key or ""
+            self.base_url = runtime_base or ""
             return
 
-        self.api_key = runtime_key
+        self.api_key = runtime_key or ""
         self.base_url = (
             runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         )
@@ -4772,6 +4775,7 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
+        assert self._anthropic_client is not None
         return self._anthropic_client.messages.create(**api_kwargs)
 
     def _interruptible_api_call(self, api_kwargs: dict):
@@ -4783,8 +4787,8 @@ class AIAgent:
         close that worker-local client, so retries and other requests never
         inherit a closed transport.
         """
-        result = {"response": None, "error": None}
-        request_client_holder = {"client": None}
+        result: dict[str, Any] = {"response": None, "error": None}
+        request_client_holder: dict[str, Any] = {"client": None}
 
         def _call():
             try:
@@ -4802,14 +4806,13 @@ class AIAgent:
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
-                    request_client_holder["client"] = (
-                        self._create_request_openai_client(
-                            reason="chat_completion_request"
-                        )
+                    _req_cli = self._create_request_openai_client(
+                        reason="chat_completion_request"
                     )
-                    result["response"] = request_client_holder[
-                        "client"
-                    ].chat.completions.create(**api_kwargs)
+                    request_client_holder["client"] = _req_cli
+                    result["response"] = _req_cli.chat.completions.create(
+                        **api_kwargs
+                    )
             except Exception as e:
                 result["error"] = e
             finally:
@@ -4831,10 +4834,11 @@ class AIAgent:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
 
-                        self._anthropic_client.close()
+                        if self._anthropic_client is not None:
+                            self._anthropic_client.close()
                         self._anthropic_client = build_anthropic_client(
                             self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
+                            getattr(self, "_anthropic_base_url", None) or "",
                         )
                     else:
                         request_client = request_client_holder.get("client")
@@ -4899,7 +4903,7 @@ class AIAgent:
         )
 
     def _interruptible_streaming_api_call(
-        self, api_kwargs: dict, *, on_first_delta: callable = None
+        self, api_kwargs: dict, *, on_first_delta: Optional[Callable[..., Any]] = None
     ):
         """Streaming variant of _interruptible_api_call for real-time token delivery.
 
@@ -4927,7 +4931,7 @@ class AIAgent:
             finally:
                 self._codex_on_first_delta = None
 
-        result = {"response": None, "error": None}
+        result: dict[str, Any] = {"response": None, "error": None}
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {
@@ -4981,6 +4985,7 @@ class AIAgent:
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )
+            assert request_client_holder["client"] is not None, "request client creation failed"
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
@@ -5185,7 +5190,9 @@ class AIAgent:
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
             # Use the Anthropic SDK's streaming context manager
-            with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+            _ac = self._anthropic_client
+            assert _ac is not None
+            with _ac.messages.stream(**api_kwargs) as stream:
                 for event in stream:
                     # Update stale-stream timer on every event so the
                     # outer poll loop knows data is flowing.  Without
@@ -5464,10 +5471,11 @@ class AIAgent:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
 
-                        self._anthropic_client.close()
+                        if self._anthropic_client is not None:
+                            self._anthropic_client.close()
                         self._anthropic_client = build_anthropic_client(
                             self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
+                            getattr(self, "_anthropic_base_url", None) or "",
                         )
                     else:
                         request_client = request_client_holder.get("client")
@@ -5558,8 +5566,8 @@ class AIAgent:
                 fb_provider,
                 model=fb_model,
                 raw_codex=True,
-                explicit_base_url=fb_base_url_hint,
-                explicit_api_key=fb_api_key_hint,
+                explicit_base_url=fb_base_url_hint or "",
+                explicit_api_key=fb_api_key_hint or "",
             )
             if fb_client is None:
                 logging.warning(
@@ -5712,8 +5720,8 @@ class AIAgent:
                 self._anthropic_api_key = rt["anthropic_api_key"]
                 self._anthropic_base_url = rt["anthropic_base_url"]
                 self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"],
-                    rt["anthropic_base_url"],
+                    rt["anthropic_api_key"] or "",
+                    rt["anthropic_base_url"] or "",
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
@@ -5822,8 +5830,8 @@ class AIAgent:
                 self._anthropic_api_key = rt["anthropic_api_key"]
                 self._anthropic_base_url = rt["anthropic_base_url"]
                 self._anthropic_client = build_anthropic_client(
-                    rt["anthropic_api_key"],
-                    rt["anthropic_base_url"],
+                    rt["anthropic_api_key"] or "",
+                    rt["anthropic_base_url"] or "",
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
@@ -6148,7 +6156,7 @@ class AIAgent:
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
 
-            kwargs = {
+            kwargs: dict[str, Any] = {
                 "model": self.model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
@@ -6248,7 +6256,7 @@ class AIAgent:
             sanitized_messages = list(sanitized_messages)
             sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
 
-        provider_preferences = {}
+        provider_preferences: dict[str, Any] = {}
         if self.providers_allowed:
             provider_preferences["only"] = self.providers_allowed
         if self.providers_ignored:
@@ -6296,7 +6304,7 @@ class AIAgent:
             except Exception:
                 pass  # fail open — let the proxy pick its default
 
-        extra_body = {}
+        extra_body: dict[str, Any] = {}
 
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
@@ -6507,7 +6515,7 @@ class AIAgent:
             msg["codex_reasoning_items"] = codex_items
 
         if assistant_message.tool_calls:
-            tool_calls = []
+            tool_calls: list[Any] = []
             for tool_call in assistant_message.tool_calls:
                 raw_id = getattr(tool_call, "id", None)
                 call_id = getattr(tool_call, "call_id", None)
@@ -6604,7 +6612,7 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def flush_memories(self, messages: list = None, min_turns: int = None):
+    def flush_memories(self, messages: Optional[list] = None, min_turns: Optional[int] = None):
         """Give the model one turn to persist memories before context is lost.
 
         Called before compression, session reset, or CLI exit. Injects a flush
@@ -6795,7 +6803,7 @@ class AIAgent:
         messages: list,
         system_message: str,
         *,
-        approx_tokens: int = None,
+        approx_tokens: Optional[int] = None,
         task_id: str = "default",
     ) -> tuple:
         """Compress conversation context and split the session in SQLite.
@@ -6822,7 +6830,7 @@ class AIAgent:
                 pass
 
         compressed = self.context_compressor.compress(
-            messages, current_tokens=approx_tokens
+            messages, current_tokens=approx_tokens or 0
         )
 
         todo_snapshot = self._todo_store.format_for_injection()
@@ -6982,7 +6990,7 @@ class AIAgent:
 
             return _session_search(
                 query=function_args.get("query", ""),
-                role_filter=function_args.get("role_filter"),
+                role_filter=function_args.get("role_filter") or "",
                 limit=function_args.get("limit", 3),
                 db=self._session_db,
                 current_session_id=self.session_id,
@@ -6992,10 +7000,10 @@ class AIAgent:
             from tools.memory_tool import memory_tool as _memory_tool
 
             result = _memory_tool(
-                action=function_args.get("action"),
+                action=function_args.get("action") or "",
                 target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
+                content=function_args.get("content") or "",
+                old_text=function_args.get("old_text") or "",
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
@@ -7117,12 +7125,12 @@ class AIAgent:
                             "TERMINAL_CWD", os.getcwd()
                         )
                         self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
+                            str(cwd or ""), f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
                     pass
 
-            parsed_calls.append((tool_call, function_name, function_args))
+        parsed_calls.append((tool_call, function_name, function_args))
 
         # ── Logging / callbacks ──────────────────────────────────────────
         tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
@@ -7160,7 +7168,7 @@ class AIAgent:
 
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
-        results = [None] * num_tools
+        results: list[Any] = [None] * num_tools
 
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
@@ -7460,7 +7468,7 @@ class AIAgent:
                             "TERMINAL_CWD", os.getcwd()
                         )
                         self._checkpoint_mgr.ensure_checkpoint(
-                            cwd, f"before terminal: {cmd[:60]}"
+                            str(cwd or ""), f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
                     pass  # never block tool execution
@@ -7492,7 +7500,7 @@ class AIAgent:
 
                     function_result = _session_search(
                         query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
+                        role_filter=function_args.get("role_filter") or "",
                         limit=function_args.get("limit", 3),
                         db=self._session_db,
                         current_session_id=self.session_id,
@@ -7507,10 +7515,10 @@ class AIAgent:
                 from tools.memory_tool import memory_tool as _memory_tool
 
                 function_result = _memory_tool(
-                    action=function_args.get("action"),
+                    action=function_args.get("action") or "",
                     target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
+                    content=function_args.get("content") or "",
+                    old_text=function_args.get("old_text") or "",
                     store=self._memory_store,
                 )
                 tool_duration = time.time() - tool_start_time
@@ -7961,7 +7969,7 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
-            summary_extra_body = {}
+            summary_extra_body: dict[str, Any] = {}
             _is_nous = "nousresearch" in self._base_url_lower
             if self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
@@ -7985,7 +7993,7 @@ class AIAgent:
                     else ""
                 )
             else:
-                summary_kwargs = {
+                summary_kwargs: dict[str, Any] = {
                     "model": self.model,
                     "messages": api_messages,
                 }
@@ -7993,7 +8001,7 @@ class AIAgent:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
 
                 # Include provider routing preferences
-                provider_preferences = {}
+                provider_preferences: dict[str, Any] = {}
                 if self.providers_allowed:
                     provider_preferences["only"] = self.providers_allowed
                 if self.providers_ignored:
@@ -8132,10 +8140,10 @@ class AIAgent:
     def run_conversation(
         self,
         user_message: str,
-        system_message: str = None,
-        conversation_history: List[Dict[str, Any]] = None,
-        task_id: str = None,
-        stream_callback: Optional[callable] = None,
+        system_message: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        task_id: Optional[str] = None,
+        stream_callback: Optional[Callable[..., Any]] = None,
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -8377,7 +8385,7 @@ class AIAgent:
                     _orig_len = len(messages)
                     messages, active_system_prompt = self._compress_context(
                         messages,
-                        system_message,
+                        system_message or "",
                         approx_tokens=_preflight_tokens,
                         task_id=effective_task_id,
                     )
@@ -9699,7 +9707,7 @@ class AIAgent:
                             original_len = len(messages)
                             messages, active_system_prompt = self._compress_context(
                                 messages,
-                                system_message,
+                                system_message or "",
                                 approx_tokens=approx_tokens,
                                 task_id=effective_task_id,
                             )
@@ -9776,7 +9784,7 @@ class AIAgent:
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages,
-                            system_message,
+                            system_message or "",
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -9880,7 +9888,7 @@ class AIAgent:
                         # Try to parse the actual limit from the error message
                         parsed_limit = parse_context_limit_from_error(error_msg)
                         if parsed_limit and parsed_limit < old_ctx:
-                            new_ctx = parsed_limit
+                            new_ctx: int | None = parsed_limit
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})",
                                 force=True,
@@ -9941,7 +9949,7 @@ class AIAgent:
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
                             messages,
-                            system_message,
+                            system_message or "",
                             approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
@@ -10855,7 +10863,7 @@ class AIAgent:
                         self._safe_print("  ⟳ compacting context…")
                         messages, active_system_prompt = self._compress_context(
                             messages,
-                            system_message,
+                            system_message or "",
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
                         )
@@ -11317,7 +11325,7 @@ class AIAgent:
 
         return result
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+    def chat(self, message: str, stream_callback: Optional[Callable[..., Any]] = None) -> str:
         """
         Simple chat interface that returns just the final response.
 
@@ -11333,13 +11341,13 @@ class AIAgent:
 
 
 def main(
-    query: str = None,
+    query: Optional[str] = None,
     model: str = "",
-    api_key: str = None,
+    api_key: Optional[str] = None,
     base_url: str = "",
     max_turns: int = 10,
-    enabled_toolsets: str = None,
-    disabled_toolsets: str = None,
+    enabled_toolsets: Optional[str] = None,
+    disabled_toolsets: Optional[str] = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,
@@ -11446,8 +11454,8 @@ def main(
         all_tools = get_all_tool_names()
         print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
         for tool_name in sorted(all_tools):
-            toolset = get_toolset_for_tool(tool_name)
-            print(f"  📌 {tool_name} (from {toolset})")
+            ts = get_toolset_for_tool(tool_name) or "unknown"
+            print(f"  📌 {tool_name} (from {ts})")
 
         print("\n💡 Usage Examples:")
         print("  # Use predefined toolsets")
@@ -11546,7 +11554,7 @@ def main(
             result["messages"], user_query, result["completed"]
         )
 
-        entry = {
+        sample_entry = {
             "conversations": trajectory,
             "timestamp": datetime.now().isoformat(),
             "model": model,
@@ -11557,7 +11565,7 @@ def main(
         try:
             with open(sample_filename, "w", encoding="utf-8") as f:
                 # Pretty-print JSON with indent for readability
-                f.write(json.dumps(entry, ensure_ascii=False, indent=2))
+                f.write(json.dumps(sample_entry, ensure_ascii=False, indent=2))
             print(f"\n💾 Sample trajectory saved to: {sample_filename}")
         except Exception as e:
             print(f"\n⚠️ Failed to save sample: {e}")

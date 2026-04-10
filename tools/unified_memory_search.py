@@ -33,6 +33,7 @@ Usage:
 
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta
@@ -46,6 +47,103 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Query Parser
 # -----------------------------------------------------------------------------
+
+
+def _parse_relative_date_expr(expr: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse relative date expression to filter dict.
+
+    Returns dict with keys: before, after, or time_range_days.
+    Returns None if not a relative date expression.
+    """
+    expr_lower = expr.lower()
+    now = datetime.now()
+
+    # yesterday, today, tomorrow
+    if expr_lower == "yesterday":
+        yesterday = now - timedelta(days=1)
+        return {
+            "before": yesterday.strftime("%Y-%m-%d"),
+            "after": yesterday.strftime("%Y-%m-%d"),
+        }
+    elif expr_lower == "today":
+        return {"before": now.strftime("%Y-%m-%d"), "after": now.strftime("%Y-%m-%d")}
+    elif expr_lower == "tomorrow":
+        tomorrow = now + timedelta(days=1)
+        return {
+            "before": tomorrow.strftime("%Y-%m-%d"),
+            "after": tomorrow.strftime("%Y-%m-%d"),
+        }
+
+    # last week, this week, next week
+    elif expr_lower == "last week":
+        start = now - timedelta(days=now.weekday() + 7)
+        end = start + timedelta(days=6)
+        return {"before": end.strftime("%Y-%m-%d"), "after": start.strftime("%Y-%m-%d")}
+    elif expr_lower == "this week":
+        start = now - timedelta(days=now.weekday())
+        end = start + timedelta(days=6)
+        return {"before": end.strftime("%Y-%m-%d"), "after": start.strftime("%Y-%m-%d")}
+    elif expr_lower == "next week":
+        start = now - timedelta(days=now.weekday()) + timedelta(days=7)
+        end = start + timedelta(days=6)
+        return {"before": end.strftime("%Y-%m-%d"), "after": start.strftime("%Y-%m-%d")}
+
+    # last month, this month, next month
+    elif expr_lower == "last month":
+        first_day_last_month = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
+        last_day_last_month = now.replace(day=1) - timedelta(days=1)
+        return {
+            "before": last_day_last_month.strftime("%Y-%m-%d"),
+            "after": first_day_last_month.strftime("%Y-%m-%d"),
+        }
+    elif expr_lower == "this month":
+        first_day_this_month = now.replace(day=1)
+        next_month = now.replace(day=28) + timedelta(
+            days=4
+        )  # ensure we get to next month
+        last_day_this_month = next_month.replace(day=1) - timedelta(days=1)
+        return {
+            "before": last_day_this_month.strftime("%Y-%m-%d"),
+            "after": first_day_this_month.strftime("%Y-%m-%d"),
+        }
+    elif expr_lower == "next month":
+        first_day_next_month = (now.replace(day=28) + timedelta(days=4)).replace(day=1)
+        next_next_month = (
+            first_day_next_month.replace(day=28) + timedelta(days=4)
+        ).replace(day=1)
+        last_day_next_month = next_next_month - timedelta(days=1)
+        return {
+            "before": last_day_next_month.strftime("%Y-%m-%d"),
+            "after": first_day_next_month.strftime("%Y-%m-%d"),
+        }
+
+    # past N days
+    match = re.match(r"past\s+(\d+)\s+days?", expr_lower)
+    if match:
+        days = int(match.group(1))
+        return {"time_range_days": days}
+
+    # since YYYY-MM
+    match = re.match(r"since\s+(\d{4}-\d{2})", expr_lower)
+    if match:
+        year_month = match.group(1)
+        # Assume first day of month
+        after_date = f"{year_month}-01"
+        return {"after": after_date}
+
+    # last year, this year, next year
+    elif expr_lower == "last year":
+        last_year = now.year - 1
+        return {"after": f"{last_year}-01-01", "before": f"{last_year}-12-31"}
+    elif expr_lower == "this year":
+        this_year = now.year
+        return {"after": f"{this_year}-01-01", "before": f"{this_year}-12-31"}
+    elif expr_lower == "next year":
+        next_year = now.year + 1
+        return {"after": f"{next_year}-01-01", "before": f"{next_year}-12-31"}
+
+    return None
 
 
 @dataclass
@@ -71,28 +169,39 @@ def parse_query(query: str) -> ParsedQuery:
         memory_type:value    - filter by memory type
         epistemic:value      - filter by epistemic status
 
+    Natural language temporal expressions:
+        "last week", "past 30 days", "since March", "yesterday", "this month", etc.
+        (converted to before/after/time_range_days filters)
+
     Example:
         "Python before:2026-03-20 source:user" → text="Python", filters={before:..., source:...}
+        "Python last week" → text="Python", filters={before:..., after:...}
     """
     filters = {}
     text_parts = []
 
-    # Regular expressions for filters
-    filter_patterns = [
-        (r"before:(\d{4}-\d{2}-\d{2})", "before"),
-        (r"after:(\d{4}-\d{2}-\d{2})", "after"),
-        (r"time_range:(\d+)d", "time_range_days"),
-        (r"source:([^\s]+)", "source"),
-        (r"memory_type:([^\s]+)", "memory_type"),
-        (r"epistemic:([^\s]+)", "epistemic_status"),
-    ]
+    # First pass: extract relative date expressions (multi-word)
+    # We'll process the query as a whole, removing matched patterns
+    remaining_text = query
 
+    # Pattern for relative date expressions (multi-word)
+    # We'll use _parse_relative_date_expr on each word and also try consecutive pairs
     words = query.split()
     i = 0
     while i < len(words):
         word = words[i]
         matched = False
 
+        # Check colon filters
+        filter_patterns = [
+            (r"before:(\d{4}-\d{2}-\d{2})", "before"),
+            (r"after:(\d{4}-\d{2}-\d{2})", "after"),
+            (r"time_range:(\d+)d", "time_range_days"),
+            (r"source:([^\s]+)", "source"),
+            (r"memory_type:([^\s]+)", "memory_type"),
+            (r"epistemic:([^\s]+)", "epistemic_status"),
+            (r"related_to:([^\s]+)", "related_to"),
+        ]
         for pattern, filter_key in filter_patterns:
             match = re.match(pattern, word, re.IGNORECASE)
             if match:
@@ -103,6 +212,32 @@ def parse_query(query: str) -> ParsedQuery:
                     filters[filter_key] = value
                 matched = True
                 break
+
+        # If not a colon filter, check for relative date expression
+        if not matched:
+            # Try single word
+            rel_filter = _parse_relative_date_expr(word)
+            if rel_filter:
+                # Merge into filters (overwrite if conflict)
+                filters.update(rel_filter)
+                matched = True
+            else:
+                # Try two-word phrase with next word
+                if i + 1 < len(words):
+                    two_words = f"{word} {words[i + 1]}"
+                    rel_filter = _parse_relative_date_expr(two_words)
+                    if rel_filter:
+                        filters.update(rel_filter)
+                        matched = True
+                        i += 1  # skip next word
+                # Try three-word phrase (e.g., "past 30 days")
+                if not matched and i + 2 < len(words):
+                    three_words = f"{word} {words[i + 1]} {words[i + 2]}"
+                    rel_filter = _parse_relative_date_expr(three_words)
+                    if rel_filter:
+                        filters.update(rel_filter)
+                        matched = True
+                        i += 2  # skip two words
 
         if not matched:
             text_parts.append(word)
@@ -121,6 +256,12 @@ def parse_query(query: str) -> ParsedQuery:
 class UnifiedMemorySearch:
     """Unified interface for vector and BM25 memory search."""
 
+    # Recency weighting parameters
+    RECENCY_HALFLIFE_DAYS = 30  # memories older than this get half weight
+    RECENCY_WEIGHT = (
+        0.3  # weight of recency boost (0.0 = ignore recency, 1.0 = only recency)
+    )
+
     def __init__(self, vector_store, bm25_store):
         """
         Initialize unified searcher.
@@ -131,6 +272,42 @@ class UnifiedMemorySearch:
         """
         self.vector_store = vector_store
         self.bm25_store = bm25_store
+
+    def _apply_recency_boost(
+        self, results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Apply recency boost to search results."""
+        if not results:
+            return results
+
+        now = time.time()
+        boosted = []
+        for res in results:
+            created_at = res.get("created_at", 0)
+            if not created_at:
+                boosted.append(res)
+                continue
+
+            # Age in days
+            age_days = (now - created_at) / (24 * 3600)
+            # Exponential decay boost
+            boost = math.exp(-age_days / self.RECENCY_HALFLIFE_DAYS)
+            # Weighted adjustment
+            adjusted_boost = 1.0 - self.RECENCY_WEIGHT + self.RECENCY_WEIGHT * boost
+
+            # Apply to similarity (vector) or score (BM25)
+            if "similarity" in res:
+                res = res.copy()
+                res["similarity"] = res["similarity"] * adjusted_boost
+                res["recency_boost"] = adjusted_boost
+            elif "score" in res:
+                res = res.copy()
+                res["score"] = res["score"] * adjusted_boost
+                res["recency_boost"] = adjusted_boost
+
+            boosted.append(res)
+
+        return boosted
 
     def search(
         self,
@@ -234,6 +411,7 @@ class UnifiedMemorySearch:
                     }
                 )
 
+            vector_results = self._apply_recency_boost(vector_results)
             return vector_results
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -263,6 +441,7 @@ class UnifiedMemorySearch:
                     }
                 )
 
+            results = self._apply_recency_boost(results)
             return results
         except Exception as e:
             logger.error(f"BM25 search failed: {e}")
@@ -388,8 +567,21 @@ class UnifiedMemorySearch:
         results: List[Dict[str, Any]],
         filters: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        """Filter results based on source, memory_type, epistemic_status."""
+        """Filter results based on source, memory_type, epistemic_status, related_to."""
         filtered = []
+
+        # Precompute related memory IDs if related_to filter present
+        related_ids = None
+        if "related_to" in filters:
+            try:
+                from .relationship_extractor import find_related_memories
+
+                related_ids = set(
+                    r[0] for r in find_related_memories(filters["related_to"])
+                )
+            except ImportError:
+                # Relationship extractor not available, ignore filter
+                related_ids = None
 
         for result in results:
             include = True
@@ -410,6 +602,10 @@ class UnifiedMemorySearch:
                 "epistemic_status" in filters
                 and result.get("epistemic_status") != filters["epistemic_status"]
             ):
+                include = False
+
+            # related_to filter
+            if related_ids is not None and result.get("memory_id") not in related_ids:
                 include = False
 
             if include:

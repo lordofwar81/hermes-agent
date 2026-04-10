@@ -601,6 +601,30 @@ def memory_tool(
                 confidence=confidence,
             )
             if memory_id:
+                # Extract temporal events
+                try:
+                    from .temporal_extractor import extract_and_store_temporal
+
+                    extract_and_store_temporal(
+                        memory_id, content, use_llm_fallback=True
+                    )
+                except ImportError as e:
+                    logger.debug(f"Temporal extractor not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Temporal extraction failed: {e}")
+
+                # Extract relationships
+                try:
+                    from .relationship_extractor import extract_and_store_relationships
+
+                    extract_and_store_relationships(
+                        memory_id, content, vector_store, use_llm_fallback=True
+                    )
+                except ImportError as e:
+                    logger.debug(f"Relationship extractor not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Relationship extraction failed: {e}")
+
                 result = {
                     "success": True,
                     "memory_id": memory_id,

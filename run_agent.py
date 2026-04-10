@@ -1184,45 +1184,61 @@ class AIAgent:
                     except Exception:
                         pass
 
-                if _mem_provider_name:
-                    from agent.memory_manager import MemoryManager as _MemoryManager
-                    from plugins.memory import load_memory_provider as _load_mem
+                # Create memory manager with built‑in provider
+                from agent.memory_manager import MemoryManager as _MemoryManager
+                from agent.builtin_memory_provider import BuiltinMemoryProvider
+                from plugins.memory import load_memory_provider as _load_mem
 
-                    self._memory_manager = _MemoryManager()
+                self._memory_manager = _MemoryManager()
+                # Always add built‑in provider (if available)
+                builtin = BuiltinMemoryProvider()
+                if builtin.is_available():
+                    self._memory_manager.add_provider(builtin)
+                    logger.debug("Built‑in memory provider added")
+                else:
+                    logger.warning("Built‑in memory provider not available")
+
+                # Add external provider if configured
+                if _mem_provider_name:
                     _mp = _load_mem(_mem_provider_name)
                     if _mp and _mp.is_available():
                         self._memory_manager.add_provider(_mp)
-                    if self._memory_manager.providers:
-                        from hermes_constants import get_hermes_home as _ghh
-
-                        _init_kwargs = {
-                            "session_id": self.session_id,
-                            "platform": platform or "cli",
-                            "hermes_home": str(_ghh()),
-                            "agent_context": "primary",
-                        }
-                        # Thread gateway user identity for per-user memory scoping
-                        if self._user_id:
-                            _init_kwargs["user_id"] = self._user_id
-                        # Profile identity for per-profile provider scoping
-                        try:
-                            from hermes_cli.profiles import get_active_profile_name
-
-                            _profile = get_active_profile_name()
-                            _init_kwargs["agent_identity"] = _profile
-                            _init_kwargs["agent_workspace"] = "hermes"
-                        except Exception:
-                            pass
-                        self._memory_manager.initialize_all(**_init_kwargs)
-                        logger.info(
-                            "Memory provider '%s' activated", _mem_provider_name
-                        )
                     else:
                         logger.debug(
                             "Memory provider '%s' not found or not available",
                             _mem_provider_name,
                         )
-                        self._memory_manager = None
+
+                if self._memory_manager.providers:
+                    from hermes_constants import get_hermes_home as _ghh
+
+                    _init_kwargs = {
+                        "session_id": self.session_id,
+                        "platform": platform or "cli",
+                        "hermes_home": str(_ghh()),
+                        "agent_context": "primary",
+                    }
+                    # Thread gateway user identity for per-user memory scoping
+                    if self._user_id:
+                        _init_kwargs["user_id"] = self._user_id
+                    # Profile identity for per-profile provider scoping
+                    try:
+                        from hermes_cli.profiles import get_active_profile_name
+
+                        _profile = get_active_profile_name()
+                        _init_kwargs["agent_identity"] = _profile
+                        _init_kwargs["agent_workspace"] = "hermes"
+                    except Exception:
+                        pass
+                    self._memory_manager.initialize_all(**_init_kwargs)
+                    # Log which providers were activated
+                    provider_names = [p.name for p in self._memory_manager.providers]
+                    logger.info(
+                        "Memory providers activated: %s", ", ".join(provider_names)
+                    )
+                else:
+                    logger.debug("No memory providers available")
+                    self._memory_manager = None
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None

@@ -291,10 +291,26 @@ def extract_entities(text: str, use_llm: bool = False) -> List[Dict[str, Any]]:
     for match in _RE_FILE_PATH.finditer(text):
         _add(match.group(1), "file_path")
 
-    # LLM fallback (placeholder)
+    # LLM fallback
     if use_llm and not entities:
-        logger.warning("LLM-based entity extraction not yet implemented")
-        # TODO: Implement LLM-based extraction using local model
+        try:
+            from .llm_extractor import extract_entities_llm
+
+            llm_entities = extract_entities_llm(text)
+            # Convert to our format
+            for llm_entity in llm_entities:
+                _add(llm_entity["name"], "llm")
+                # Update type if provided by LLM
+                if "type" in llm_entity:
+                    # Find the entity we just added and update its type
+                    for i, entity in enumerate(entities):
+                        if entity["name"] == llm_entity["name"]:
+                            entities[i]["type"] = llm_entity["type"]
+                            break
+        except ImportError as e:
+            logger.warning(f"LLM extractor not available: {e}")
+        except Exception as e:
+            logger.warning(f"LLM-based entity extraction failed: {e}")
 
     return entities
 

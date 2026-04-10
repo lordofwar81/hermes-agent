@@ -72,3 +72,4 @@ $*/
 
 # Root-level test files (belong in tests/)
 /test_*.py
+venv_test/

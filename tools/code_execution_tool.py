@@ -1284,7 +1284,7 @@ _TOOL_DOC_LINES = [
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
+def build_execute_code_schema(enabled_sandbox_tools: set[str] | frozenset[str] | None = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``hermes tools`` (e.g. web is turned off),

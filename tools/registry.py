@@ -16,7 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +61,9 @@ class ToolRegistry:
         name: str,
         toolset: str,
         schema: dict,
-        handler: Callable,
-        check_fn: Callable = None,
-        requires_env: list = None,
+        handler: Callable[..., Any],
+        check_fn: Callable[..., Any] | None = None,
+        requires_env: list[str] | None = None,
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
@@ -89,7 +89,7 @@ class ToolRegistry:
             emoji=emoji,
             max_result_size_chars=max_result_size_chars,
         )
-        if check_fn and toolset not in self._toolset_checks:
+        if check_fn is not None and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
     def deregister(self, name: str) -> None:

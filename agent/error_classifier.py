@@ -297,8 +297,8 @@ def classify_api_error(
     provider_lower = (provider or "").strip().lower()
     model_lower = (model or "").strip().lower()
 
-    def _result(reason: FailoverReason, **overrides) -> ClassifiedError:
-        defaults = {
+    def _result(reason: FailoverReason, **overrides: Any) -> ClassifiedError:
+        defaults: dict[str, Any] = {
             "reason": reason,
             "status_code": status_code,
             "provider": provider,

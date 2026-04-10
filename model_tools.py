@@ -251,8 +251,8 @@ _LEGACY_TOOLSET_MAP = {
 
 
 def get_tool_definitions(
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: List[str] | None = None,
+    disabled_toolsets: List[str] | None = None,
     quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """

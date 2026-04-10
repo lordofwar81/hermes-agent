@@ -305,7 +305,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    last_exc = None
+    last_exc: BaseException | None = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -339,7 +339,9 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Unexpected: retry loop exhausted without exception")
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -424,7 +426,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    last_exc = None
+    last_exc: BaseException | None = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -458,7 +460,9 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Unexpected: retry loop exhausted without exception")
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +578,7 @@ class MessageEvent:
     message_type: MessageType = MessageType.TEXT
     
     # Source information
-    source: SessionSource = None
+    source: SessionSource = None  # type: ignore[assignment]
     
     # Original platform data
     raw_message: Any = None
@@ -1465,6 +1469,7 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
 
             # Call the handler (this can take a while with tool calls)
+            assert self._message_handler is not None, "message_handler not set"
             response = await self._message_handler(event)
             
             # Send response if any.  A None/empty response is normal when

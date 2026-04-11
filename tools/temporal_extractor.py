@@ -3,7 +3,7 @@
 Temporal Extractor - Extract event timestamps from text and link to memories.
 
 Uses pattern-first + LLM fallback (via llm_extractor) to detect explicit or implied
-timestamps. Can be called during memory addition or during hippocampus consolidation.
+timestamps. Can be called during memory addition or during memory enrichment.
 """
 
 import json

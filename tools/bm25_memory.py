@@ -283,6 +283,56 @@ class BM25MemoryStore:
             logger.error(f"Failed to add memory {memory_id}: {e}")
             return False
 
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """
+        Sanitize a search query for safe use with FTS5 MATCH.
+
+        FTS5 interprets special characters/operators in MATCH expressions:
+          - ':'  → column filter (e.g. "M3:term" → column M3 → error)
+          - '*'  → prefix search
+          - '"'  → phrase delimiter
+          - 'NEAR', 'AND', 'OR', 'NOT' → boolean operators
+
+        We strip all FTS5 special syntax and rebuild a safe token-only query
+        joined with OR so that any token can match independently.
+
+        Args:
+            query: Raw user query text
+
+        Returns:
+            Sanitized query safe for FTS5 MATCH
+        """
+        if not query:
+            return ""
+
+        # Remove double-quote characters (phrase delimiters)
+        cleaned = query.replace('"', "")
+
+        # Replace colons and other FTS5 operator chars with spaces
+        # to prevent column-filter interpretation (e.g. "M3:" → "M3 ")
+        for ch in (":", "*", "+", "-", "^", "#", "@"):
+            cleaned = cleaned.replace(ch, " ")
+
+        # Remove FTS5 keyword operators (case-insensitive, word-boundary)
+        cleaned = re.sub(
+            r"\b(NEAR|AND|OR|NOT)\b",
+            " ",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+
+        # Collapse whitespace and strip
+        tokens = cleaned.split()
+
+        if not tokens:
+            return ""
+
+        # Wrap each token in double-quotes for literal matching and join with OR
+        # so FTS5 treats every token as a plain term
+        safe_tokens = [f'"{t}"' for t in tokens]
+        return " OR ".join(safe_tokens)
+
     def search(
         self,
         query: str,
@@ -294,7 +344,7 @@ class BM25MemoryStore:
         Search memories using BM25 ranking.
 
         Args:
-            query: Search query (supports FTS5 syntax)
+            query: Search query (auto-sanitized for FTS5 safety)
             top_k: Maximum number of results
             source: Filter by source (optional)
             memory_type: Filter by memory type (optional)
@@ -305,13 +355,18 @@ class BM25MemoryStore:
         if not query:
             return []
 
+        # Sanitize query to prevent FTS5 syntax errors (e.g. "no such column: M3")
+        safe_query = self._sanitize_fts_query(query)
+        if not safe_query:
+            return []
+
         # Build WHERE clause for filters
         where_clauses = []
         params = []
 
-        # Basic FTS5 match
+        # Basic FTS5 match (using sanitized query)
         where_clauses.append("memories_fts MATCH ?")
-        params.append(query)
+        params.append(safe_query)
 
         if source:
             where_clauses.append("source = ?")

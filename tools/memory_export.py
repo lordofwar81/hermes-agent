@@ -142,7 +142,6 @@ class MemoryExporter:
                     "entities": list(safe_get("entities", [])),
                     "keywords": list(safe_get("keywords", [])),
                     "related_ids": list(safe_get("related_ids", [])),
-                    "is_consolidated": bool(safe_get("is_consolidated", False)),
                     "version": int(safe_get("version", 1)),
                 }
 
@@ -207,7 +206,6 @@ class MemoryExporter:
                 entities TEXT,  -- JSON array
                 keywords TEXT,  -- JSON array
                 related_ids TEXT,  -- JSON array
-                is_consolidated BOOLEAN,
                 version INTEGER,
                 exported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -220,8 +218,8 @@ class MemoryExporter:
                 INSERT INTO memories (
                     id, text, source, memory_type, session_id,
                     created_at, access_count, epistemic_status, confidence,
-                    entities, keywords, related_ids, is_consolidated, version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    entities, keywords, related_ids, version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     mem["id"],
@@ -236,7 +234,6 @@ class MemoryExporter:
                     json.dumps(mem["entities"]),
                     json.dumps(mem["keywords"]),
                     json.dumps(mem["related_ids"]),
-                    mem["is_consolidated"],
                     mem["version"],
                 ),
             )
@@ -292,7 +289,6 @@ class MemoryExporter:
             if mem["related_ids"]:
                 lines.append(f"**Related IDs:** {', '.join(mem['related_ids'])}")
 
-            lines.append(f"**Consolidated:** {mem['is_consolidated']}")
             lines.append(f"**Version:** {mem['version']}")
             lines.append("")
             lines.append("---")

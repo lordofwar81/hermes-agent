@@ -75,7 +75,6 @@ class MemoryRecord:
     entities: List[str]
     keywords: List[str]
     related_ids: List[str]
-    is_consolidated: bool
     version: int
     # Note: vector field is stored separately in LanceDB
 
@@ -230,17 +229,34 @@ class VectorMemoryStore:
             "entities": entities or [],
             "keywords": keywords or [],
             "related_ids": related_ids or [],
-            "is_consolidated": False,
             "version": 2,
         }
 
         try:
             self.table.add([data])
             logger.debug(f"Added memory {memory_id}")
-            return memory_id
         except Exception as e:
             logger.error(f"Failed to add memory: {e}")
             return None
+
+        # --- BM25 auto-sync: mirror to SQLite FTS5 store ---
+        try:
+            from tools.bm25_memory import BM25MemoryStore
+
+            bm25 = BM25MemoryStore()
+            bm25.add_memory(
+                memory_id=memory_id,
+                text=text,
+                source=source,
+                memory_type=memory_type,
+            )
+            bm25.close()
+            logger.debug(f"BM25 auto-sync: mirrored {memory_id}")
+        except Exception as bm25_err:
+            # Non-fatal: vector write succeeded; BM25 is supplementary
+            logger.warning(f"BM25 auto-sync failed for {memory_id}: {bm25_err}")
+
+        return memory_id
 
     def search(
         self,
@@ -397,10 +413,22 @@ class VectorMemoryStore:
         try:
             self.table.delete(where=f"id = '{memory_id}'")
             logger.debug(f"Deleted memory {memory_id}")
-            return True
         except Exception as e:
             logger.error(f"Failed to delete memory {memory_id}: {e}")
             return False
+
+        # --- BM25 auto-sync: remove from SQLite FTS5 store ---
+        try:
+            from tools.bm25_memory import BM25MemoryStore
+
+            bm25 = BM25MemoryStore()
+            bm25.delete_memory(memory_id)
+            bm25.close()
+            logger.debug(f"BM25 auto-sync: deleted {memory_id}")
+        except Exception as bm25_err:
+            logger.warning(f"BM25 auto-sync delete failed for {memory_id}: {bm25_err}")
+
+        return True
 
     def list_memories(
         self,

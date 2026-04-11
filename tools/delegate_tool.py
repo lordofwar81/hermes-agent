@@ -20,9 +20,14 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+
+# Module-level fallback lock for thread-safe child registration when
+# the parent agent lacks its own _active_children_lock.
+_fallback_children_lock = threading.Lock()
 
 
 # Tools that children must never have access to
@@ -331,7 +336,8 @@ def _build_child_agent(
             with lock:
                 parent_agent._active_children.append(child)
         else:
-            parent_agent._active_children.append(child)
+            with _fallback_children_lock:
+                parent_agent._active_children.append(child)
 
     return child
 

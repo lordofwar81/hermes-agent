@@ -264,7 +264,7 @@ SUGGESTION: A/B/both/neither
             elif line_lower.startswith("confidence:"):
                 try:
                     confidence = float(re.search(r"[\d.]+", line).group())
-                except:
+                except (ValueError, TypeError):
                     pass
             elif line_lower.startswith("reasoning:"):
                 reasoning = line[10:].strip()

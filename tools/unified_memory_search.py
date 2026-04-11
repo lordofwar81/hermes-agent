@@ -527,7 +527,7 @@ class UnifiedMemorySearch:
             else:
                 try:
                     dt = datetime.fromisoformat(str(created_at))
-                except:
+                except (ValueError, TypeError):
                     continue
 
             include = True
@@ -538,7 +538,7 @@ class UnifiedMemorySearch:
                     before_date = datetime.fromisoformat(filters["before"])
                     if dt >= before_date:
                         include = False
-                except:
+                except (ValueError, TypeError):
                     pass
 
             # after filter
@@ -547,7 +547,7 @@ class UnifiedMemorySearch:
                     after_date = datetime.fromisoformat(filters["after"])
                     if dt <= after_date:
                         include = False
-                except:
+                except (ValueError, TypeError):
                     pass
 
             # time_range_days filter

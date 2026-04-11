@@ -204,7 +204,7 @@ def extract_temporal_patterns(text: str) -> Dict[str, Any]:
                         "end": None,
                     }
                 )
-            except:
+            except (ValueError, TypeError):
                 pass
 
     # Find relative time expressions

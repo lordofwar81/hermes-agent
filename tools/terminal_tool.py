@@ -111,8 +111,21 @@ def _check_disk_usage_warning():
         return False
 
 
-# Session-cached sudo password (persists until CLI exits)
+# Session-cached sudo password (persists until CLI exits, auto-cleared after 5 min)
 _cached_sudo_password: str = ""
+_sudo_password_timestamp: float = 0.0
+_SUDO_PASSWORD_TTL: float = 300.0  # seconds
+
+
+def _zero_sudo_password():
+    """Clear the cached sudo password and reset timestamp.
+
+    Note: Python strings are immutable so true in-memory zeroing is not
+    guaranteed, but we release the reference immediately to allow GC.
+    """
+    global _cached_sudo_password, _sudo_password_timestamp
+    _cached_sudo_password = ""
+    _sudo_password_timestamp = 0.0
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -479,13 +492,17 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
-    global _cached_sudo_password
+    global _cached_sudo_password, _sudo_password_timestamp
 
     if command is None:
         return None, None
     transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
     if not has_real_sudo:
         return command, None
+
+    # TTL check: auto-clear cached password after 5 minutes
+    if _cached_sudo_password and (time.time() - _sudo_password_timestamp > _SUDO_PASSWORD_TTL):
+        _zero_sudo_password()
 
     has_configured_password = "SUDO_PASSWORD" in os.environ
     sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
@@ -494,6 +511,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _cached_sudo_password = sudo_password
+            _sudo_password_timestamp = time.time()
 
     if has_configured_password or sudo_password:
         # Trailing newline is required: sudo -S reads one line for the password.
@@ -602,7 +620,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
-    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    default_image = "nikolaik/python-nodejs@sha256:8f958bdc1b4a422bfafd97cab4f69836401f616ae985d4b57a53d254f5bcb038"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")

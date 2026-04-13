@@ -470,6 +470,7 @@ _REASONING_KEYWORDS = frozenset(
         "benchmark",
         "performance",
         "throughput",
+        "slow",
         "complex",
         "complicated",
         "nuanced",
@@ -497,8 +498,7 @@ _REASONING_KEYWORDS = frozenset(
         "difference",
         "differences",
         "redesign",
-        # Added: question words as reasoning indicators
-        "why",
+        # Added: causal reasoning (not bare 'why' — too ambiguous)
         "causes",
     }
 )

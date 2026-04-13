@@ -725,10 +725,17 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         scores["code"] += 3
     error_match = re.search(r"traceback|error|exception", msg_lower)
     if error_match:
-        adjustment = 2
-        if "what causes" in msg_lower:
-            adjustment = 1
-        scores["code"] += adjustment
+        # Reduce code boost when reasoning question phrases are present
+        # "what causes the error" should be reasoning, not code
+        _reasoning_question_phrases = (
+            "what causes", "why does", "why is", "why did",
+            "how does", "what is causing", "explain the error",
+            "explain the exception", "what triggers",
+        )
+        if any(p in msg_lower for p in _reasoning_question_phrases):
+            scores["reasoning"] += 2
+        else:
+            scores["code"] += 2
 
     # Multi-word phrase matching (phrases too specific for single-word sets)
     _PHRASE_MAP = [

@@ -487,6 +487,11 @@ _REASONING_KEYWORDS = frozenset(
         # Added: security reasoning
         "vulnerability",
         "vulnerabilities",
+        # Added: explanation & comparison
+        "explain",
+        "difference",
+        "differences",
+        "redesign",
     }
 )
 
@@ -529,9 +534,11 @@ _CREATIVE_KEYWORDS = frozenset(
         "design",
         "brainstorm",
         "idea",
+        "ideas",
         "imagine",
         "fiction",
         "character",
+        "funny",
         "humor",
         "joke",
         "meme",
@@ -573,6 +580,9 @@ _ANALYSIS_KEYWORDS = frozenset(
         "study",
         "survey",
         "experiment",
+        # Added: coverage & reports (analysis of metrics)
+        "coverage",
+        "report",
         # Added: ops & observability
         "monitoring",
         "logging",
@@ -753,6 +763,10 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("compose a", "writing"),
         ("compose the", "writing"),
         ("proofread", "writing"),
+        ("write documentation", "writing"),
+        ("write a readme", "writing"),
+        ("write docs", "writing"),
+        ("create a readme", "writing"),
         # Creative intent phrases
         ("design a", "creative"),
         ("design the", "creative"),
@@ -760,6 +774,10 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("draw a", "creative"),
         ("compose a song", "creative"),
         ("write a story", "creative"),
+        ("funny commit message", "creative"),
+        ("generate ideas", "creative"),
+        ("generate some ideas", "creative"),
+        ("product name", "creative"),
         # Code intent phrases
         ("implement a", "code"),
         ("implement the", "code"),
@@ -769,6 +787,11 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("debug the", "code"),
         ("refactor the", "code"),
         ("refactor this", "code"),
+        # Analysis intent phrases
+        ("test coverage", "analysis"),
+        ("coverage report", "analysis"),
+        ("check the coverage", "analysis"),
+        ("check the test", "analysis"),
     ]
     for phrase, category in _PHRASE_MAP:
         if phrase in msg_lower:

@@ -1257,17 +1257,17 @@ def select_model(
         # Free models get mild advantage, but a 0.06+ quality edge wins.
         def _cost_tier_score(cost: float) -> float:
             if cost == 0.0:
-                return 0.70  # Free advantage, but small
+                return 0.65  # Free advantage, but small
             elif cost <= 0.01:
-                return 0.65  # Ultra-cheap: near parity
+                return 0.62  # Ultra-cheap: near parity
             elif cost <= 0.03:
                 return 0.55
             elif cost <= 0.05:
                 return 0.50
             elif cost <= 0.10:
-                return 0.40
+                return 0.42
             else:
-                return 0.30
+                return 0.32
 
         cost_score = _cost_tier_score(profile.cost_per_request)
 

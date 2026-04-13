@@ -438,6 +438,11 @@ _CODE_KEYWORDS = frozenset(
         "concurrent",
         "scalability",
         "real-time",
+        # Added: infrastructure operations
+        "server",
+        "service",
+        "outage",
+        "incident",
     }
 )
 
@@ -492,6 +497,9 @@ _REASONING_KEYWORDS = frozenset(
         "difference",
         "differences",
         "redesign",
+        # Added: question words as reasoning indicators
+        "why",
+        "causes",
     }
 )
 
@@ -583,6 +591,11 @@ _ANALYSIS_KEYWORDS = frozenset(
         # Added: coverage & reports (analysis of metrics)
         "coverage",
         "report",
+        "percentage",
+        "rate",
+        "count",
+        "frequency",
+        "how many",
         # Added: ops & observability
         "monitoring",
         "logging",
@@ -735,15 +748,30 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         scores["code"] += 3
     error_match = re.search(r"traceback|error|exception", msg_lower)
     if error_match:
-        # Reduce code boost when reasoning question phrases are present
-        # "what causes the error" should be reasoning, not code
+        # Redirect to reasoning/writing/analysis when question or intent phrases present
         _reasoning_question_phrases = (
             "what causes", "why does", "why is", "why did",
             "how does", "what is causing", "explain the error",
             "explain the exception", "what triggers",
+            "explain the traceback", "why is the",
+            "what's the error", "what is the error",
         )
-        if any(p in msg_lower for p in _reasoning_question_phrases):
+        _analysis_with_error = (
+            "how many errors", "how many error",
+            "what percentage", "error rate",
+            "error occurred", "errors occurred",
+        )
+        _writing_with_error = (
+            "write a blog", "write a post", "write an article",
+            "rewrite the error", "error message to be",
+            "best practices for error",
+        )
+        if any(p in msg_lower for p in _analysis_with_error):
+            scores["analysis"] += 2
+        elif any(p in msg_lower for p in _reasoning_question_phrases):
             scores["reasoning"] += 2
+        elif any(p in msg_lower for p in _writing_with_error):
+            scores["writing"] += 2
         else:
             scores["code"] += 2
 
@@ -754,8 +782,15 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("how do", "reasoning"),
         ("what causes", "reasoning"),
         ("why does", "reasoning"),
+        ("why is", "reasoning"),
+        ("why are", "reasoning"),
         ("what is the difference", "reasoning"),
         ("trade-off", "reasoning"),
+        # Reasoning intent from research/approach
+        ("research the", "reasoning"),
+        ("research the best", "reasoning"),
+        ("is the server", "reasoning"),
+        ("is the service", "reasoning"),
         # Writing intent phrases (leading intent detection)
         # NOTE: "write a creative" handled by creative keywords outranking
         ("draft a", "writing"),
@@ -767,6 +802,8 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("write a readme", "writing"),
         ("write docs", "writing"),
         ("create a readme", "writing"),
+        ("summarize the", "writing"),
+        ("summarize the findings", "writing"),
         # Creative intent phrases
         ("design a", "creative"),
         ("design the", "creative"),
@@ -778,6 +815,8 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("generate ideas", "creative"),
         ("generate some ideas", "creative"),
         ("product name", "creative"),
+        ("write a poem", "creative"),
+        ("poem about", "creative"),
         # Code intent phrases
         ("implement a", "code"),
         ("implement the", "code"),
@@ -792,6 +831,10 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("coverage report", "analysis"),
         ("check the coverage", "analysis"),
         ("check the test", "analysis"),
+        ("execution time", "analysis"),
+        ("show me the latency", "analysis"),
+        ("show me the distribution", "analysis"),
+        ("show me the query", "analysis"),
     ]
     for phrase, category in _PHRASE_MAP:
         if phrase in msg_lower:

@@ -723,8 +723,12 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Code patterns: backticks, file paths, tracebacks
     if "```" in message or re.search(r"\.\w{1,5}:\d+", message):
         scores["code"] += 3
-    if re.search(r"traceback|error|exception", msg_lower):
-        scores["code"] += 2
+    error_match = re.search(r"traceback|error|exception", msg_lower)
+    if error_match:
+        adjustment = 2
+        if "what causes" in msg_lower:
+            adjustment = 1
+        scores["code"] += adjustment
 
     # Multi-word phrase matching (phrases too specific for single-word sets)
     _PHRASE_MAP = [
@@ -742,6 +746,13 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("compose a", "writing"),
         ("compose the", "writing"),
         ("proofread", "writing"),
+        # Creative intent phrases
+        ("design a", "creative"),
+        ("design the", "creative"),
+        ("paint a", "creative"),
+        ("draw a", "creative"),
+        ("compose a song", "creative"),
+        ("write a story", "creative"),
         # Code intent phrases
         ("implement a", "code"),
         ("implement the", "code"),
@@ -759,8 +770,8 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Pick highest scoring task type; tie-break by specificity priority
     # Code and reasoning are most common real-world tasks — they win ties
     _TIE_PRIORITY = {
-        "code": 5,
-        "reasoning": 4,
+        "reasoning": 5,
+        "code": 4,
         "analysis": 3,
         "writing": 2,
         "creative": 1,

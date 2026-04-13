@@ -1188,9 +1188,9 @@ def select_model(
         cost_score = _cost_tier_score(profile.cost_per_request)
 
         # Apply quality level filter
-        if quality_level == "maximum" and quality_score < 0.85:
+        if quality_level == "maximum" and quality_score < 0.82:
             continue  # Only top-tier models for critical work
-        elif quality_level == "high" and quality_score < 0.72:
+        elif quality_level == "high" and quality_score < 0.68:
             continue  # Skip weak models for important tasks
 
         # Weighted composite score

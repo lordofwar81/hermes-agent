@@ -841,13 +841,11 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     technical_density = min(total_keyword_hits / word_count, 1.0)
     # 4. Multi-category overlap: query spans multiple domains
     active_categories = sum(1 for v in scores.values() if v > 0)
-    # 5. Code structure signals (backticks, file:line patterns, tracebacks)
+    # 5. Code structure signals (backticks, file:line patterns)
     code_structure = 0
     if "```" in message:
         code_structure += 1
     if re.search(r"\.\w{1,5}:\d+", message):
-        code_structure += 1
-    if re.search(r"traceback|error|exception", msg_lower):
         code_structure += 1
 
     # Weighted composite complexity score

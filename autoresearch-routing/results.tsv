@@ -71,3 +71,4 @@ ec7a4ce	64	1.000	0.008	keep	merge technical_density tiers into single linear for
 20a21841	64	1.000	0.007	keep	remove unused 'song' from creative keywords
 ed1cefa2	64	1.000	0.007	keep	remove 6 unused complexity boosters (reviewed, rebuild, reviewing, thorough, complete, enterprise)
 87a44149	64	1.000	0.007	keep	remove 10 unused realtime keywords (keep only quick)
+e54afd2a	64	1.000	0.008	keep	remove active_categories term from complexity scoring (3 terms → 2)

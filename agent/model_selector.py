@@ -962,7 +962,6 @@ def select_model(
 
     # Get estimated token count for context window scoring (~4 chars/token)
     est_tokens = len(message) // 4
-    msg_len = len(message)
     msg_lower_raw = message.lower()
 
     # Score each candidate
@@ -982,13 +981,7 @@ def select_model(
             vision_bonus = 0.04
 
         # Speed score: already normalized 0-1 in profile
-        # Length-aware adjustment: for long messages, speed matters more
-        # because response latency compounds with input processing time.
         speed_score = profile.speed
-        if msg_len > 500:
-            speed_score *= 1.15  # Amplify speed differences for long inputs
-        elif msg_len < 100:
-            speed_score *= 0.85  # Dampen speed for short inputs — quality wins
 
         # Context score: does the model have enough context window?
         ctx_score = _context_window_score(est_tokens, profile.context_window)

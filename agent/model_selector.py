@@ -470,9 +470,14 @@ _PHRASE_MAP = (
     ("why does", "reasoning"),
     ("why is", "reasoning"),
     ("is the server", "reasoning"),
+    ("explain the traceback", "reasoning"),
+    ("write documentation", "writing"),
+    ("summarize the", "writing"),
     ("error message to be", "writing"),
     ("funny commit message", "creative"),
+    ("poem about", "creative"),
     ("show me the query", "analysis"),
+    ("error rate", "analysis"),
     ("how many errors", "analysis"),
 )
 

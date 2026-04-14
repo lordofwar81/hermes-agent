@@ -513,8 +513,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         if phrase in msg_lower:
             scores[category] += 1
 
-    top_score = max(scores.values())
-    if top_score > 0:
+    if max(scores.values()) > 0:
         task_type = max(scores, key=lambda k: (scores[k], _TIE_PRIORITY[k]))
     else:
         task_type = "general"

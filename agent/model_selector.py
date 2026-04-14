@@ -626,10 +626,6 @@ _COMPLEXITY_BOOSTERS = frozenset(
         "performance",
         "optimize",
         "benchmark",
-        # Added: security scope
-        "vulnerability",
-        "vulnerabilities",
-        "security",
         # Added: ops & operational
         "monitoring",
         "logging",

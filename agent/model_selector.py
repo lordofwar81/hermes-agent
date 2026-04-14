@@ -596,9 +596,6 @@ _ANALYSIS_KEYWORDS = frozenset(
         "logging",
         "observability",
         "telemetry",
-        # Added: security analysis
-        "vulnerability",
-        "vulnerabilities",
     }
 )
 

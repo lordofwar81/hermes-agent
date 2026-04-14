@@ -748,8 +748,6 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Complexity — multi-signal approach (not just message length)
     # 1. Keyword boosters (single-word matches)
     complexity_boost = len(words & _COMPLEXITY_BOOSTERS)
-    # 2. Phrase boosters (multi-word substring matches)
-    phrase_boost = sum(1 for phrase in _COMPLEXITY_PHRASES if phrase in msg_lower)
     # 3. Technical density: fraction of words that are domain keywords
     total_keyword_hits = sum(scores.values())
     word_count = len(words) if words else 1
@@ -766,10 +764,8 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Weighted composite complexity score
     complexity_score = (
         complexity_boost * 2.0  # Booster keywords are strong signals
-        + phrase_boost * 1.5  # Phrase matches are very specific
         + (2.5 if technical_density > 0.40 else 1.0 if technical_density > 0.25 else 0.0)
-        + (1.0 if active_categories >= 3 else 0.0)  # Very multi-domain
-        + (0.5 if active_categories >= 2 else 0.0)  # Multi-domain
+        + (1.0 if active_categories >= 3 else 0.5 if active_categories >= 2 else 0.0)  # Multi-domain
         + code_structure * 0.5  # Code patterns
     )
     # Length contribution — single log-based formula replaces 4 thresholds

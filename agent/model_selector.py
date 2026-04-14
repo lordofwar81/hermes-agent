@@ -498,7 +498,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     Returns dict with keys: task_type, complexity, urgency, quality_level.
     """
     msg_lower = message.lower()
-    words = set(re.findall(r"\b\w+\b", msg_lower))
+    words = set(re.findall(r"\w+", msg_lower))
     msg_len = len(message)
 
     # Count keyword hits per category

@@ -403,9 +403,7 @@ _CODE_KEYWORDS = frozenset(
 _REASONING_KEYWORDS = frozenset(
     {
         "evaluate",
-        "compare",
         "architecture",
-        "approach",
         "optimize",
         "performance",
         "slow",
@@ -414,7 +412,6 @@ _REASONING_KEYWORDS = frozenset(
         "cause",
         # Explanation & comparison
         "explain",
-        "difference",
         "redesign",
         # Causal reasoning (not bare 'why' — too ambiguous)
         "causes",

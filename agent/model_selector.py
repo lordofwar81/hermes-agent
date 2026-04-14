@@ -446,9 +446,7 @@ _CREATIVE_KEYWORDS = frozenset(
         "poem",
         "design",
         "ideas",
-        "character",
         "funny",
-        "uncensored",
     }
 )
 

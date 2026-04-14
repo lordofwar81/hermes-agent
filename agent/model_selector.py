@@ -561,16 +561,6 @@ _COMPLEXITY_BOOSTERS = frozenset(
 _REALTIME_KEYWORDS = frozenset(
     {
         "quick",
-        "fast",
-        "now",
-        "urgent",
-        "asap",
-        "immediately",
-        "simple",
-        "brief",
-        "short",
-        "one-liner",
-        "quickly",
     }
 )
 

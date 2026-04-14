@@ -69,3 +69,4 @@ ec7a4ce	64	1.000	0.008	keep	merge technical_density tiers into single linear for
 0909b724	64	1.000	0.007	keep	remove 23 unused reasoning keywords (41→18 entries)
 2ccac1eb	64	1.000	0.007	keep	remove 12 unused writing keywords (21→11 entries)
 20a21841	64	1.000	0.007	keep	remove unused 'song' from creative keywords
+ed1cefa2	64	1.000	0.007	keep	remove 6 unused complexity boosters (reviewed, rebuild, reviewing, thorough, complete, enterprise)

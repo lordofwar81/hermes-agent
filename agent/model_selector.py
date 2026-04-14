@@ -443,42 +443,19 @@ _REASONING_KEYWORDS = frozenset(
     {
         "evaluate",
         "compare",
-        "contrast",
-        "assess",
         "architecture",
-        "strategy",
         "approach",
-        "methodology",
         "optimize",
-        "optimized",
-        "optimizing",
-        "improve",
-        "benchmark",
         "performance",
-        "throughput",
         "slow",
-        "complex",
-        "complicated",
-        "nuanced",
-        "subtle",
-        "math",
-        "equation",
-        "formula",
-        "proof",
-        "theorem",
-        "score",
-        "metric",
-        "measure",
-        "quantify",
-        # Added: research & root cause
+        # Research & root cause
         "research",
         "cause",
-        # Added: explanation & comparison
+        # Explanation & comparison
         "explain",
         "difference",
-        "differences",
         "redesign",
-        # Added: causal reasoning (not bare 'why' — too ambiguous)
+        # Causal reasoning (not bare 'why' — too ambiguous)
         "causes",
     }
 )

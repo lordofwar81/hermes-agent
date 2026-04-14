@@ -441,7 +441,6 @@ _CODE_KEYWORDS = frozenset(
 # Reasoning indicators
 _REASONING_KEYWORDS = frozenset(
     {
-        "analyze",
         "evaluate",
         "compare",
         "contrast",

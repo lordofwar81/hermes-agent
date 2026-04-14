@@ -499,7 +499,6 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     """
     msg_lower = message.lower()
     words = set(re.findall(r"\w+", msg_lower))
-    msg_len = len(message)
 
     # Count keyword hits per category
     scores = {
@@ -523,8 +522,8 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Complexity — composite score from keyword density and length
     total_keyword_hits = sum(scores.values())
     complexity_score = min(2.5, total_keyword_hits * 0.15)
-    if msg_len > 50:
-        complexity_score += min(3.5, 0.5 + (msg_len - 50) / 100.0)
+    if len(message) > 50:
+        complexity_score += min(3.5, 0.5 + (len(message) - 50) / 100.0)
 
     if complexity_score >= 5.0:
         complexity = "expert"

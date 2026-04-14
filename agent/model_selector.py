@@ -869,7 +869,7 @@ def select_model(
 
     # Sort by composite score descending
     scored.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_profile, best_reason = scored[0]
+    _, best_profile, best_reason = scored[0]
 
     # Don't route away from primary if the selector picks the same model
     # (prevents unnecessary agent rebuilds regardless of provider)

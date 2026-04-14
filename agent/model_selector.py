@@ -502,7 +502,6 @@ _PHRASE_MAP = (
     ("why does", "reasoning"),
     ("why is", "reasoning"),
     ("is the server", "reasoning"),
-    ("what causes", "reasoning"),
     ("explain the traceback", "reasoning"),
     ("write documentation", "writing"),
     ("summarize the", "writing"),

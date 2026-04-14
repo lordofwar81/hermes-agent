@@ -483,7 +483,6 @@ _CREATIVE_KEYWORDS = frozenset(
         "creative",
         "story",
         "poem",
-        "song",
         "art",
         "design",
         "brainstorm",

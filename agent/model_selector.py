@@ -711,7 +711,6 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("why is", "reasoning"),
         ("is the server", "reasoning"),
         ("write documentation", "writing"),
-        ("create a readme", "writing"),
         ("summarize the", "writing"),
         ("summarize the findings", "writing"),
         ("design a", "creative"),

@@ -589,7 +589,6 @@ _ANALYSIS_KEYWORDS = frozenset(
 )
 
 # Complexity signals — single words that indicate task complexity
-# Multi-word phrases go in _COMPLEXITY_PHRASES below (matched separately)
 _COMPLEXITY_BOOSTERS = frozenset(
     {
         # Original core signals
@@ -643,11 +642,6 @@ _COMPLEXITY_BOOSTERS = frozenset(
         "equation",
     }
 )
-
-# Multi-word phrase complexity signals — REMOVED.
-# Single-word _COMPLEXITY_BOOSTERS plus technical density and length
-# are sufficient to discriminate complexity levels.
-_COMPLEXITY_PHRASES: list = []
 
 # Urgency signals
 _REALTIME_KEYWORDS = frozenset(

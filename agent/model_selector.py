@@ -728,25 +728,20 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         scores["code"] += 3
     error_match = re.search(r"traceback|error|exception", msg_lower)
     if error_match:
-        # Ordered redirect: first match wins. Falls through to code if none match.
-        _ERROR_REDIRECTS = [
-            ("analysis", ("how many errors", "how many error", "what percentage",
-                          "error rate", "error occurred", "errors occurred")),
-            ("reasoning", ("what causes", "why does", "why is", "why did",
-                           "how does", "what is causing", "explain the error",
-                           "explain the exception", "what triggers",
-                           "explain the traceback", "what's the error", "what is the error")),
-            ("writing", ("write a blog", "write a post", "write an article",
-                         "rewrite the error", "error message to be",
-                         "best practices for error")),
-        ]
-        redirected = False
-        for category, phrases in _ERROR_REDIRECTS:
-            if any(p in msg_lower for p in phrases):
-                scores[category] += 2
-                redirected = True
-                break
-        if not redirected:
+        # Ordered redirect: first matching intent wins, otherwise code
+        if any(p in msg_lower for p in ("how many error", "error rate", "what percentage")):
+            scores["analysis"] += 2
+        elif any(p in msg_lower for p in ("what causes", "why does", "why is", "why did",
+                                           "how does", "what is causing", "explain the error",
+                                           "explain the exception", "what triggers",
+                                           "explain the traceback", "what's the error",
+                                           "what is the error")):
+            scores["reasoning"] += 2
+        elif any(p in msg_lower for p in ("write a blog", "write a post", "write an article",
+                                           "rewrite the error", "error message to be",
+                                           "best practices for error")):
+            scores["writing"] += 2
+        else:
             scores["code"] += 2
 
     # Multi-word phrase matching (phrases too specific for single-word sets)

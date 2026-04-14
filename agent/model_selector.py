@@ -1242,20 +1242,12 @@ def select_model(
         elif quality_level == "high" and quality_score < 0.68:
             continue  # Skip weak models for important tasks
 
-        # Weighted composite score — models with extended reasoning (chain-of-thought)
-        # produce better results on complex/expert tasks. Small bonus to reflect
-        # this quality advantage when the task demands depth.
-        thinking_bonus = 0.0
-        if profile.is_thinking and complexity in ("complex", "expert"):
-            thinking_bonus = 0.03
-
         # Weighted composite score
         composite = (
             w_quality * quality_score
             + w_speed * speed_score
             + w_context * ctx_score
             + w_cost * cost_score
-            + thinking_bonus
             + vision_bonus
         )
 

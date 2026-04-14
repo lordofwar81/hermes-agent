@@ -679,26 +679,21 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
         result = _json.loads(content)
 
         # Validate all fields
-        valid_types = {
-            "code",
-            "reasoning",
-            "writing",
-            "analysis",
-            "creative",
-            "general",
+        _VALID = {
+            "task_type": {"code", "reasoning", "writing", "analysis", "creative", "general"},
+            "complexity": {"simple", "moderate", "complex", "expert"},
+            "urgency": {"realtime", "normal", "deep"},
+            "quality_level": {"standard", "high", "maximum"},
         }
-        valid_complexity = {"simple", "moderate", "complex", "expert"}
-        valid_urgency = {"realtime", "normal", "deep"}
-        valid_quality = {"standard", "high", "maximum"}
+        _DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
-        if result.get("task_type") not in valid_types:
-            return None
-        if result.get("complexity") not in valid_complexity:
-            return None
-        if result.get("urgency") not in valid_urgency:
-            result["urgency"] = "normal"
-        if result.get("quality_level") not in valid_quality:
-            result["quality_level"] = "standard"
+        for field, valid in _VALID.items():
+            val = result.get(field)
+            if val not in valid:
+                if field in _DEFAULTS:
+                    result[field] = _DEFAULTS[field]
+                else:
+                    return None
 
         return {
             "task_type": result["task_type"],

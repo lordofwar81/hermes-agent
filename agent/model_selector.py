@@ -1275,13 +1275,7 @@ def select_model(
         elif quality_level == "high" and quality_score < 0.68:
             continue  # Skip weak models for important tasks
 
-        # Provider reliability bonus — unlimited pre-paid providers (zai) get
-        # a small edge over budget-constrained ones (venice). This prevents
-        # routing to a model that might hit budget mid-session.
-        _RELIABILITY_BONUS = {"zai": 0.02, "local": 0.01, "venice": 0.0}
-        reliability_bonus = _RELIABILITY_BONUS.get(profile.provider, 0.0)
-
-        # Thinking model bonus — models with extended reasoning (chain-of-thought)
+        # Weighted composite score — models with extended reasoning (chain-of-thought)
         # produce better results on complex/expert tasks. Small bonus to reflect
         # this quality advantage when the task demands depth.
         thinking_bonus = 0.0
@@ -1311,7 +1305,6 @@ def select_model(
             + w_context * ctx_score
             + w_cost * cost_score
             + synergy_bonus
-            + reliability_bonus
             + thinking_bonus
             + vision_bonus
         )

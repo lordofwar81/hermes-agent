@@ -1277,12 +1277,29 @@ def select_model(
         elif quality_level == "high" and quality_score < 0.68:
             continue  # Skip weak models for important tasks
 
+        # Secondary capability synergy bonus — models strong in both the
+        # primary task AND a related secondary domain produce better results.
+        _SYNERGY_MAP = {
+            "code": "reasoning",
+            "reasoning": "code_quality",
+            "writing": "creative",
+            "analysis": "reasoning",
+            "creative": "writing",
+        }
+        synergy_key = _SYNERGY_MAP.get(task_type)
+        synergy_bonus = 0.0
+        if synergy_key:
+            secondary = getattr(profile, synergy_key, 0.0)
+            # Bonus scales with how strong BOTH capabilities are
+            synergy_bonus = min(quality_score, secondary) * 0.05
+
         # Weighted composite score
         composite = (
             w_quality * quality_score
             + w_speed * speed_score
             + w_context * ctx_score
             + w_cost * cost_score
+            + synergy_bonus
         )
 
         reason_parts = [f"{task_type}/{complexity}"]

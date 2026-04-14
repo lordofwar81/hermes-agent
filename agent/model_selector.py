@@ -447,7 +447,6 @@ _REASONING_KEYWORDS = frozenset(
         "contrast",
         "assess",
         "architecture",
-        "design",
         "strategy",
         "approach",
         "methodology",

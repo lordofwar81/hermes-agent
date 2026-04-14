@@ -716,8 +716,7 @@ def classify_message(
     Returns dict with keys: task_type, complexity, urgency, quality_level.
     """
     # Fast-path: clearly trivial messages skip LLM
-    msg_stripped = message.strip()
-    if not msg_stripped or len(msg_stripped) < 20:
+    if not message.strip() or len(message.strip()) < 20:
         return _classify_heuristic(message)
 
     # Try LLM classification for non-trivial messages

@@ -630,10 +630,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     # Complexity — composite score from keyword density, overlap, and length
     complexity_boost = len(words & _COMPLEXITY_BOOSTERS)
     total_keyword_hits = sum(scores.values())
-    active_categories = sum(1 for v in scores.values() if v > 0)
-
     complexity_score = complexity_boost * 2.0 + min(2.5, total_keyword_hits * 0.15)
-    complexity_score += 0.5 * min(2, active_categories)
     if msg_len > 50:
         complexity_score += min(3.5, 0.5 + math.log(msg_len / 50, 3))
 

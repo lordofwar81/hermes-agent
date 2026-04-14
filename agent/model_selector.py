@@ -1269,15 +1269,6 @@ def select_model(
     scored.sort(key=lambda x: x[0], reverse=True)
     best_score, best_profile, best_reason = scored[0]
 
-    # Cost-aware tie-breaking: if top-2 are within 2%, prefer the cheaper one.
-    # Avoids wasting budget on marginal quality differences.
-    if len(scored) >= 2:
-        gap = best_score - scored[1][0]
-        if gap < 0.02:
-            cheaper = scored[1][1]
-            if cheaper.cost_per_request < best_profile.cost_per_request:
-                best_score, best_profile, best_reason = scored[1]
-
     # Don't route away from primary if the selector picks the same model
     # (prevents unnecessary agent rebuilds regardless of provider)
     if best_profile.name == primary_model:

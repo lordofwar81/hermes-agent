@@ -53,7 +53,6 @@ class ModelProfile:
     # Cost
     cost_per_request: float = 0.0  # 0.0 = free (local)
     # Flags
-    is_thinking: bool = True
     supports_vision: bool = False
 
 
@@ -302,7 +301,6 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.55,
         context_window=65_536,
         cost_per_request=0.0,
-        is_thinking=True,
     )
     _add(
         "LFM2-24B-A2B-APEX-I-Compact",
@@ -316,7 +314,6 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.70,
         context_window=65_536,
         cost_per_request=0.0,
-        is_thinking=True,
     )
     _add(
         "Qwopus-MoE-35B-A3B-APEX-I-Compact",
@@ -330,7 +327,6 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.40,
         context_window=65_536,
         cost_per_request=0.0,
-        is_thinking=True,
     )
     _add(
         "Huihui3.5-67B-A3B-APEX-I-Compact",
@@ -344,7 +340,6 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.38,
         context_window=65_536,
         cost_per_request=0.0,
-        is_thinking=True,
     )
 
     return profiles

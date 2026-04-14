@@ -763,7 +763,6 @@ def select_model(
     classification = classify_message(message, routing_config)
     task_type = classification["task_type"]
     complexity = classification["complexity"]
-    urgency = classification["urgency"]
     quality_level = classification["quality_level"]
 
     # If simple/standard quality, let the existing binary classifier handle it
@@ -787,20 +786,10 @@ def select_model(
     except Exception:
         w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
 
-    # Normalize weights
-    total_w = w_quality + w_speed + w_context + w_cost
-    w_quality /= total_w
-    w_speed /= total_w
-    w_context /= total_w
-    w_cost /= total_w
-
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
     if quality_level != "standard" or complexity == "expert":
-        w_quality = 0.70
-        w_speed = 0.08
-        w_context = 0.12
-        w_cost = 0.10
+        w_quality, w_speed, w_context, w_cost = 0.70, 0.08, 0.12, 0.10
 
     # Build candidate list from config's model pool
     models_cfg = routing_config.get("models", {})

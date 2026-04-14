@@ -520,9 +520,9 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
 
     # Complexity — composite score from keyword density and length
     total_keyword_hits = sum(scores.values())
-    complexity_score = min(2.5, total_keyword_hits * 0.15)
+    complexity_score = total_keyword_hits * 1.0
     if len(message) > 50:
-        complexity_score += min(3.5, 0.5 + (len(message) - 50) / 100.0)
+        complexity_score += (len(message) - 50) / 25.0
 
     if complexity_score >= 5.0:
         complexity = "expert"
@@ -532,6 +532,14 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         complexity = "moderate"
     else:
         complexity = "simple"
+
+    # Urgency — quick keyword for realtime, expert/complex for deep
+    if "quick" in words:
+        urgency = "realtime"
+    elif complexity in ("expert", "complex"):
+        urgency = "deep"
+    else:
+        urgency = "normal"
 
     # Quality level — higher for complex/important tasks
     if complexity in ("expert", "complex") and task_type in (
@@ -548,7 +556,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     return {
         "task_type": task_type,
         "complexity": complexity,
-        "urgency": "normal",
+        "urgency": urgency,
         "quality_level": quality_level,
     }
 

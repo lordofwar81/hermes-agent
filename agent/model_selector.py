@@ -632,20 +632,18 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
         # Try loading from .env file as fallback
         if not api_key:
             env_path = os.path.expanduser("~/.hermes/.env")
-            if os.path.exists(env_path):
+            try:
                 with open(env_path) as f:
                     for line in f:
                         line = line.strip()
-                        if line.startswith("#") or not line:
-                            continue
-                        if "=" not in line:
+                        if not line or line.startswith("#") or "=" not in line:
                             continue
                         key, val = line.split("=", 1)
-                        key = key.strip()
-                        val = val.strip().strip('"').strip("'")
-                        if key in ("GLM_API_KEY", "ZAI_API_KEY"):
-                            api_key = val
+                        if key.strip() in ("GLM_API_KEY", "ZAI_API_KEY"):
+                            api_key = val.strip().strip('"').strip("'")
                             break
+            except FileNotFoundError:
+                pass
 
         if not api_key:
             return None

@@ -661,6 +661,40 @@ _REALTIME_KEYWORDS = frozenset(
 )
 
 
+# Multi-word phrase matching — the sole source of intent-specific boosts.
+# Replaces the former error/redirect elif chain with a unified list.
+_PHRASE_MAP = (
+    ("how does", "reasoning"),
+    ("why does", "reasoning"),
+    ("why is", "reasoning"),
+    ("is the server", "reasoning"),
+    ("what causes", "reasoning"),
+    ("explain the traceback", "reasoning"),
+    ("write documentation", "writing"),
+    ("summarize the", "writing"),
+    ("summarize the findings", "writing"),
+    ("rewrite the error", "writing"),
+    ("best practices for error", "writing"),
+    ("error message to be", "writing"),
+    ("design a", "creative"),
+    ("funny commit message", "creative"),
+    ("poem about", "creative"),
+    ("show me the query", "analysis"),
+    ("error rate", "analysis"),
+    ("how many errors", "analysis"),
+)
+
+# Tie-breaking priority — reasoning and code win ties
+_TIE_PRIORITY = {
+    "reasoning": 5,
+    "code": 4,
+    "analysis": 3,
+    "writing": 2,
+    "creative": 1,
+    "general": 0,
+}
+
+
 def _classify_heuristic(message: str) -> Dict[str, str]:
     """Heuristic classifier — keyword/phrase based, no LLM call.
     Used as fallback when LLM classification is unavailable or fails.
@@ -679,42 +713,10 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         "creative": len(words & _CREATIVE_KEYWORDS),
     }
 
-    # Multi-word phrase matching — the sole source of intent-specific boosts.
-    # Replaces the former error/redirect elif chain with a unified list.
-    _PHRASE_MAP = [
-        ("how does", "reasoning"),
-        ("why does", "reasoning"),
-        ("why is", "reasoning"),
-        ("is the server", "reasoning"),
-        ("what causes", "reasoning"),
-        ("explain the traceback", "reasoning"),
-        ("write documentation", "writing"),
-        ("summarize the", "writing"),
-        ("summarize the findings", "writing"),
-        ("rewrite the error", "writing"),
-        ("best practices for error", "writing"),
-        ("error message to be", "writing"),
-        ("design a", "creative"),
-        ("funny commit message", "creative"),
-        ("poem about", "creative"),
-        ("show me the query", "analysis"),
-        ("error rate", "analysis"),
-        ("how many errors", "analysis"),
-    ]
     for phrase, category in _PHRASE_MAP:
         if phrase in msg_lower:
             scores[category] += 1
 
-    # Pick highest scoring task type; tie-break by specificity priority
-    # Code and reasoning are most common real-world tasks — they win ties
-    _TIE_PRIORITY = {
-        "reasoning": 5,
-        "code": 4,
-        "analysis": 3,
-        "writing": 2,
-        "creative": 1,
-        "general": 0,
-    }
     top_score = max(scores.values())
     if top_score > 0:
         task_type = max(scores, key=lambda k: (scores[k], _TIE_PRIORITY[k]))

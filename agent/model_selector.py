@@ -542,7 +542,6 @@ _CREATIVE_KEYWORDS = frozenset(
 _ANALYSIS_KEYWORDS = frozenset(
     {
         "analyze",
-        "evaluating",
         "data",
         "trend",
         "pattern",
@@ -562,9 +561,7 @@ _ANALYSIS_KEYWORDS = frozenset(
         "parse",
         "extract",
         "transform",
-        "paper",
-        "survey",
-        "experiment",
+
         # Added: coverage & reports (analysis of metrics)
         "coverage",
         "report",

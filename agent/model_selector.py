@@ -463,15 +463,6 @@ _ANALYSIS_KEYWORDS = frozenset(
     }
 )
 
-# Complexity signals — words NOT already in category keyword sets that indicate scope/depth.
-# 30 overlapping entries removed (kubernetes, docker, architecture, etc. already contribute
-# to technical_density via their respective category sets).
-_COMPLEXITY_BOOSTERS = frozenset(
-    {
-        "migrate",
-    }
-)
-
 # Multi-word phrase matching — the sole source of intent-specific boosts.
 # Replaces the former error/redirect elif chain with a unified list.
 _PHRASE_MAP = (
@@ -529,10 +520,9 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     else:
         task_type = "general"
 
-    # Complexity — composite score from keyword density, overlap, and length
-    complexity_boost = len(words & _COMPLEXITY_BOOSTERS)
+    # Complexity — composite score from keyword density and length
     total_keyword_hits = sum(scores.values())
-    complexity_score = complexity_boost * 2.0 + min(2.5, total_keyword_hits * 0.15)
+    complexity_score = min(2.5, total_keyword_hits * 0.15)
     if msg_len > 50:
         complexity_score += min(3.5, 0.5 + (msg_len - 50) / 100.0)
 

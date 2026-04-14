@@ -1235,6 +1235,7 @@ def select_model(
     # Get estimated token count for context window scoring
     est_tokens = _estimate_token_count(message)
     msg_len = len(message)
+    msg_lower_raw = message.lower()
 
     # Score each candidate
     cap_key = _get_task_capability_key(task_type)
@@ -1243,6 +1244,14 @@ def select_model(
     for profile in candidates:
         # Quality score: task-specific capability
         quality_score = getattr(profile, cap_key, profile.general)
+
+        # Vision bonus — when message references images/screenshots, models
+        # with vision support get a quality edge for multimodal understanding.
+        vision_bonus = 0.0
+        if profile.supports_vision and any(
+            sig in msg_lower_raw for sig in ("image", "screenshot", "photo", "picture", "diagram", "chart", ".png", ".jpg", ".jpeg", ".gif", ".webp")
+        ):
+            vision_bonus = 0.04
 
         # Speed score: already normalized 0-1 in profile
         # Length-aware adjustment: for long messages, speed matters more
@@ -1320,6 +1329,7 @@ def select_model(
             + synergy_bonus
             + reliability_bonus
             + thinking_bonus
+            + vision_bonus
         )
 
         reason_parts = [f"{task_type}/{complexity}"]

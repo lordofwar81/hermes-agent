@@ -685,15 +685,12 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     error_match = re.search(r"traceback|error|exception", msg_lower)
     if error_match:
         # Ordered redirect: first matching intent wins, otherwise code
-        if any(p in msg_lower for p in ("how many error", "error rate", "what percentage")):
+        if any(p in msg_lower for p in ("how many error", "error rate")):
             scores["analysis"] += 2
-        elif any(p in msg_lower for p in ("what causes", "why does", "why is", "why did",
-                                           "how does", "what is causing", "explain the error",
-                                           "explain the exception", "what triggers",
-                                           "explain the traceback", "what's the error",
-                                           "what is the error")):
+        elif any(p in msg_lower for p in ("what causes", "why is",
+                                           "explain the traceback", "what's the error")):
             scores["reasoning"] += 2
-        elif any(p in msg_lower for p in ("write a blog", "write a post", "write an article",
+        elif any(p in msg_lower for p in ("write a blog",
                                            "rewrite the error", "error message to be",
                                            "best practices for error")):
             scores["writing"] += 2
@@ -779,7 +776,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         "analysis",
     ):
         quality_level = "maximum"
-    elif complexity in ("complex",) or task_type in ("code", "reasoning"):
+    elif complexity == "complex" or task_type in ("code", "reasoning"):
         quality_level = "high"
     else:
         quality_level = "standard"

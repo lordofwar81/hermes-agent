@@ -476,7 +476,6 @@ _REASONING_KEYWORDS = frozenset(
         "formula",
         "proof",
         "theorem",
-        "audit",
         "score",
         "metric",
         "measure",

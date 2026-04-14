@@ -922,17 +922,19 @@ def classify_message(
 # ---------------------------------------------------------------------------
 
 
+_TASK_CAPABILITY_MAP = {
+    "code": "code_quality",
+    "reasoning": "reasoning",
+    "writing": "writing",
+    "analysis": "analysis",
+    "creative": "creative",
+    "general": "general",
+}
+
+
 def _get_task_capability_key(task_type: str) -> str:
     """Map task_type to the ModelProfile capability field name."""
-    mapping = {
-        "code": "code_quality",
-        "reasoning": "reasoning",
-        "writing": "writing",
-        "analysis": "analysis",
-        "creative": "creative",
-        "general": "general",
-    }
-    return mapping.get(task_type, "general")
+    return _TASK_CAPABILITY_MAP.get(task_type, "general")
 
 
 def _estimate_token_count(message: str) -> int:

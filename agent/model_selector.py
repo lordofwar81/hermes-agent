@@ -478,12 +478,7 @@ _ANALYSIS_KEYWORDS = frozenset(
 # to technical_density via their respective category sets).
 _COMPLEXITY_BOOSTERS = frozenset(
     {
-        "comprehensive",
         "migrate",
-        "review",
-        "entire",
-        "full",
-        "production",
     }
 )
 

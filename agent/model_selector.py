@@ -426,11 +426,6 @@ _CODE_KEYWORDS = frozenset(
         "migration",
         "deployment",
         "deploying",
-        # Added: ops & observability
-        "monitoring",
-        "logging",
-        "observability",
-        "telemetry",
         # Added: distributed systems
         "microservice",
         "microservices",

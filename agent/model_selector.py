@@ -779,7 +779,8 @@ def classify_message(
 # ---------------------------------------------------------------------------
 
 
-_TASK_CAPABILITY_MAP = {
+# Map task_type to ModelProfile capability field name
+_CAPABILITY_KEY = {
     "code": "code_quality",
     "reasoning": "reasoning",
     "writing": "writing",
@@ -787,11 +788,6 @@ _TASK_CAPABILITY_MAP = {
     "creative": "creative",
     "general": "general",
 }
-
-
-def _get_task_capability_key(task_type: str) -> str:
-    """Map task_type to the ModelProfile capability field name."""
-    return _TASK_CAPABILITY_MAP.get(task_type, "general")
 
 def _context_window_score(estimated_tokens: int, context_window: int) -> float:
     """Score how well a model's context window fits the estimated request size.
@@ -887,7 +883,7 @@ def select_model(
     msg_lower_raw = message.lower()
 
     # Score each candidate
-    cap_key = _get_task_capability_key(task_type)
+    cap_key = _CAPABILITY_KEY.get(task_type, "general")
     scored: List[Tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:

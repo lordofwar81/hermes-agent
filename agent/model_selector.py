@@ -845,7 +845,7 @@ def select_model(
 
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
-    if quality_level == "maximum" or complexity == "expert" or complexity == "complex" or quality_level == "high":
+    if quality_level != "standard" or complexity == "expert":
         w_quality = 0.70
         w_speed = 0.08
         w_context = 0.12

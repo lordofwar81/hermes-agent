@@ -470,20 +470,10 @@ _WRITING_KEYWORDS = frozenset(
         "rewrite",
         "edit",
         "email",
-        "document",
-        "article",
         "blog",
         "post",
         "readme",
-        "docs",
         "documentation",
-        "description",
-        "narrative",
-        "proofread",
-        "grammar",
-        "tone",
-        "style",
-        "format",
     }
 )
 

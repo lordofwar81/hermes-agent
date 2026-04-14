@@ -459,15 +459,10 @@ _ANALYSIS_KEYWORDS = frozenset(
         "metrics",
         "correlation",
         "distribution",
-        "json",
-        "parse",
         "coverage",
         "report",
         "percentage",
         "rate",
-        "frequency",
-        "plot",
-        "monitoring",
     }
 )
 

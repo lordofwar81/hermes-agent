@@ -472,14 +472,6 @@ _COMPLEXITY_BOOSTERS = frozenset(
     }
 )
 
-# Urgency signals
-_REALTIME_KEYWORDS = frozenset(
-    {
-        "quick",
-    }
-)
-
-
 # Multi-word phrase matching — the sole source of intent-specific boosts.
 # Replaces the former error/redirect elif chain with a unified list.
 _PHRASE_MAP = (
@@ -553,14 +545,6 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     else:
         complexity = "simple"
 
-    # Urgency
-    if len(words & _REALTIME_KEYWORDS) >= 1 and msg_len < 200:
-        urgency = "realtime"
-    elif complexity in ("expert", "complex"):
-        urgency = "deep"
-    else:
-        urgency = "normal"
-
     # Quality level — higher for complex/important tasks
     if complexity in ("expert", "complex") and task_type in (
         "code",
@@ -576,7 +560,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     return {
         "task_type": task_type,
         "complexity": complexity,
-        "urgency": urgency,
+        "urgency": "normal",
         "quality_level": quality_level,
     }
 

@@ -702,22 +702,6 @@ _REALTIME_KEYWORDS = frozenset(
     }
 )
 
-# Context length signals — these suggest need for large context window
-_LONG_CONTEXT_KEYWORDS = frozenset(
-    {
-        "entire file",
-        "full file",
-        "whole codebase",
-        "all files",
-        "long conversation",
-        "history",
-        "previous sessions",
-        "comprehensive review",
-        "full audit",
-        "everything",
-    }
-)
-
 
 def _classify_heuristic(message: str) -> Dict[str, str]:
     """Heuristic classifier — keyword/phrase based, no LLM call.

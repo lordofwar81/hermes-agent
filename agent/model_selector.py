@@ -486,8 +486,7 @@ _REASONING_KEYWORDS = frozenset(
         "study",
         "root cause",
         "cause",
-        # Added: security reasoning
-        "vulnerability",
+        # Added: security reasoning (code/analysis sets handle the rest)
         "vulnerabilities",
         # Added: explanation & comparison
         "explain",

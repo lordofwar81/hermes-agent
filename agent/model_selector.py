@@ -915,14 +915,13 @@ def select_model(
             + vision_bonus
         )
 
-        reason_parts = [f"{task_type}/{complexity}"]
+        reason = f"{task_type}/{complexity}"
         if quality_score >= 0.80:
-            reason_parts.append("high-cap")
+            reason += "/high-cap"
         if profile.cost_per_request == 0.0:
-            reason_parts.append("free")
+            reason += "/free"
         elif profile.cost_per_request <= 0.01:
-            reason_parts.append("budget")
-        reason = " → ".join(reason_parts)
+            reason += "/budget"
 
         scored.append((composite, profile, reason))
 

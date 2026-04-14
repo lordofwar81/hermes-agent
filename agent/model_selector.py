@@ -1165,20 +1165,14 @@ def select_model(
     w_context /= total_w
     w_cost /= total_w
 
-    # Dynamic reweighting based on task complexity/quality requirements.
-    # Core principle: for important tasks, quality must dominate so that
+    # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
-    if quality_level == "maximum":
+    if quality_level == "maximum" or complexity == "expert":
         w_quality = 0.90
         w_speed = 0.02
         w_context = 0.06
         w_cost = 0.02
-    elif complexity in ("expert",):
-        w_quality = 0.75
-        w_speed = 0.06
-        w_context = 0.12
-        w_cost = 0.07
-    elif complexity in ("complex",) or quality_level == "high":
+    elif complexity == "complex" or quality_level == "high":
         w_quality = 0.55
         w_speed = 0.12
         w_context = 0.18

@@ -931,12 +931,6 @@ def _get_task_capability_key(task_type: str) -> str:
     """Map task_type to the ModelProfile capability field name."""
     return _TASK_CAPABILITY_MAP.get(task_type, "general")
 
-
-def _estimate_token_count(message: str) -> int:
-    """Rough token estimate: ~4 chars per token for English."""
-    return len(message) // 4
-
-
 def _context_window_score(estimated_tokens: int, context_window: int) -> float:
     """Score how well a model's context window fits the estimated request size.
     Returns 1.0 if plenty of headroom, 0.0 if request would exceed window.
@@ -1031,8 +1025,8 @@ def select_model(
     if not candidates:
         return None
 
-    # Get estimated token count for context window scoring
-    est_tokens = _estimate_token_count(message)
+    # Get estimated token count for context window scoring (~4 chars/token)
+    est_tokens = len(message) // 4
     msg_len = len(message)
     msg_lower_raw = message.lower()
 

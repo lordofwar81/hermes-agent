@@ -789,20 +789,6 @@ _CAPABILITY_KEY = {
     "general": "general",
 }
 
-def _context_window_score(estimated_tokens: int, context_window: int) -> float:
-    """Score how well a model's context window fits the estimated request size.
-    Returns 1.0 if plenty of headroom, 0.0 if request would exceed window.
-    Uses smooth gradient instead of step-function for finer discrimination.
-    """
-    if estimated_tokens == 0:
-        return 1.0
-    ratio = estimated_tokens / context_window
-    if ratio > 0.8:
-        return 0.0  # Too tight — reject
-    # Smooth gradient: 1.0 at ratio=0, 0.5 at ratio=0.5, near 0 at ratio=0.8
-    # Using linear interpolation: score = 1.0 - (ratio / 0.8) * 0.5
-    return max(0.0, 1.0 - (ratio * 1.25))
-
 
 def select_model(
     message: str,
@@ -902,9 +888,13 @@ def select_model(
         speed_score = profile.speed
 
         # Context score: does the model have enough context window?
-        ctx_score = _context_window_score(est_tokens, profile.context_window)
-        if ctx_score == 0.0:
-            continue  # Skip models that can't handle the context size
+        if est_tokens > 0:
+            ratio = est_tokens / profile.context_window
+            if ratio > 0.8:
+                continue  # Too tight — skip model
+            ctx_score = max(0.0, 1.0 - ratio * 1.25)
+        else:
+            ctx_score = 1.0
 
         # Cost score: smooth inverse relationship — free models edge, expensive penalized.
         # Single formula replaces 6-tier step function.

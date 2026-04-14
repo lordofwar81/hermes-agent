@@ -512,8 +512,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         task_type = "general"
 
     # Complexity — composite score from keyword density and length
-    total_keyword_hits = sum(scores.values())
-    complexity_score = total_keyword_hits
+    complexity_score = sum(scores.values())
     if len(message) > 50:
         complexity_score += (len(message) - 50) / 25.0
 

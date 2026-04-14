@@ -74,3 +74,4 @@ ed1cefa2	64	1.000	0.007	keep	remove 6 unused complexity boosters (reviewed, rebu
 e54afd2a	64	1.000	0.008	keep	remove active_categories term from complexity scoring (3 terms → 2)
 33e03880	64	1.000	0.006	keep	remove length-aware speed adjustments and unused msg_len from select_model
 3ace96ac	64	1.000	0.006	keep	remove 32 unused code keywords (67→35 entries)
+d3d838e7	64	1.000	0.006	keep	remove 13 unused creative keywords (21→8 entries)

@@ -458,37 +458,19 @@ _ANALYSIS_KEYWORDS = frozenset(
     {
         "analyze",
         "data",
-        "trend",
-        "pattern",
-        "statistics",
-        "chart",
-        "graph",
-        "plot",
-        "visualization",
         "dashboard",
         "metrics",
         "correlation",
-        "regression",
         "distribution",
-        "aggregate",
-        "csv",
         "json",
         "parse",
-        "extract",
-        "transform",
-
-        # Added: coverage & reports (analysis of metrics)
         "coverage",
         "report",
         "percentage",
         "rate",
-        "count",
         "frequency",
-        # Added: ops & observability
+        "plot",
         "monitoring",
-        "logging",
-        "observability",
-        "telemetry",
     }
 )
 

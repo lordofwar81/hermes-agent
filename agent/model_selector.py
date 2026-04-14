@@ -736,17 +736,6 @@ def classify_message(
 # ---------------------------------------------------------------------------
 
 
-# Map task_type to ModelProfile capability field name
-_CAPABILITY_KEY = {
-    "code": "code_quality",
-    "reasoning": "reasoning",
-    "writing": "writing",
-    "analysis": "analysis",
-    "creative": "creative",
-    "general": "general",
-}
-
-
 def select_model(
     message: str,
     routing_config: Dict[str, Any],
@@ -826,7 +815,7 @@ def select_model(
     msg_lower_raw = message.lower()
 
     # Score each candidate
-    cap_key = _CAPABILITY_KEY.get(task_type, "general")
+    cap_key = "code_quality" if task_type == "code" else task_type
     scored: List[Tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:

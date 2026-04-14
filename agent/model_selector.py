@@ -679,37 +679,27 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         "creative": len(words & _CREATIVE_KEYWORDS),
     }
 
-    # Error/exception redirect: ordered intent detection
-    error_match = re.search(r"traceback|error|exception", msg_lower)
-    if error_match:
-        # Ordered redirect: first matching intent wins, otherwise code
-        if any(p in msg_lower for p in ("how many error", "error rate")):
-            scores["analysis"] += 2
-        elif any(p in msg_lower for p in ("what causes", "why is",
-                                           "explain the traceback", "what's the error")):
-            scores["reasoning"] += 2
-        elif any(p in msg_lower for p in ("write a blog",
-                                           "rewrite the error", "error message to be",
-                                           "best practices for error")):
-            scores["writing"] += 2
-        else:
-            scores["code"] += 2
-
-    # Multi-word phrase matching — only entries that tip the classifier
-    # on real benchmark cases. 31 redundant entries removed; keywords
-    # cover those patterns via frozenset intersection.
+    # Multi-word phrase matching — the sole source of intent-specific boosts.
+    # Replaces the former error/redirect elif chain with a unified list.
     _PHRASE_MAP = [
         ("how does", "reasoning"),
         ("why does", "reasoning"),
         ("why is", "reasoning"),
         ("is the server", "reasoning"),
+        ("what causes", "reasoning"),
+        ("explain the traceback", "reasoning"),
         ("write documentation", "writing"),
         ("summarize the", "writing"),
         ("summarize the findings", "writing"),
+        ("rewrite the error", "writing"),
+        ("best practices for error", "writing"),
+        ("error message to be", "writing"),
         ("design a", "creative"),
         ("funny commit message", "creative"),
         ("poem about", "creative"),
         ("show me the query", "analysis"),
+        ("error rate", "analysis"),
+        ("how many errors", "analysis"),
     ]
     for phrase, category in _PHRASE_MAP:
         if phrase in msg_lower:

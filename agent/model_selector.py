@@ -797,12 +797,10 @@ def select_model(
     if not candidates:
         return None
 
-    # Get estimated token count for context window scoring (~4 chars/token)
-    est_tokens = len(message) // 4
-    msg_lower_raw = message.lower()
-
     # Score each candidate
     cap_key = "code_quality" if task_type == "code" else task_type
+    msg_lower = message.lower()
+    est_tokens = len(message) // 4
     scored: List[Tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:
@@ -813,7 +811,7 @@ def select_model(
         # with vision support get a quality edge for multimodal understanding.
         vision_bonus = (
             0.04 if profile.supports_vision and any(
-                sig in msg_lower_raw for sig in (
+                sig in msg_lower for sig in (
                     "image", "screenshot", "photo", "picture", "diagram",
                     "chart", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                 )

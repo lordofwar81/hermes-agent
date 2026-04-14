@@ -21,6 +21,7 @@ Integration:
 from __future__ import annotations
 
 import re
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -875,15 +876,9 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         + (0.5 if active_categories >= 2 else 0.0)  # Multi-domain
         + code_structure * 0.5  # Code patterns
     )
-    # Length still contributes but with lower thresholds
-    if msg_len > 70:
-        complexity_score += 0.5
-    if msg_len > 200:
-        complexity_score += 1.0
-    if msg_len > 500:
-        complexity_score += 1.0
-    if msg_len > 1500:
-        complexity_score += 1.0
+    # Length contribution — single log-based formula replaces 4 thresholds
+    if msg_len > 50:
+        complexity_score += min(3.5, 0.5 + math.log(msg_len / 50, 3))
 
     if complexity_score >= 5.0:
         complexity = "expert"

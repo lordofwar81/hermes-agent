@@ -735,10 +735,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         complexity_score += 2.5
     elif technical_density > 0.25:
         complexity_score += 1.0
-    if active_categories >= 3:
-        complexity_score += 1.0
-    elif active_categories >= 2:
-        complexity_score += 0.5
+    complexity_score += 0.5 * min(2, active_categories)
     if msg_len > 50:
         complexity_score += min(3.5, 0.5 + math.log(msg_len / 50, 3))
 

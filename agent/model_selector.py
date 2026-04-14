@@ -755,9 +755,6 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         ("why are", "reasoning"),
         ("what is the difference", "reasoning"),
         ("trade-off", "reasoning"),
-        # Reasoning intent from research/approach
-        ("research the", "reasoning"),
-        ("research the best", "reasoning"),
         ("is the server", "reasoning"),
         ("is the service", "reasoning"),
         # Writing intent phrases (leading intent detection)

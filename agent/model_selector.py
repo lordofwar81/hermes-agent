@@ -52,8 +52,6 @@ class ModelProfile:
     context_window: int = 128_000
     # Cost
     cost_per_request: float = 0.0  # 0.0 = free (local)
-    # Flags
-    supports_vision: bool = False
 
 
 # Build the model profiles from the known pool
@@ -802,17 +800,6 @@ def select_model(
         # Quality score: task-specific capability
         quality_score = getattr(profile, cap_key, profile.general)
 
-        # Vision bonus — when message references images/screenshots, models
-        # with vision support get a quality edge for multimodal understanding.
-        vision_bonus = (
-            0.04 if profile.supports_vision and any(
-                sig in msg_lower for sig in (
-                    "image", "screenshot", "photo", "picture", "diagram",
-                    "chart", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                )
-            ) else 0.0
-        )
-
         # Speed score: already normalized 0-1 in profile
         speed_score = profile.speed
 
@@ -840,7 +827,6 @@ def select_model(
             + w_speed * speed_score
             + w_context * ctx_score
             + w_cost * cost_score
-            + vision_bonus
         )
 
         reason = f"{task_type}/{complexity}"

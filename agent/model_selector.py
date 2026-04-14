@@ -549,17 +549,11 @@ _ANALYSIS_KEYWORDS = frozenset(
 _COMPLEXITY_BOOSTERS = frozenset(
     {
         "comprehensive",
-        "thorough",
         "migrate",
-        "rebuild",
         "review",
-        "reviewed",
-        "reviewing",
         "entire",
         "full",
-        "complete",
         "production",
-        "enterprise",
     }
 )
 

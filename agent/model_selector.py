@@ -588,58 +588,23 @@ _ANALYSIS_KEYWORDS = frozenset(
     }
 )
 
-# Complexity signals — single words that indicate task complexity
+# Complexity signals — words NOT already in category keyword sets that indicate scope/depth.
+# 30 overlapping entries removed (kubernetes, docker, architecture, etc. already contribute
+# to technical_density via their respective category sets).
 _COMPLEXITY_BOOSTERS = frozenset(
     {
-        # Original core signals
-        "complex",
-        "architecture",
         "comprehensive",
         "thorough",
         "migrate",
-        "rewrite",
-        "redesign",
         "rebuild",
-        # Added: system-level infrastructure
-        "kubernetes",
-        "docker",
-        "container",
-        "distributed",
-        "microservice",
-        "microservices",
-        "infrastructure",
-        # Added: scale & performance
-        "concurrent",
-        "scalability",
-        "performance",
-        "optimize",
-        "benchmark",
-        # Added: ops & operational
-        "monitoring",
-        "logging",
-        "observability",
-        "deployment",
-        "pipeline",
-        # Added: multi-component
-        "authentication",
-        "authorization",
-        "middleware",
-        # Added: scope signals
-        "audit",
         "review",
         "reviewed",
         "reviewing",
         "entire",
         "full",
         "complete",
-        "migration",
         "production",
         "enterprise",
-        # Added: deep work indicators
-        "explain",
-        "proof",
-        "theorem",
-        "equation",
     }
 )
 

@@ -811,11 +811,14 @@ def select_model(
 
         # Vision bonus — when message references images/screenshots, models
         # with vision support get a quality edge for multimodal understanding.
-        vision_bonus = 0.0
-        if profile.supports_vision and any(
-            sig in msg_lower_raw for sig in ("image", "screenshot", "photo", "picture", "diagram", "chart", ".png", ".jpg", ".jpeg", ".gif", ".webp")
-        ):
-            vision_bonus = 0.04
+        vision_bonus = (
+            0.04 if profile.supports_vision and any(
+                sig in msg_lower_raw for sig in (
+                    "image", "screenshot", "photo", "picture", "diagram",
+                    "chart", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                )
+            ) else 0.0
+        )
 
         # Speed score: already normalized 0-1 in profile
         speed_score = profile.speed

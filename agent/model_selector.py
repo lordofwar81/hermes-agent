@@ -637,6 +637,7 @@ _PHRASE_MAP = (
     ("explain the traceback", "reasoning"),
     ("write documentation", "writing"),
     ("summarize the", "writing"),
+    ("summarize the findings", "writing"),
     ("rewrite the error", "writing"),
     ("best practices for error", "writing"),
     ("error message to be", "writing"),

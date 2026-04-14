@@ -645,25 +645,12 @@ _COMPLEXITY_BOOSTERS = frozenset(
 )
 
 # Multi-word phrase complexity signals (matched against full message)
-# These are too specific for single-word matching and need substring search
+# Pruned to phrases that affect real routing decisions. Single-word
+# boosters cover most complexity signals; these handle only the
+# multi-word patterns that deserve extra weight.
 _COMPLEXITY_PHRASES = [
     "entire codebase",
-    "entire file",
-    "full audit",
-    "deep dive",
-    "end-to-end",
-    "multi-step",
     "system-wide",
-    "large-scale",
-    "zero-downtime",
-    "blue-green",
-    "canary",
-    "all files",
-    "all bugs",
-    "everything",
-    "comprehensive review",
-    "full review",
-    "entire system",
 ]
 
 # Urgency signals

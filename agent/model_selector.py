@@ -882,6 +882,17 @@ def select_model(
 # ---------------------------------------------------------------------------
 
 
+_RUNTIME_KEYS = (
+    "api_key",
+    "base_url",
+    "provider",
+    "api_mode",
+    "command",
+    "args",
+    "credential_pool",
+)
+
+
 def smart_select_route(
     user_message: str,
     routing_config: Dict[str, Any],
@@ -914,15 +925,6 @@ def smart_select_route(
     # Only extract keys that AIAgent.__init__ accepts — resolve_runtime_provider()
     # returns extras like "requested_provider", "source", etc. that would cause
     # TypeError on unpack.
-    _RUNTIME_KEYS = (
-        "api_key",
-        "base_url",
-        "provider",
-        "api_mode",
-        "command",
-        "args",
-        "credential_pool",
-    )
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 

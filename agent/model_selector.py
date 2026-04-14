@@ -496,7 +496,6 @@ _WRITING_KEYWORDS = frozenset(
         "rewrite",
         "edit",
         "email",
-        "report",
         "document",
         "article",
         "blog",

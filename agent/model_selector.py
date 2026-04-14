@@ -21,7 +21,6 @@ Integration:
 from __future__ import annotations
 
 import re
-import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -559,7 +558,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     total_keyword_hits = sum(scores.values())
     complexity_score = complexity_boost * 2.0 + min(2.5, total_keyword_hits * 0.15)
     if msg_len > 50:
-        complexity_score += min(3.5, 0.5 + math.log(msg_len / 50, 3))
+        complexity_score += min(3.5, 0.5 + (msg_len - 50) / 100.0)
 
     if complexity_score >= 5.0:
         complexity = "expert"

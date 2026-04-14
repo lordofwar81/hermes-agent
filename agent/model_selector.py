@@ -896,9 +896,8 @@ def select_model(
         else:
             ctx_score = 1.0
 
-        # Cost score: smooth inverse relationship — free models edge, expensive penalized.
-        # Single formula replaces 6-tier step function.
-        cost_score = max(0.2, 0.7 - 0.5 * math.log1p(profile.cost_per_request * 100))
+        # Cost score: free models edge, expensive penalized
+        cost_score = max(0.2, 0.7 - profile.cost_per_request * 15.0)
 
         # Apply quality level filter
         if quality_level == "maximum" and quality_score < 0.82:

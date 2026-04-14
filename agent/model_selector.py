@@ -679,9 +679,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
         "creative": len(words & _CREATIVE_KEYWORDS),
     }
 
-    # Code patterns: backticks, file paths
-    if "```" in message or re.search(r"\.\w{1,5}:\d+", message):
-        scores["code"] += 2
+    # Error/exception redirect: ordered intent detection
     error_match = re.search(r"traceback|error|exception", msg_lower)
     if error_match:
         # Ordered redirect: first matching intent wins, otherwise code

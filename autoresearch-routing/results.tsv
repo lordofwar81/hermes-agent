@@ -76,3 +76,4 @@ e54afd2a	64	1.000	0.008	keep	remove active_categories term from complexity scori
 3ace96ac	64	1.000	0.006	keep	remove 32 unused code keywords (67→35 entries)
 d3d838e7	64	1.000	0.006	keep	remove 13 unused creative keywords (21→8 entries)
 55d12a14	64	1.000	0.006	keep	remove 15 unused analysis keywords (30→15 entries)
+e369f2ec	64	1.000	0.006	keep	remove 4 redundant phrase map entries (18→14)

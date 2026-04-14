@@ -863,16 +863,11 @@ def select_model(
 
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
-    if quality_level == "maximum" or complexity == "expert":
-        w_quality = 0.90
-        w_speed = 0.02
-        w_context = 0.06
-        w_cost = 0.02
-    elif complexity == "complex" or quality_level == "high":
-        w_quality = 0.55
-        w_speed = 0.12
-        w_context = 0.18
-        w_cost = 0.15
+    if quality_level == "maximum" or complexity == "expert" or complexity == "complex" or quality_level == "high":
+        w_quality = 0.70
+        w_speed = 0.08
+        w_context = 0.12
+        w_cost = 0.10
 
     # Build candidate list from config's model pool
     models_cfg = routing_config.get("models", {})

@@ -644,14 +644,10 @@ _COMPLEXITY_BOOSTERS = frozenset(
     }
 )
 
-# Multi-word phrase complexity signals (matched against full message)
-# Pruned to phrases that affect real routing decisions. Single-word
-# boosters cover most complexity signals; these handle only the
-# multi-word patterns that deserve extra weight.
-_COMPLEXITY_PHRASES = [
-    "entire codebase",
-    "system-wide",
-]
+# Multi-word phrase complexity signals — REMOVED.
+# Single-word _COMPLEXITY_BOOSTERS plus technical density and length
+# are sufficient to discriminate complexity levels.
+_COMPLEXITY_PHRASES: list = []
 
 # Urgency signals
 _REALTIME_KEYWORDS = frozenset(

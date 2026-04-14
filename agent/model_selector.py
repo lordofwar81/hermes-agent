@@ -739,23 +739,22 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     else:
         task_type = "general"
 
-    # Complexity — multi-signal approach (not just message length)
-    # 1. Keyword boosters (single-word matches)
+    # Complexity — composite score from keyword density, overlap, and length
     complexity_boost = len(words & _COMPLEXITY_BOOSTERS)
-    # 3. Technical density: fraction of words that are domain keywords
     total_keyword_hits = sum(scores.values())
     word_count = len(words) if words else 1
     technical_density = min(total_keyword_hits / word_count, 1.0)
-    # 4. Multi-category overlap: query spans multiple domains
     active_categories = sum(1 for v in scores.values() if v > 0)
 
-    # Weighted composite complexity score
-    complexity_score = (
-        complexity_boost * 2.0  # Booster keywords are strong signals
-        + (2.5 if technical_density > 0.40 else 1.0 if technical_density > 0.25 else 0.0)
-        + (1.0 if active_categories >= 3 else 0.5 if active_categories >= 2 else 0.0)  # Multi-domain
-    )
-    # Length contribution — single log-based formula replaces 4 thresholds
+    complexity_score = complexity_boost * 2.0
+    if technical_density > 0.40:
+        complexity_score += 2.5
+    elif technical_density > 0.25:
+        complexity_score += 1.0
+    if active_categories >= 3:
+        complexity_score += 1.0
+    elif active_categories >= 2:
+        complexity_score += 0.5
     if msg_len > 50:
         complexity_score += min(3.5, 0.5 + math.log(msg_len / 50, 3))
 

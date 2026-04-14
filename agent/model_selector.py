@@ -472,7 +472,6 @@ _REASONING_KEYWORDS = frozenset(
         "quantify",
         # Added: research & root cause
         "research",
-        "study",
         "cause",
         # Added: explanation & comparison
         "explain",
@@ -563,9 +562,7 @@ _ANALYSIS_KEYWORDS = frozenset(
         "parse",
         "extract",
         "transform",
-        "research",
         "paper",
-        "study",
         "survey",
         "experiment",
         # Added: coverage & reports (analysis of metrics)

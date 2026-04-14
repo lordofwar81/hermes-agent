@@ -1251,23 +1251,9 @@ def select_model(
         if ctx_score == 0.0:
             continue  # Skip models that can't handle the context size
 
-        # Cost score: flattened tiers — quality must be able to overcome cost.
-        # Free models get mild advantage, but a 0.06+ quality edge wins.
-        def _cost_tier_score(cost: float) -> float:
-            if cost == 0.0:
-                return 0.65  # Free advantage, but small
-            elif cost <= 0.01:
-                return 0.62  # Ultra-cheap: near parity
-            elif cost <= 0.03:
-                return 0.55
-            elif cost <= 0.05:
-                return 0.50
-            elif cost <= 0.10:
-                return 0.42
-            else:
-                return 0.32
-
-        cost_score = _cost_tier_score(profile.cost_per_request)
+        # Cost score: smooth inverse relationship — free models edge, expensive penalized.
+        # Single formula replaces 6-tier step function.
+        cost_score = max(0.2, 0.7 - 0.5 * math.log1p(profile.cost_per_request * 100))
 
         # Apply quality level filter
         if quality_level == "maximum" and quality_score < 0.82:

@@ -1290,6 +1290,13 @@ def select_model(
         _RELIABILITY_BONUS = {"zai": 0.02, "local": 0.01, "venice": 0.0}
         reliability_bonus = _RELIABILITY_BONUS.get(profile.provider, 0.0)
 
+        # Thinking model bonus — models with extended reasoning (chain-of-thought)
+        # produce better results on complex/expert tasks. Small bonus to reflect
+        # this quality advantage when the task demands depth.
+        thinking_bonus = 0.0
+        if profile.is_thinking and complexity in ("complex", "expert"):
+            thinking_bonus = 0.03
+
         # Secondary capability synergy bonus — models strong in both the
         # primary task AND a related secondary domain produce better results.
         _SYNERGY_MAP = {
@@ -1314,6 +1321,7 @@ def select_model(
             + w_cost * cost_score
             + synergy_bonus
             + reliability_bonus
+            + thinking_bonus
         )
 
         reason_parts = [f"{task_type}/{complexity}"]

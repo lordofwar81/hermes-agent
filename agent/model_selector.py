@@ -1277,6 +1277,12 @@ def select_model(
         elif quality_level == "high" and quality_score < 0.68:
             continue  # Skip weak models for important tasks
 
+        # Provider reliability bonus — unlimited pre-paid providers (zai) get
+        # a small edge over budget-constrained ones (venice). This prevents
+        # routing to a model that might hit budget mid-session.
+        _RELIABILITY_BONUS = {"zai": 0.02, "local": 0.01, "venice": 0.0}
+        reliability_bonus = _RELIABILITY_BONUS.get(profile.provider, 0.0)
+
         # Secondary capability synergy bonus — models strong in both the
         # primary task AND a related secondary domain produce better results.
         _SYNERGY_MAP = {
@@ -1300,6 +1306,7 @@ def select_model(
             + w_context * ctx_score
             + w_cost * cost_score
             + synergy_bonus
+            + reliability_bonus
         )
 
         reason_parts = [f"{task_type}/{complexity}"]

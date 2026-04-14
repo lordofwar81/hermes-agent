@@ -487,7 +487,6 @@ _REASONING_KEYWORDS = frozenset(
 # Writing indicators
 _WRITING_KEYWORDS = frozenset(
     {
-        "write",
         "draft",
         "compose",
         "summarize",

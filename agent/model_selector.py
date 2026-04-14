@@ -792,7 +792,6 @@ def select_model(
 
     # Score each candidate
     cap_key = "code_quality" if task_type == "code" else task_type
-    msg_lower = message.lower()
     est_tokens = len(message) // 4
     scored: List[Tuple[float, ModelProfile, str]] = []
 

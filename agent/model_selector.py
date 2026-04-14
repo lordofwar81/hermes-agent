@@ -852,8 +852,7 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     complexity_score = (
         complexity_boost * 2.0  # Booster keywords are strong signals
         + phrase_boost * 1.5  # Phrase matches are very specific
-        + (1.5 if technical_density > 0.40 else 0.0)  # High keyword density
-        + (1.0 if technical_density > 0.25 else 0.0)  # Moderate keyword density
+        + (2.5 if technical_density > 0.40 else 1.0 if technical_density > 0.25 else 0.0)
         + (1.0 if active_categories >= 3 else 0.0)  # Very multi-domain
         + (0.5 if active_categories >= 2 else 0.0)  # Multi-domain
         + code_structure * 0.5  # Code patterns

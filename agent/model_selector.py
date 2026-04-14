@@ -1135,18 +1135,16 @@ def _estimate_token_count(message: str) -> int:
 def _context_window_score(estimated_tokens: int, context_window: int) -> float:
     """Score how well a model's context window fits the estimated request size.
     Returns 1.0 if plenty of headroom, 0.0 if request would exceed window.
+    Uses smooth gradient instead of step-function for finer discrimination.
     """
     if estimated_tokens == 0:
         return 1.0
     ratio = estimated_tokens / context_window
     if ratio > 0.8:
         return 0.0  # Too tight — reject
-    elif ratio > 0.5:
-        return 0.5
-    elif ratio > 0.3:
-        return 0.8
-    else:
-        return 1.0
+    # Smooth gradient: 1.0 at ratio=0, 0.5 at ratio=0.5, near 0 at ratio=0.8
+    # Using linear interpolation: score = 1.0 - (ratio / 0.8) * 0.5
+    return max(0.0, 1.0 - (ratio * 1.25))
 
 
 def select_model(

@@ -809,6 +809,9 @@ def select_model(
     if complexity == "simple" and quality_level == "standard":
         return None
 
+    # Cache optimizer singleton once for weight blend + recording
+    optimizer = _get_optimizer()
+
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
     if quality_level != "standard" or complexity == "expert":
@@ -822,7 +825,6 @@ def select_model(
         except Exception:
             w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
         # Blend optimizer-learned weights with config weights (70/30 split)
-        optimizer = _get_optimizer()
         if optimizer is not None:
             try:
                 optimizer.analyze_system_conditions()
@@ -907,10 +909,9 @@ def select_model(
     _, best_profile, best_reason = scored[0]
 
     # Record routing decision for optimizer learning (non-critical — never blocks routing)
-    _record_optimizer = _get_optimizer()
-    if _record_optimizer is not None:
+    if optimizer is not None:
         try:
-            _record_optimizer.tracker.record_request(
+            optimizer.tracker.record_request(
                 best_profile.name, tps=0.0, latency_ms=0.0, success=True
             )
         except Exception:

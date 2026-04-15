@@ -866,8 +866,7 @@ def select_model(
             ctx_score = 1.0
 
         # Concurrency gate: skip model if at provider-defined limit
-        acquired = profile.max_concurrent > 0 and concurrency_tracker.acquire(profile.name, profile.max_concurrent)
-        if profile.max_concurrent > 0 and not acquired:
+        if profile.max_concurrent > 0 and not concurrency_tracker.acquire(profile.name, profile.max_concurrent):
             continue  # Model at capacity — pick next candidate
 
         # Apply quality level filter

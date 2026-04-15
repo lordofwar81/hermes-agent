@@ -809,20 +809,18 @@ def select_model(
     if complexity == "simple" and quality_level == "standard":
         return None
 
-    # Read priority weights from config (default to hardcoded if missing)
-    try:
-        w_quality, w_speed, w_context, w_cost = _parse_weights(
-            routing_config.get("priorities", {})
-        )
-    except Exception:
-        w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
-
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
-    # Checked BEFORE optimizer blend to skip wasted computation.
     if quality_level != "standard" or complexity == "expert":
         w_quality, w_speed, w_context, w_cost = 0.70, 0.08, 0.12, 0.10
     else:
+        # Read config weights only when we actually use them (standard quality)
+        try:
+            w_quality, w_speed, w_context, w_cost = _parse_weights(
+                routing_config.get("priorities", {})
+            )
+        except Exception:
+            w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
         # Blend optimizer-learned weights with config weights (70/30 split)
         optimizer = _get_optimizer()
         if optimizer is not None:
@@ -834,7 +832,7 @@ def select_model(
                 w_context = 0.7 * w_context + 0.3 * opt_weights.get("context", 0.20)
                 w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
             except Exception:
-                pass  # Fall back to static weights
+                pass
 
     # Build candidate list from config's model pool
     candidates = [

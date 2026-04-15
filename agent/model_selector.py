@@ -744,7 +744,8 @@ def classify_message(
     Returns dict with keys: task_type, complexity, urgency, quality_level.
     """
     # Fast-path: clearly trivial messages skip LLM
-    if not message.strip() or len(message.strip()) < 20:
+    stripped = message.strip()
+    if not stripped or len(stripped) < 20:
         return _classify_heuristic(message)
 
     # Try LLM classification for non-trivial messages
@@ -870,8 +871,11 @@ def select_model(
             continue  # Model at capacity — pick next candidate
 
         # Apply quality level filter
-        min_quality = {"maximum": 0.82, "high": 0.68}.get(quality_level)
-        if min_quality is not None and quality_score < min_quality:
+        if quality_level == "maximum" and quality_score < 0.82:
+            if profile.max_concurrent > 0:
+                concurrency_tracker.release(profile.name)
+            continue
+        if quality_level == "high" and quality_score < 0.68:
             if profile.max_concurrent > 0:
                 concurrency_tracker.release(profile.name)
             continue

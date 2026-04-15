@@ -692,7 +692,7 @@ def select_model(
     if not candidates:
         return None
 
-    min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
+    min_quality = 0.82 if quality_level == "maximum" else 0.0
     scored: list[tuple[float, ModelProfile]] = []
 
     for profile in candidates:

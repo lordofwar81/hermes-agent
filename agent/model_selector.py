@@ -93,10 +93,6 @@ class _ConcurrencyTracker:
             current = self._counts.get(model, 0)
             self._counts[model] = max(0, current - 1)
 
-    def in_flight(self, model: str) -> int:
-        with self._lock:
-            return self._counts.get(model, 0)
-
 
 # Module-level singleton — shared across all selector calls
 concurrency_tracker = _ConcurrencyTracker()

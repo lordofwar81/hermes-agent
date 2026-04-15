@@ -10,33 +10,6 @@ import re
 import os
 import threading
 from dataclasses import dataclass
-# ---------------------------------------------------------------------------
-# Routing optimizer integration (optional — graceful fallback if unavailable)
-# ---------------------------------------------------------------------------
-try:
-    from agent.routing_optimizer import MultiObjectiveOptimizer
-    from agent.routing_tracker import RoutingTracker
-    _OPTIMIZER_AVAILABLE = True
-except ImportError:
-    _OPTIMIZER_AVAILABLE = False
-
-_optimizer: MultiObjectiveOptimizer | None = None
-
-
-def _get_optimizer() -> MultiObjectiveOptimizer | None:
-    """Return optimizer singleton, or None on failure."""
-    global _optimizer
-    if not _OPTIMIZER_AVAILABLE:
-        return None
-    try:
-        if _optimizer is None:
-            from hermes_constants import get_hermes_home
-            data_dir = str(get_hermes_home())
-            tracker = RoutingTracker(data_dir)
-            _optimizer = MultiObjectiveOptimizer(tracker)
-        return _optimizer
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------

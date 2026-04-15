@@ -875,8 +875,7 @@ def select_model(
         )
 
         cap_tag = "/high-cap" if quality_score >= 0.80 else ""
-        cost_tag = "/free" if profile.cost_per_request == 0.0 else "/budget" if profile.cost_per_request <= 0.01 else ""
-        reason = f"{task_type}/{complexity}{cap_tag}{cost_tag}"
+        reason = f"{task_type}/{complexity}{cap_tag}"
 
         scored.append((composite, profile, reason))
 

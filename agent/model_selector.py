@@ -635,19 +635,16 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
         import json as _json
         from openai import OpenAI
 
-        # Discover Z.ai API credentials (GLM/GLM_API_KEY = Z.ai coding plan)
+        # Discover Z.ai API credentials
         api_key = None
-        for env_var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "OPENAI_API_KEY"):
-            val = os.environ.get(env_var, "")
-            # OPENAI_API_KEY might point to a different provider — only use it
-            # if the base URL is also Z.ai
-            if env_var == "OPENAI_API_KEY":
-                base = os.environ.get("OPENAI_BASE_URL", "")
-                if "z.ai" not in base:
-                    continue
-            if val:
-                api_key = val
+        for env_var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+            api_key = os.environ.get(env_var)
+            if api_key:
                 break
+        if not api_key:
+            base = os.environ.get("OPENAI_BASE_URL", "")
+            if "z.ai" in base:
+                api_key = os.environ.get("OPENAI_API_KEY")
 
         # Try loading from .env file as fallback
         if not api_key:

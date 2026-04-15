@@ -914,19 +914,16 @@ def smart_select_route(
             "credential_pool": primary.get("credential_pool"),
         }
 
-    label = f"selector → {selected_model} ({selected_provider}) [{reason}]"
-    signature = (
-        selected_model,
-        selected_provider,
-        runtime.get("base_url") or "",
-        runtime.get("api_mode") or "",
-        runtime.get("command"),
-        tuple(runtime.get("args") or []),
-    )
-
     return {
         "model": selected_model,
         "runtime": runtime,
-        "label": label,
-        "signature": signature,
+        "label": f"selector → {selected_model} ({selected_provider}) [{reason}]",
+        "signature": (
+            selected_model,
+            selected_provider,
+            runtime.get("base_url") or "",
+            runtime.get("api_mode") or "",
+            runtime.get("command"),
+            tuple(runtime.get("args") or []),
+        ),
     }

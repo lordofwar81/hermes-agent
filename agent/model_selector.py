@@ -572,18 +572,7 @@ _PHRASE_MAP = (
     ("how many errors", "analysis"),
 )
 
-# Tie-breaking priority — reasoning and code win ties
-_TIE_PRIORITY = {
-    "reasoning": 5,
-    "code": 4,
-    "analysis": 3,
-    "writing": 2,
-    "creative": 1,
-    "general": 0,
-}
 
-
-# Pre-compiled regex for word extraction in heuristic classifier
 _WORD_RE = re.compile(r"\w+")
 
 
@@ -596,25 +585,47 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     words = set(_WORD_RE.findall(msg_lower))
 
     # Count keyword hits per category
-    scores = {
-        "code": len(words & _CODE_KEYWORDS),
-        "reasoning": len(words & _REASONING_KEYWORDS),
-        "writing": len(words & _WRITING_KEYWORDS),
-        "analysis": len(words & _ANALYSIS_KEYWORDS),
-        "creative": len(words & _CREATIVE_KEYWORDS),
-    }
+    code_h = len(words & _CODE_KEYWORDS)
+    reason_h = len(words & _REASONING_KEYWORDS)
+    write_h = len(words & _WRITING_KEYWORDS)
+    analy_h = len(words & _ANALYSIS_KEYWORDS)
+    creat_h = len(words & _CREATIVE_KEYWORDS)
 
+    total_hits = code_h + reason_h + write_h + analy_h + creat_h
     for phrase, category in _PHRASE_MAP:
         if phrase in msg_lower:
-            scores[category] += 1
+            total_hits += 1
+            if category == "code":
+                code_h += 1
+            elif category == "reasoning":
+                reason_h += 1
+            elif category == "writing":
+                write_h += 1
+            elif category == "analysis":
+                analy_h += 1
+            elif category == "creative":
+                creat_h += 1
 
-    if max(scores.values()) > 0:
-        task_type = max(scores, key=lambda k: (scores[k], _TIE_PRIORITY[k]))
+    if total_hits > 0:
+        # Tie-breaking priority: reasoning > code > analysis > writing > creative
+        best = max(code_h, reason_h, write_h, analy_h, creat_h)
+        if reason_h == best:
+            task_type = "reasoning"
+        elif code_h == best:
+            task_type = "code"
+        elif analy_h == best:
+            task_type = "analysis"
+        elif write_h == best:
+            task_type = "writing"
+        elif creat_h == best:
+            task_type = "creative"
+        else:
+            task_type = "general"
     else:
         task_type = "general"
 
     # Complexity — composite score from keyword density and length
-    complexity_score = sum(scores.values())
+    complexity_score = total_hits
     if len(message) > 50:
         complexity_score += (len(message) - 50) / 25.0
 

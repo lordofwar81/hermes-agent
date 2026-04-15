@@ -534,7 +534,7 @@ _LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 def _classify_with_llm(message: str) -> dict | None:
     """Use glm-4.5-air for high-accuracy classification. Returns None on failure."""
     try:
-        import json as _json
+        import json
         from openai import OpenAI
 
         # Discover Z.ai API credentials
@@ -577,7 +577,7 @@ def _classify_with_llm(message: str) -> dict | None:
             content = content.removeprefix("```json\n").removeprefix("```\n").removeprefix("```")
             content = content.removesuffix("```").strip()
 
-        result = _json.loads(content)
+        result = json.loads(content)
 
         # Validate all fields (see module-level _LLM_VALID / _LLM_DEFAULTS)
 

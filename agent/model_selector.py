@@ -665,8 +665,8 @@ def select_model(
     complexity = classification["complexity"]
     quality_level = classification["quality_level"]
 
-    # If simple/standard quality, let the existing binary classifier handle it
-    if complexity == "simple" and quality_level == "standard":
+    # If simple complexity, let the existing binary classifier handle it
+    if complexity == "simple":
         return None
 
     # Dynamic reweighting: for important tasks, quality dominates so that

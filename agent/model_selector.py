@@ -800,14 +800,12 @@ def select_model(
         else:
             ctx_score = 1.0
 
+        # Apply quality level filter (before acquiring concurrency slot)
+        if quality_score < min_quality:
+            continue
+
         # Concurrency gate: skip model if at provider-defined limit
         if profile.max_concurrent > 0 and not concurrency_tracker.acquire(profile.name, profile.max_concurrent):
-            continue  # Model at capacity — pick next candidate
-
-        # Apply quality level filter
-        if quality_score < min_quality:
-            if profile.max_concurrent > 0:
-                concurrency_tracker.release(profile.name)
             continue
 
         # Weighted composite score

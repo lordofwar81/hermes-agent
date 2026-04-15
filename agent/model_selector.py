@@ -626,10 +626,6 @@ _LLM_VALID = {
 }
 _LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
-# Pre-compiled regex for stripping markdown code fences from LLM responses
-_FENCE_OPEN = re.compile(r"^```(?:json)?\s*\n?")
-_FENCE_CLOSE = re.compile(r"\n?```\s*$")
-
 
 def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None:
     """Use glm-4.5-air (free, 200+ tps) for high-accuracy classification.
@@ -695,9 +691,8 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 
         # Strip markdown code fences if present
         if content.startswith("```"):
-            content = _FENCE_OPEN.sub("", content)
-            content = _FENCE_CLOSE.sub("", content)
-            content = content.strip()
+            content = content.removeprefix("```json\n").removeprefix("```\n").removeprefix("```")
+            content = content.removesuffix("```").strip()
 
         result = _json.loads(content)
 

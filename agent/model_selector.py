@@ -845,14 +845,13 @@ def select_model(
         return None
 
     # Pre-compute per-loop invariants
-    cap_key = "code_quality" if task_type == "code" else task_type
     est_tokens = len(message) // 4
     min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
     scored: list[tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:
         # Quality score: task-specific capability
-        quality_score = getattr(profile, cap_key, profile.general)
+        quality_score = getattr(profile, ("code_quality" if task_type == "code" else task_type), profile.general)
 
         # Context score: does the model have enough context window?
         if est_tokens > 0:

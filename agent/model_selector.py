@@ -589,40 +589,26 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     words = set(_WORD_RE.findall(msg_lower))
 
     # Count keyword hits per category
-    code_h = len(words & _CODE_KEYWORDS)
-    reason_h = len(words & _REASONING_KEYWORDS)
-    write_h = len(words & _WRITING_KEYWORDS)
-    analy_h = len(words & _ANALYSIS_KEYWORDS)
-    creat_h = len(words & _CREATIVE_KEYWORDS)
+    hits = {
+        "code": len(words & _CODE_KEYWORDS),
+        "reasoning": len(words & _REASONING_KEYWORDS),
+        "writing": len(words & _WRITING_KEYWORDS),
+        "analysis": len(words & _ANALYSIS_KEYWORDS),
+        "creative": len(words & _CREATIVE_KEYWORDS),
+    }
 
-    total_hits = code_h + reason_h + write_h + analy_h + creat_h
+    total_hits = sum(hits.values())
     for match in _PHRASE_RE.findall(msg_lower):
         total_hits += 1
-        category = _PHRASE_MAP[match]
-        if category == "code":
-            code_h += 1
-        elif category == "reasoning":
-            reason_h += 1
-        elif category == "writing":
-            write_h += 1
-        elif category == "analysis":
-            analy_h += 1
-        elif category == "creative":
-            creat_h += 1
+        hits[_PHRASE_MAP[match]] += 1
 
     if total_hits > 0:
         # Tie-breaking priority: reasoning > code > analysis > writing > creative
-        best = max(code_h, reason_h, write_h, analy_h, creat_h)
-        if reason_h == best:
-            task_type = "reasoning"
-        elif code_h == best:
-            task_type = "code"
-        elif analy_h == best:
-            task_type = "analysis"
-        elif write_h == best:
-            task_type = "writing"
-        elif creat_h == best:
-            task_type = "creative"
+        best = max(hits.values())
+        for cat in ("reasoning", "code", "analysis", "writing", "creative"):
+            if hits[cat] == best:
+                task_type = cat
+                break
         else:
             task_type = "general"
     else:

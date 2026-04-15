@@ -412,9 +412,29 @@ _KEYWORD_MAP: dict[str, str] = {
 
 _WORD_RE = re.compile(r"\w+")
 
+# Question-starting patterns → reasoning intent boost
+_QUESTION_RE = re.compile(
+    r"^(why|how|is\s+the|what'?s?\s+the|where|when|who)\b", re.IGNORECASE
+)
+
+# Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)
+_PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
+    # Writing intent — "write/draft/compose X about Y"
+    (re.compile(r"\b(write|draft|compose)\b.*\b(documentation|readme|blog|email|post|proposal|announcement)\b", re.I), "writing"),
+    (re.compile(r"\b(rewrite|edit)\b.*\b(message|error|text|content|letter)\b", re.I), "writing"),
+    (re.compile(r"\bsummarize\b", re.I), "writing"),
+    # Creative intent — "write a poem/funny/story"
+    (re.compile(r"\b(write|compose)\b.*\b(poem|funny|story|creative|joke|song|haiku)\b", re.I), "creative"),
+    # Analysis intent — quantitative queries
+    (re.compile(r"\b(how\s+many|what\s+percentage|show\s+me\s+the)\b", re.I), "analysis"),
+    (re.compile(r"\b(error\s+rate|execution\s+time)\b", re.I), "analysis"),
+    # Reasoning intent — "explain X"
+    (re.compile(r"\bexplain\b", re.I), "reasoning"),
+]
+
 
 def _classify_heuristic(message: str) -> dict[str, str]:
-    """Keyword heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
+    """Keyword + phrase heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
     msg_lower = message.lower()
     words = set(_WORD_RE.findall(msg_lower))
 
@@ -424,6 +444,15 @@ def _classify_heuristic(message: str) -> dict[str, str]:
         cat = _KEYWORD_MAP.get(w)
         if cat:
             hits[cat] += 1
+
+    # Question pattern → reasoning boost
+    if _QUESTION_RE.search(msg_lower):
+        hits["reasoning"] += 1
+
+    # Phrase overrides — strong intent signals (+2 bonus)
+    for pattern, cat in _PHRASE_OVERRIDES:
+        if pattern.search(message):
+            hits[cat] += 2
 
     total_hits = sum(hits.values())
 

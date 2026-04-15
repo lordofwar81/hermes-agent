@@ -650,14 +650,12 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
         if not api_key:
             try:
                 with open(os.path.expanduser("~/.hermes/.env")) as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        key, val = line.split("=", 1)
-                        if key.strip() in ("GLM_API_KEY", "ZAI_API_KEY"):
-                            api_key = val.strip().strip('"').strip("'")
-                            break
+                    api_key = next((
+                        v.strip().strip('"').strip("'")
+                        for line in f if "=" in line and not line.strip().startswith("#")
+                        for k, v in [line.strip().split("=", 1)]
+                        if k.strip() in ("GLM_API_KEY", "ZAI_API_KEY")
+                    ), None)
             except FileNotFoundError:
                 pass
 

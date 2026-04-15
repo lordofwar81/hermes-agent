@@ -750,15 +750,15 @@ def select_model(
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
     if quality_level != "standard" or complexity == "expert":
-        w_quality, w_speed, w_context, w_cost = 0.70, 0.08, 0.12, 0.10
+        w_quality, w_speed, w_cost = 0.70, 0.08, 0.10
     else:
         # Read config weights only when we actually use them (standard quality)
         try:
-            w_quality, w_speed, w_context, w_cost = _parse_weights(
+            w_quality, w_speed, _, w_cost = _parse_weights(
                 routing_config.get("priorities", {})
             )
         except Exception:
-            w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
+            w_quality, w_speed, w_cost = 0.40, 0.25, 0.15
         # Blend optimizer-learned weights with config weights (70/30 split)
         if optimizer is not None:
             try:
@@ -766,7 +766,6 @@ def select_model(
                 opt_weights = optimizer.context.current_weights
                 w_quality = 0.7 * w_quality + 0.3 * opt_weights.get("quality", 0.40)
                 w_speed = 0.7 * w_speed + 0.3 * opt_weights.get("speed", 0.25)
-                w_context = 0.7 * w_context + 0.3 * opt_weights.get("context", 0.20)
                 w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
             except Exception:
                 pass
@@ -782,20 +781,12 @@ def select_model(
     if not candidates:
         return None
 
-    # Pre-compute per-loop invariants
-    est_tokens = len(message) // 4
     min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
     scored: list[tuple[float, ModelProfile]] = []
 
     for profile in candidates:
         # Quality score: task-specific capability
         quality_score = getattr(profile, ("code_quality" if task_type == "code" else task_type), profile.general)
-
-        # Context score: does the model have enough context window?
-        ratio = est_tokens / profile.context_window
-        if ratio > 0.8:
-            continue  # Too tight — skip model
-        ctx_score = max(0.0, 1.0 - ratio * 1.25)
 
         # Apply quality level filter (before acquiring concurrency slot)
         if quality_score < min_quality:
@@ -809,7 +800,6 @@ def select_model(
         composite = (
             w_quality * quality_score
             + w_speed * profile.speed
-            + w_context * ctx_score
             + w_cost * max(0.2, 0.7 - profile.cost_per_request * 15.0)
         )
 

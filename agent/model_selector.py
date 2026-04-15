@@ -856,9 +856,6 @@ def select_model(
         # Quality score: task-specific capability
         quality_score = getattr(profile, cap_key, profile.general)
 
-        # Speed score: already normalized 0-1 in profile
-        speed_score = profile.speed
-
         # Context score: does the model have enough context window?
         if est_tokens > 0:
             ratio = est_tokens / profile.context_window
@@ -868,29 +865,24 @@ def select_model(
         else:
             ctx_score = 1.0
 
-        # Cost score: free models edge, expensive penalized
-        cost_score = max(0.2, 0.7 - profile.cost_per_request * 15.0)
-
         # Concurrency gate: skip model if at provider-defined limit
-        if profile.max_concurrent > 0 and not concurrency_tracker.acquire(profile.name, profile.max_concurrent):
+        acquired = profile.max_concurrent > 0 and concurrency_tracker.acquire(profile.name, profile.max_concurrent)
+        if profile.max_concurrent > 0 and not acquired:
             continue  # Model at capacity — pick next candidate
 
         # Apply quality level filter
-        if quality_level == "maximum" and quality_score < 0.82:
+        min_quality = {"maximum": 0.82, "high": 0.68}.get(quality_level)
+        if min_quality is not None and quality_score < min_quality:
             if profile.max_concurrent > 0:
                 concurrency_tracker.release(profile.name)
-            continue  # Only top-tier models for critical work
-        elif quality_level == "high" and quality_score < 0.68:
-            if profile.max_concurrent > 0:
-                concurrency_tracker.release(profile.name)
-            continue  # Skip weak models for important tasks
+            continue
 
         # Weighted composite score
         composite = (
             w_quality * quality_score
-            + w_speed * speed_score
+            + w_speed * profile.speed
             + w_context * ctx_score
-            + w_cost * cost_score
+            + w_cost * max(0.2, 0.7 - profile.cost_per_request * 15.0)
         )
 
         reason = f"{task_type}/{complexity}"

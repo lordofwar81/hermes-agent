@@ -816,9 +816,7 @@ def select_model(
             + w_cost * max(0.2, 0.7 - profile.cost_per_request * 15.0)
         )
 
-        reason = f"{task_type}/{complexity}"
-
-        scored.append((composite, profile, reason))
+        scored.append((composite, profile))
 
     if not scored:
         return None  # No candidates passed filters
@@ -828,11 +826,12 @@ def select_model(
 
     # Release all candidates except the winner — concurrency slot reserved
     # only for the model we actually return.
-    for _, profile, _ in scored[1:]:
+    for _, profile in scored[1:]:
         if profile.max_concurrent > 0:
             concurrency_tracker.release(profile.name)
 
-    _, best_profile, best_reason = scored[0]
+    _, best_profile = scored[0]
+    best_reason = f"{task_type}/{complexity}"
 
     # Record routing decision for optimizer learning (non-critical — never blocks routing)
     if optimizer is not None:

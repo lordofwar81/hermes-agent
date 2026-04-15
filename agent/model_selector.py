@@ -589,12 +589,7 @@ def _classify_with_llm(message: str) -> dict | None:
                 else:
                     return None
 
-        return {
-            "task_type": result["task_type"],
-            "complexity": result["complexity"],
-            "urgency": result["urgency"],
-            "quality_level": result["quality_level"],
-        }
+        return {k: result[k] for k in ("task_type", "complexity", "urgency", "quality_level")}
     except Exception:
         return None
 

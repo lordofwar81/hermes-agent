@@ -548,19 +548,6 @@ def _classify_with_llm(message: str) -> dict | None:
             if "z.ai" in base:
                 api_key = os.environ.get("OPENAI_API_KEY")
 
-        # Try loading from .env file as fallback
-        if not api_key:
-            try:
-                with open(os.path.expanduser("~/.hermes/.env")) as f:
-                    api_key = next((
-                        v.strip().strip('"').strip("'")
-                        for line in f if "=" in line and not line.strip().startswith("#")
-                        for k, v in [line.strip().split("=", 1)]
-                        if k.strip() in ("GLM_API_KEY", "ZAI_API_KEY")
-                    ), None)
-            except FileNotFoundError:
-                pass
-
         if not api_key:
             return None
 

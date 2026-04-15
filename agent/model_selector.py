@@ -74,7 +74,6 @@ class ModelProfile:
     general: float = 0.5
     # Performance
     speed: float = 0.5  # tokens/sec relative (1.0 = fastest in pool)
-    context_window: int = 128_000
     # Cost
     cost_per_request: float = 0.0  # 0.0 = free (local)
     # Concurrency limit from provider (0 = unlimited)
@@ -99,7 +98,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.80,
         general=0.88,
         speed=0.35,
-        context_window=198_000,
         cost_per_request=0.0,
         max_concurrent=1,
     )
@@ -113,7 +111,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.78,
         general=0.85,
         speed=0.65,
-        context_window=200_000,
         cost_per_request=0.0,
         max_concurrent=1,
     )
@@ -127,7 +124,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.76,
         general=0.82,
         speed=0.55,
-        context_window=128_000,
         cost_per_request=0.0,
         max_concurrent=2,
     )
@@ -141,7 +137,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.78,
         general=0.82,
         speed=0.65,
-        context_window=198_000,
         cost_per_request=0.0,
         max_concurrent=2,
     )
@@ -155,7 +150,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.74,
         general=0.78,
         speed=0.65,
-        context_window=128_000,
         cost_per_request=0.0,
         max_concurrent=3,
     )
@@ -169,7 +163,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.72,
         general=0.75,
         speed=0.65,
-        context_window=128_000,
         cost_per_request=0.0,
         max_concurrent=10,
     )
@@ -183,7 +176,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.65,
         general=0.66,
         speed=0.90,
-        context_window=128_000,
         cost_per_request=0.0,
         max_concurrent=5,
     )
@@ -202,7 +194,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.82,
         general=0.87,
         speed=0.50,
-        context_window=1_000_000,
         cost_per_request=0.05,
         max_concurrent=2,
     )
@@ -216,7 +207,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.88,
         general=0.91,
         speed=0.45,
-        context_window=1_000_000,
         cost_per_request=0.22,
         max_concurrent=1,  # Most expensive — limit to 1
     )
@@ -230,7 +220,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.78,
         general=0.84,
         speed=0.40,
-        context_window=198_000,
         cost_per_request=0.04,
         max_concurrent=3,
     )
@@ -244,7 +233,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.76,
         general=0.80,
         speed=0.55,
-        context_window=198_000,
         cost_per_request=0.03,
         max_concurrent=3,
     )
@@ -258,7 +246,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.68,
         general=0.68,
         speed=0.80,
-        context_window=128_000,
         cost_per_request=0.007,
         max_concurrent=5,  # Cheapest Venice — allow more parallel
     )
@@ -272,7 +259,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.72,
         general=0.80,
         speed=0.70,
-        context_window=160_000,
         cost_per_request=0.008,
         max_concurrent=5,  # Budget workhorse — allow more parallel
     )
@@ -286,7 +272,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.80,
         general=0.84,
         speed=0.30,
-        context_window=2_000_000,
         cost_per_request=0.10,
         max_concurrent=2,
     )
@@ -300,7 +285,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.60,
         general=0.75,
         speed=0.35,
-        context_window=256_000,
         cost_per_request=0.04,
         max_concurrent=2,
     )
@@ -314,7 +298,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.72,
         general=0.76,
         speed=0.65,
-        context_window=256_000,
         cost_per_request=0.02,
         max_concurrent=3,
     )
@@ -328,7 +311,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.85,
         general=0.65,
         speed=0.75,
-        context_window=32_000,
         cost_per_request=0.01,
         max_concurrent=3,
     )
@@ -344,7 +326,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.60,
         general=0.70,
         speed=0.55,
-        context_window=65_536,
         cost_per_request=0.0,
     )
     _add(
@@ -357,7 +338,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.58,
         general=0.68,
         speed=0.70,
-        context_window=65_536,
         cost_per_request=0.0,
     )
     _add(
@@ -370,7 +350,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.56,
         general=0.68,
         speed=0.40,
-        context_window=65_536,
         cost_per_request=0.0,
     )
     _add(
@@ -383,7 +362,6 @@ def _build_model_profiles() -> dict[str, ModelProfile]:
         creative=0.60,
         general=0.72,
         speed=0.38,
-        context_window=65_536,
         cost_per_request=0.0,
     )
 

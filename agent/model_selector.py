@@ -560,11 +560,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
         urgency = "normal"
 
     # Quality level — higher for complex/important tasks
-    if complexity in ("expert", "complex") and task_type in (
-        "code",
-        "reasoning",
-        "analysis",
-    ):
+    if complexity in ("expert", "complex") and task_type in ("code", "reasoning"):
         quality_level = "maximum"
     elif complexity == "complex" or task_type in ("code", "reasoning"):
         quality_level = "high"

@@ -606,7 +606,7 @@ _LLM_VALID = {
 _LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
 
-def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None:
+def _classify_with_llm(message: str) -> dict | None:
     """Use glm-4.5-air for high-accuracy classification. Returns None on failure."""
     try:
         import json as _json
@@ -693,7 +693,7 @@ def classify_message(
 ) -> dict[str, str]:
     """Classify a user message. Tries LLM first, then heuristic fallback."""
     if routing_config is not None:
-        llm_result = _classify_with_llm(message, routing_config)
+        llm_result = _classify_with_llm(message)
         if llm_result is not None:
             return llm_result
     return _classify_heuristic(message)

@@ -718,31 +718,17 @@ def select_model(
     if complexity == "simple" and quality_level == "standard":
         return None
 
-    # Cache optimizer singleton once for weight blend + recording
-    optimizer = _get_optimizer()
-
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
     if quality_level != "standard" or complexity == "expert":
         w_quality, w_speed, w_cost = 0.70, 0.08, 0.10
     else:
-        # Read config weights only when we actually use them (standard quality)
         try:
             w_quality, w_speed, w_cost = _parse_weights(
                 routing_config.get("priorities", {})
             )
         except Exception:
             w_quality, w_speed, w_cost = 0.40, 0.30, 0.30
-        # Blend optimizer-learned weights with config weights (70/30 split)
-        if optimizer is not None:
-            try:
-                optimizer.analyze_system_conditions()
-                opt_weights = optimizer.context.current_weights
-                w_quality = 0.7 * w_quality + 0.3 * opt_weights.get("quality", 0.40)
-                w_speed = 0.7 * w_speed + 0.3 * opt_weights.get("speed", 0.25)
-                w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
-            except Exception:
-                pass
 
     # Build candidate list from config's model pool
     candidates = [
@@ -793,15 +779,6 @@ def select_model(
 
     _, best_profile = scored[0]
     best_reason = f"{task_type}/{complexity}"
-
-    # Record routing decision for optimizer learning (non-critical — never blocks routing)
-    if optimizer is not None:
-        try:
-            optimizer.tracker.record_request(
-                best_profile.name, tps=0.0, latency_ms=0.0, success=True
-            )
-        except Exception:
-            pass
 
     # Don't route away from primary if the selector picks the same model
     # (prevents unnecessary agent rebuilds regardless of provider)

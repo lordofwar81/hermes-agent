@@ -24,7 +24,7 @@ import re
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Routing optimizer integration (optional — graceful fallback if unavailable)
@@ -36,10 +36,10 @@ try:
 except ImportError:
     _OPTIMIZER_AVAILABLE = False
 
-_optimizer: Optional[MultiObjectiveOptimizer] = None
+_optimizer: MultiObjectiveOptimizer | None = None
 
 
-def _get_optimizer() -> Optional[MultiObjectiveOptimizer]:
+def _get_optimizer() -> MultiObjectiveOptimizer | None:
     """Lazily initialise the routing-optimizer singleton.
 
     Returns ``None`` on any import / init failure so callers can fall back
@@ -74,7 +74,7 @@ class _ConcurrencyTracker:
     """Thread-safe per-model in-flight request counter."""
 
     def __init__(self) -> None:
-        self._counts: Dict[str, int] = {}
+        self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
 
     def acquire(self, model: str, limit: int) -> bool:
@@ -133,8 +133,8 @@ class ModelProfile:
 
 
 # Build the model profiles from the known pool
-def _build_model_profiles() -> Dict[str, ModelProfile]:
-    profiles: Dict[str, ModelProfile] = {}
+def _build_model_profiles() -> dict[str, ModelProfile]:
+    profiles: dict[str, ModelProfile] = {}
 
     def _add(name, provider, **kwargs):
         profiles[name] = ModelProfile(name=name, provider=provider, **kwargs)
@@ -452,7 +452,7 @@ MODEL_PROFILES = _build_model_profiles()
 # ---------------------------------------------------------------------------
 
 # Unified keyword-to-category map — single lookup per word.
-_KEYWORD_MAP: Dict[str, str] = {
+_KEYWORD_MAP: dict[str, str] = {
     # code
     **{w: "code" for w in (
         "debug", "implement", "refactor", "traceback", "error", "function",
@@ -509,7 +509,7 @@ _PHRASE_RE = re.compile(
 _WORD_RE = re.compile(r"\w+")
 
 
-def _classify_heuristic(message: str) -> Dict[str, str]:
+def _classify_heuristic(message: str) -> dict[str, str]:
     """Heuristic classifier — keyword/phrase based, no LLM call.
     Used as fallback when LLM classification is unavailable or fails.
     Returns dict with keys: task_type, complexity, urgency, quality_level.
@@ -734,8 +734,8 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 
 
 def classify_message(
-    message: str, routing_config: Dict[str, Any] = None
-) -> Dict[str, str]:
+    message: str, routing_config: dict[str, Any] = None
+) -> dict[str, str]:
     """Classify a user message for model routing.
 
     Uses LLM classification (glm-4.5-air) for non-trivial messages,
@@ -768,7 +768,7 @@ _WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 _DEFAULT_WEIGHTS = {"quality": 0.40, "speed": 0.25, "context": 0.20, "cost": 0.15}
 
 
-def _parse_weights(priorities_cfg: dict) -> Tuple[float, float, float, float]:
+def _parse_weights(priorities_cfg: dict) -> tuple[float, float, float, float]:
     """Parse priority weights from config, returning (quality, speed, context, cost)."""
     def _pw(val, default):
         if isinstance(val, (int, float)):
@@ -784,10 +784,10 @@ def _parse_weights(priorities_cfg: dict) -> Tuple[float, float, float, float]:
 
 def select_model(
     message: str,
-    routing_config: Dict[str, Any],
+    routing_config: dict[str, Any],
     primary_provider: str,
     primary_model: str,
-) -> Optional[Tuple[str, str, str]]:
+) -> tuple[str, str, str] | None:
     """Select the best (provider, model, reason) for a given message.
 
     Reads the routing config's strategy, priorities, model pool, and budget
@@ -851,7 +851,7 @@ def select_model(
     # Score each candidate
     cap_key = "code_quality" if task_type == "code" else task_type
     est_tokens = len(message) // 4
-    scored: List[Tuple[float, ModelProfile, str]] = []
+    scored: list[tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:
         # Quality score: task-specific capability
@@ -945,9 +945,9 @@ _RUNTIME_KEYS = (
 
 def smart_select_route(
     user_message: str,
-    routing_config: Dict[str, Any],
-    primary: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
+    routing_config: dict[str, Any],
+    primary: dict[str, Any],
+) -> dict[str, Any] | None:
     """Try intelligent model selection. Returns None to fall through to
     the existing binary classifier in smart_model_routing.py.
 
@@ -955,7 +955,7 @@ def smart_select_route(
     {
         "model": str,
         "runtime": {api_key, base_url, provider, api_mode, command, args, credential_pool},
-        "label": Optional[str],
+        "label": str | None,
         "signature": tuple,
     }
     """

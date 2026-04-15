@@ -24,11 +24,7 @@ _optimizer: MultiObjectiveOptimizer | None = None
 
 
 def _get_optimizer() -> MultiObjectiveOptimizer | None:
-    """Lazily initialise the routing-optimizer singleton.
-
-    Returns ``None`` on any import / init failure so callers can fall back
-    to static weights without extra error handling.
-    """
+    """Return optimizer singleton, or None on failure."""
     global _optimizer
     if not _OPTIMIZER_AVAILABLE:
         return None
@@ -490,10 +486,7 @@ _WORD_RE = re.compile(r"\w+")
 
 
 def _classify_heuristic(message: str) -> dict[str, str]:
-    """Heuristic classifier — keyword/phrase based, no LLM call.
-    Used as fallback when LLM classification is unavailable or fails.
-    Returns dict with keys: task_type, complexity, urgency, quality_level.
-    """
+    """Keyword/phrase heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
     msg_lower = message.lower()
     words = set(_WORD_RE.findall(msg_lower))
 
@@ -614,9 +607,7 @@ _LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
 
 def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None:
-    """Use glm-4.5-air (free, 200+ tps) for high-accuracy classification.
-    Returns classification dict or None on any failure (fallback to heuristic).
-    """
+    """Use glm-4.5-air for high-accuracy classification. Returns None on failure."""
     try:
         import json as _json
         from openai import OpenAI
@@ -700,20 +691,11 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 def classify_message(
     message: str, routing_config: dict[str, Any] = None
 ) -> dict[str, str]:
-    """Classify a user message for model routing.
-
-    Uses LLM classification (glm-4.5-air) for non-trivial messages,
-    with heuristic fallback for trivial messages and LLM failures.
-
-    Returns dict with keys: task_type, complexity, urgency, quality_level.
-    """
-    # Try LLM classification for non-trivial messages
+    """Classify a user message. Tries LLM first, then heuristic fallback."""
     if routing_config is not None:
         llm_result = _classify_with_llm(message, routing_config)
         if llm_result is not None:
             return llm_result
-
-    # Fallback to heuristic
     return _classify_heuristic(message)
 
 
@@ -747,14 +729,7 @@ def select_model(
     primary_provider: str,
     primary_model: str,
 ) -> tuple[str, str, str] | None:
-    """Select the best (provider, model, reason) for a given message.
-
-    Reads the routing config's strategy, priorities, model pool, and budget
-    to make a weighted decision. Returns None if selector should be skipped
-    (falls through to existing binary classifier).
-
-    Returns: (provider, model, reason_string) or None
-    """
+    """Select best (provider, model, reason) for a message. Returns None to skip."""
     # Check feature flag
     if not routing_config.get("use_model_selector", False):
         return None
@@ -901,17 +876,7 @@ def smart_select_route(
     routing_config: dict[str, Any],
     primary: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Try intelligent model selection. Returns None to fall through to
-    the existing binary classifier in smart_model_routing.py.
-
-    Return shape matches resolve_turn_route() exactly:
-    {
-        "model": str,
-        "runtime": {api_key, base_url, provider, api_mode, command, args, credential_pool},
-        "label": str | None,
-        "signature": tuple,
-    }
-    """
+    """Try intelligent model selection. Returns None to fall through to smart_model_routing."""
     selection = select_model(
         message=user_message,
         routing_config=routing_config,

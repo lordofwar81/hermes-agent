@@ -767,16 +767,7 @@ def select_model(
 # Main entry point — drop-in replacement for resolve_turn_route calls
 # ---------------------------------------------------------------------------
 
-
-_RUNTIME_KEYS = (
-    "api_key",
-    "base_url",
-    "provider",
-    "api_mode",
-    "command",
-    "args",
-    "credential_pool",
-)
+_RUNTIME_KEYS = ("api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
 
 def smart_select_route(

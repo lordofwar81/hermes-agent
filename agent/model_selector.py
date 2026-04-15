@@ -24,8 +24,6 @@ import re
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any
-
 # ---------------------------------------------------------------------------
 # Routing optimizer integration (optional — graceful fallback if unavailable)
 # ---------------------------------------------------------------------------

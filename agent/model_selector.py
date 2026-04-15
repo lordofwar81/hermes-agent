@@ -414,7 +414,7 @@ _WORD_RE = re.compile(r"\w+")
 
 
 def _classify_heuristic(message: str) -> dict[str, str]:
-    """Keyword/phrase heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
+    """Keyword heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
     msg_lower = message.lower()
     words = set(_WORD_RE.findall(msg_lower))
 

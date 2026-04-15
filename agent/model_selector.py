@@ -844,9 +844,10 @@ def select_model(
     if not candidates:
         return None
 
-    # Score each candidate
+    # Pre-compute per-loop invariants
     cap_key = "code_quality" if task_type == "code" else task_type
     est_tokens = len(message) // 4
+    min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
     scored: list[tuple[float, ModelProfile, str]] = []
 
     for profile in candidates:
@@ -867,7 +868,6 @@ def select_model(
             continue  # Model at capacity — pick next candidate
 
         # Apply quality level filter
-        min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
         if quality_score < min_quality:
             if profile.max_concurrent > 0:
                 concurrency_tracker.release(profile.name)

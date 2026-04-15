@@ -773,14 +773,9 @@ def smart_select_route(
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        raw_runtime = resolve_runtime_provider(
-            requested=selected_provider,
-        )
-
+        raw_runtime = resolve_runtime_provider(requested=selected_provider)
         if not isinstance(raw_runtime, dict):
-            raise ValueError(
-                f"resolve_runtime_provider returned {type(raw_runtime).__name__}, expected dict"
-            )
+            raise ValueError
 
         runtime = {k: raw_runtime.get(k, "") if k == "base_url" else raw_runtime[k] for k in _RUNTIME_KEYS if k in raw_runtime}
         runtime["provider"] = selected_provider

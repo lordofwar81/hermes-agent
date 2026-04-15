@@ -451,108 +451,44 @@ MODEL_PROFILES = _build_model_profiles()
 # Maps user message patterns to (task_type, complexity, urgency, quality_level)
 # ---------------------------------------------------------------------------
 
-# Code indicators
-_CODE_KEYWORDS = frozenset(
-    {
-        "debug",
-        "implement",
-        "refactor",
-        "traceback",
-        "error",
-        "function",
-        "module",
-        "api",
-        "endpoint",
-        "build",
-        "test",
-        "database",
-        "query",
-        "schema",
-        "kubernetes",
-        "container",
-        "fix",
-        "bug",
-        "crash",
-        "python",
-        "script",
-        "algorithm",
-        "audit",
-        "vulnerabilities",
-        "security",
-        "authentication",
-        "middleware",
-        "migration",
-        "deployment",
-        "microservices",
-        "distributed",
-        "server",
-        "incident",
-    }
-)
+# Unified keyword-to-category map — single lookup per word replaces 5 set intersections.
+_KEYWORD_CATEGORIES: Dict[str, tuple] = {
+    "code": (
+        "debug", "implement", "refactor", "traceback", "error", "function",
+        "module", "api", "endpoint", "build", "test", "database", "query",
+        "schema", "kubernetes", "container", "fix", "bug", "crash", "python",
+        "script", "algorithm", "audit", "vulnerabilities", "security",
+        "authentication", "middleware", "migration", "deployment",
+        "microservices", "distributed", "server", "incident",
+    ),
+    "reasoning": (
+        "evaluate", "architecture", "optimize", "performance", "slow",
+        "research", "cause", "explain", "redesign", "causes",
+    ),
+    "writing": (
+        "write", "draft", "compose", "summarize", "rewrite", "edit",
+        "email", "blog", "post", "readme", "documentation",
+    ),
+    "creative": (
+        "creative", "story", "poem", "design", "ideas", "funny",
+    ),
+    "analysis": (
+        "analyze", "data", "dashboard", "metrics", "correlation",
+        "distribution", "coverage", "report", "percentage", "rate",
+    ),
+}
 
-# Reasoning indicators
-_REASONING_KEYWORDS = frozenset(
-    {
-        "evaluate",
-        "architecture",
-        "optimize",
-        "performance",
-        "slow",
-        # Research & root cause
-        "research",
-        "cause",
-        # Explanation & comparison
-        "explain",
-        "redesign",
-        # Causal reasoning (not bare 'why' — too ambiguous)
-        "causes",
-    }
-)
 
-# Writing indicators
-_WRITING_KEYWORDS = frozenset(
-    {
-        "write",
-        "draft",
-        "compose",
-        "summarize",
-        "rewrite",
-        "edit",
-        "email",
-        "blog",
-        "post",
-        "readme",
-        "documentation",
-    }
-)
+def _build_keyword_map() -> Dict[str, str]:
+    """Build unified keyword→category map for single-pass lookup."""
+    km: Dict[str, str] = {}
+    for cat, keywords in _KEYWORD_CATEGORIES.items():
+        for w in keywords:
+            km[w] = cat
+    return km
 
-# Creative indicators
-_CREATIVE_KEYWORDS = frozenset(
-    {
-        "creative",
-        "story",
-        "poem",
-        "design",
-        "ideas",
-        "funny",
-    }
-)
 
-# Analysis indicators
-_ANALYSIS_KEYWORDS = frozenset(
-    {
-        "analyze",
-        "data",
-        "dashboard",
-        "metrics",
-        "correlation",
-        "distribution",
-        "coverage",
-        "report",
-        "percentage",
-        "rate",
-    }
-)
+_KEYWORD_MAP = _build_keyword_map()
 
 # Multi-word phrase matching — single regex with named groups for O(1) matching.
 # Each phrase maps to a category. The regex matches any phrase in the map.
@@ -588,14 +524,12 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     msg_lower = message.lower()
     words = set(_WORD_RE.findall(msg_lower))
 
-    # Count keyword hits per category
-    hits = {
-        "code": len(words & _CODE_KEYWORDS),
-        "reasoning": len(words & _REASONING_KEYWORDS),
-        "writing": len(words & _WRITING_KEYWORDS),
-        "analysis": len(words & _ANALYSIS_KEYWORDS),
-        "creative": len(words & _CREATIVE_KEYWORDS),
-    }
+    # Count keyword hits via single-pass lookup
+    hits = {"code": 0, "reasoning": 0, "writing": 0, "analysis": 0, "creative": 0}
+    for w in words:
+        cat = _KEYWORD_MAP.get(w)
+        if cat:
+            hits[cat] += 1
 
     total_hits = sum(hits.values())
     for match in _PHRASE_RE.findall(msg_lower):

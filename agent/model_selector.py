@@ -1,21 +1,7 @@
 """
 Model Selector v1.0 — Intelligent multi-model routing for Hermes.
-
-Sits ABOVE the existing smart_model_routing.py binary classifier.
-Reads the config's strategy, priorities, classification, and model pool
-to make weighted routing decisions across the full 21-model pool.
-
-Design principles:
-- ADDITIVE ONLY: never modifies existing code paths
-- Feature-flagged: routing.use_model_selector must be explicitly enabled
-- Falls back to resolve_turn_route() on any error
-- Preserves exact return shape: {model, runtime, label, signature}
-- Uses resolve_runtime_provider() for credential pool handling
-
-Integration:
-- Called from _resolve_turn_agent_config() in cli.py and gateway/run.py
-- If use_model_selector is false or selector fails, falls through to
-  the existing binary classifier in smart_model_routing.py
+Sits ABOVE smart_model_routing.py. Feature-flagged via routing.use_model_selector.
+Returns None to fall through to the existing binary classifier.
 """
 
 from __future__ import annotations

@@ -22,8 +22,84 @@ from __future__ import annotations
 
 import re
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Routing optimizer integration (optional — graceful fallback if unavailable)
+# ---------------------------------------------------------------------------
+try:
+    from agent.routing_optimizer import MultiObjectiveOptimizer
+    from agent.routing_tracker import RoutingTracker
+    _OPTIMIZER_AVAILABLE = True
+except ImportError:
+    _OPTIMIZER_AVAILABLE = False
+
+_optimizer: Optional[MultiObjectiveOptimizer] = None
+
+
+def _get_optimizer() -> Optional[MultiObjectiveOptimizer]:
+    """Lazily initialise the routing-optimizer singleton.
+
+    Returns ``None`` on any import / init failure so callers can fall back
+    to static weights without extra error handling.
+    """
+    global _optimizer
+    if not _OPTIMIZER_AVAILABLE:
+        return None
+    try:
+        if _optimizer is None:
+            from hermes_constants import get_hermes_home
+            data_dir = str(get_hermes_home())
+            tracker = RoutingTracker(data_dir)
+            _optimizer = MultiObjectiveOptimizer(tracker)
+        return _optimizer
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Per-model concurrency tracker
+# ---------------------------------------------------------------------------
+# Z.ai enforces per-model concurrency limits (e.g. glm-5.1=1, glm-4.7=2).
+# This tracker prevents the selector from routing to a model that's already
+# at its provider-defined limit. In-flight requests increment; on completion
+# they decrement. When a model is at capacity, the selector skips it and
+# picks the next-best candidate.
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyTracker:
+    """Thread-safe per-model in-flight request counter."""
+
+    def __init__(self) -> None:
+        self._counts: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def acquire(self, model: str, limit: int) -> bool:
+        """Try to increment in-flight count. Returns True if under limit."""
+        if limit <= 0:
+            return True  # no limit
+        with self._lock:
+            current = self._counts.get(model, 0)
+            if current >= limit:
+                return False
+            self._counts[model] = current + 1
+            return True
+
+    def release(self, model: str) -> None:
+        with self._lock:
+            current = self._counts.get(model, 0)
+            self._counts[model] = max(0, current - 1)
+
+    def in_flight(self, model: str) -> int:
+        with self._lock:
+            return self._counts.get(model, 0)
+
+
+# Module-level singleton — shared across all selector calls
+concurrency_tracker = _ConcurrencyTracker()
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +128,8 @@ class ModelProfile:
     context_window: int = 128_000
     # Cost
     cost_per_request: float = 0.0  # 0.0 = free (local)
+    # Concurrency limit from provider (0 = unlimited)
+    max_concurrent: int = 0
 
 
 # Build the model profiles from the known pool
@@ -61,7 +139,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
     def _add(name, provider, **kwargs):
         profiles[name] = ModelProfile(name=name, provider=provider, **kwargs)
 
-    # === z-ai models (unlimited pre-paid) ===
+    # === z-ai models (unlimited pre-paid, per-model concurrency limits) ===
     _add(
         "glm-5.1",
         "zai",
@@ -74,6 +152,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.35,
         context_window=198_000,
         cost_per_request=0.0,
+        max_concurrent=1,
     )
     _add(
         "glm-5-turbo",
@@ -87,6 +166,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.65,
         context_window=200_000,
         cost_per_request=0.0,
+        max_concurrent=1,
     )
     _add(
         "glm-5",
@@ -100,6 +180,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.55,
         context_window=128_000,
         cost_per_request=0.0,
+        max_concurrent=2,
     )
     _add(
         "glm-4.7",
@@ -113,6 +194,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.65,
         context_window=198_000,
         cost_per_request=0.0,
+        max_concurrent=2,
     )
     _add(
         "glm-4.6",
@@ -126,6 +208,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.65,
         context_window=128_000,
         cost_per_request=0.0,
+        max_concurrent=3,
     )
     _add(
         "glm-4.5",
@@ -139,6 +222,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.65,
         context_window=128_000,
         cost_per_request=0.0,
+        max_concurrent=10,
     )
     _add(
         "glm-4.5-air",
@@ -152,9 +236,13 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.90,
         context_window=128_000,
         cost_per_request=0.0,
+        max_concurrent=5,
     )
 
     # === Venice models ($7.40/day budget) ===
+    # Venice-wide concurrency: 3 max concurrent requests across all Venice models.
+    # Prevents budget drain from parallel requests ($7.40/day budget).
+    # Premium models (Sonnet, qwen-3-6-plus) get 1 concurrent to limit cost spikes.
     _add(
         "qwen-3-6-plus",
         "venice",
@@ -167,6 +255,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.50,
         context_window=1_000_000,
         cost_per_request=0.05,
+        max_concurrent=2,
     )
     _add(
         "claude-sonnet-4-6",
@@ -180,6 +269,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.45,
         context_window=1_000_000,
         cost_per_request=0.22,
+        max_concurrent=1,  # Most expensive — limit to 1
     )
     _add(
         "zai-org-glm-5",
@@ -193,6 +283,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.40,
         context_window=198_000,
         cost_per_request=0.04,
+        max_concurrent=3,
     )
     _add(
         "zai-org-glm-4.7",
@@ -206,6 +297,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.55,
         context_window=198_000,
         cost_per_request=0.03,
+        max_concurrent=3,
     )
     _add(
         "zai-org-glm-4.7-flash",
@@ -219,6 +311,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.80,
         context_window=128_000,
         cost_per_request=0.007,
+        max_concurrent=5,  # Cheapest Venice — allow more parallel
     )
     _add(
         "deepseek-v3.2",
@@ -232,6 +325,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.70,
         context_window=160_000,
         cost_per_request=0.008,
+        max_concurrent=5,  # Budget workhorse — allow more parallel
     )
     _add(
         "grok-4-20-beta",
@@ -245,6 +339,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.30,
         context_window=2_000_000,
         cost_per_request=0.10,
+        max_concurrent=2,
     )
     _add(
         "qwen3-coder-480b-a35b-instruct",
@@ -258,6 +353,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.35,
         context_window=256_000,
         cost_per_request=0.04,
+        max_concurrent=2,
     )
     _add(
         "qwen3-5-35b-a3b",
@@ -271,6 +367,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.65,
         context_window=256_000,
         cost_per_request=0.02,
+        max_concurrent=3,
     )
     _add(
         "venice-uncensored",
@@ -284,6 +381,7 @@ def _build_model_profiles() -> Dict[str, ModelProfile]:
         speed=0.75,
         context_window=32_000,
         cost_per_request=0.01,
+        max_concurrent=3,
     )
 
     # === Local APEX models (free, private, Vulkan) ===
@@ -485,13 +583,17 @@ _TIE_PRIORITY = {
 }
 
 
+# Pre-compiled regex for word extraction in heuristic classifier
+_WORD_RE = re.compile(r"\w+")
+
+
 def _classify_heuristic(message: str) -> Dict[str, str]:
     """Heuristic classifier — keyword/phrase based, no LLM call.
     Used as fallback when LLM classification is unavailable or fails.
     Returns dict with keys: task_type, complexity, urgency, quality_level.
     """
     msg_lower = message.lower()
-    words = set(re.findall(r"\w+", msg_lower))
+    words = set(_WORD_RE.findall(msg_lower))
 
     # Count keyword hits per category
     scores = {
@@ -771,6 +873,20 @@ def select_model(
     except Exception:
         w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
 
+    # Dynamic weight adjustment via routing optimizer (if available)
+    # Blends optimizer-learned weights with config weights (70% config, 30% optimizer).
+    optimizer = _get_optimizer()
+    if optimizer is not None:
+        try:
+            optimizer.analyze_system_conditions()
+            opt_weights = optimizer.context.current_weights
+            w_quality = 0.7 * w_quality + 0.3 * opt_weights.get("quality", 0.40)
+            w_speed = 0.7 * w_speed + 0.3 * opt_weights.get("speed", 0.25)
+            w_context = 0.7 * w_context + 0.3 * opt_weights.get("context", 0.20)
+            w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
+        except Exception:
+            pass  # Fall back to static weights
+
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
     if quality_level != "standard" or complexity == "expert":
@@ -813,10 +929,18 @@ def select_model(
         # Cost score: free models edge, expensive penalized
         cost_score = max(0.2, 0.7 - profile.cost_per_request * 15.0)
 
+        # Concurrency gate: skip model if at provider-defined limit
+        if profile.max_concurrent > 0 and not concurrency_tracker.acquire(profile.name, profile.max_concurrent):
+            continue  # Model at capacity — pick next candidate
+
         # Apply quality level filter
         if quality_level == "maximum" and quality_score < 0.82:
+            if profile.max_concurrent > 0:
+                concurrency_tracker.release(profile.name)
             continue  # Only top-tier models for critical work
         elif quality_level == "high" and quality_score < 0.68:
+            if profile.max_concurrent > 0:
+                concurrency_tracker.release(profile.name)
             continue  # Skip weak models for important tasks
 
         # Weighted composite score
@@ -842,11 +966,30 @@ def select_model(
 
     # Sort by composite score descending
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Release all candidates except the winner — concurrency slot reserved
+    # only for the model we actually return.
+    for _, profile, _ in scored[1:]:
+        if profile.max_concurrent > 0:
+            concurrency_tracker.release(profile.name)
+
     _, best_profile, best_reason = scored[0]
+
+    # Record routing decision for optimizer learning (non-critical — never blocks routing)
+    _record_optimizer = _get_optimizer()
+    if _record_optimizer is not None:
+        try:
+            _record_optimizer.tracker.record_request(
+                best_profile.name, tps=0.0, latency_ms=0.0, success=True
+            )
+        except Exception:
+            pass
 
     # Don't route away from primary if the selector picks the same model
     # (prevents unnecessary agent rebuilds regardless of provider)
     if best_profile.name == primary_model:
+        if best_profile.max_concurrent > 0:
+            concurrency_tracker.release(best_profile.name)
         return None
 
     return (best_profile.provider, best_profile.name, best_reason)

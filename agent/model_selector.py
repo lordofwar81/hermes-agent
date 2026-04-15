@@ -874,8 +874,7 @@ def select_model(
             + w_cost * max(0.2, 0.7 - profile.cost_per_request * 15.0)
         )
 
-        cap_tag = "/high-cap" if quality_score >= 0.80 else ""
-        reason = f"{task_type}/{complexity}{cap_tag}"
+        reason = f"{task_type}/{complexity}"
 
         scored.append((composite, profile, reason))
 

@@ -966,7 +966,7 @@ def smart_select_route(
                 f"resolve_runtime_provider returned {type(raw_runtime).__name__}, expected dict"
             )
 
-        runtime = {k: raw_runtime[k] for k in _RUNTIME_KEYS if k in raw_runtime}
+        runtime = {k: raw_runtime.get(k, "") if k == "base_url" else raw_runtime[k] for k in _RUNTIME_KEYS if k in raw_runtime}
         runtime["provider"] = selected_provider
 
     except Exception:
@@ -980,11 +980,6 @@ def smart_select_route(
             "args": list(primary.get("args") or []),
             "credential_pool": primary.get("credential_pool"),
         }
-
-    # Ensure base_url is never None — downstream code may pass it to
-    # os.path functions or use it as a URL string.
-    if not runtime.get("base_url"):
-        runtime["base_url"] = ""
 
     label = f"selector → {selected_model} ({selected_provider}) [{reason}]"
     signature = (

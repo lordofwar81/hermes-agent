@@ -785,7 +785,7 @@ def select_model(
     # Pre-compute per-loop invariants
     est_tokens = len(message) // 4
     min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
-    scored: list[tuple[float, ModelProfile, str]] = []
+    scored: list[tuple[float, ModelProfile]] = []
 
     for profile in candidates:
         # Quality score: task-specific capability

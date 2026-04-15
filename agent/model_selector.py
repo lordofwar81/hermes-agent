@@ -532,8 +532,6 @@ def _classify_heuristic(message: str) -> dict[str, str]:
             if hits[cat] == best:
                 task_type = cat
                 break
-        else:
-            task_type = "general"
     else:
         task_type = "general"
 
@@ -559,10 +557,10 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     else:
         urgency = "normal"
 
-    # Quality level — higher for complex/important tasks
-    if complexity in ("expert", "complex") and task_type in ("code", "reasoning"):
+    # Quality level — code/reasoning or complex tasks get elevated quality
+    if task_type in ("code", "reasoning") and complexity in ("expert", "complex"):
         quality_level = "maximum"
-    elif complexity == "complex" or task_type in ("code", "reasoning"):
+    elif task_type in ("code", "reasoning") or complexity == "complex":
         quality_level = "high"
     else:
         quality_level = "standard"

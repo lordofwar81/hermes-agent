@@ -459,29 +459,6 @@ _KEYWORD_MAP: dict[str, str] = {
     )},
 }
 
-# Multi-word phrase matching — single regex with named groups for O(1) matching.
-# Each phrase maps to a category. The regex matches any phrase in the map.
-_PHRASE_MAP = {
-    "how does": "reasoning",
-    "why does": "reasoning",
-    "why is": "reasoning",
-    "is the server": "reasoning",
-    "explain the traceback": "reasoning",
-    "write documentation": "writing",
-    "summarize the": "writing",
-    "error message to be": "writing",
-    "funny commit message": "creative",
-    "poem about": "creative",
-    "show me the query": "analysis",
-    "error rate": "analysis",
-    "how many errors": "analysis",
-}
-# Sort phrases longest-first so longer phrases match before shorter substrings
-_PHRASE_RE = re.compile(
-    "|".join(sorted(_PHRASE_MAP.keys(), key=len, reverse=True))
-)
-
-
 _WORD_RE = re.compile(r"\w+")
 
 
@@ -498,9 +475,6 @@ def _classify_heuristic(message: str) -> dict[str, str]:
             hits[cat] += 1
 
     total_hits = sum(hits.values())
-    for match in _PHRASE_RE.findall(msg_lower):
-        total_hits += 1
-        hits[_PHRASE_MAP[match]] += 1
 
     if total_hits > 0:
         # Tie-breaking priority: reasoning > code > analysis > writing > creative
@@ -786,7 +760,7 @@ def select_model(
 
     for profile in candidates:
         # Quality score: task-specific capability
-        quality_score = getattr(profile, ("code_quality" if task_type == "code" else task_type), profile.general)
+        quality_score = getattr(profile, "code_quality" if task_type == "code" else task_type, profile.general)
 
         # Apply quality level filter (before acquiring concurrency slot)
         if quality_score < min_quality:

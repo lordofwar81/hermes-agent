@@ -451,44 +451,37 @@ MODEL_PROFILES = _build_model_profiles()
 # Maps user message patterns to (task_type, complexity, urgency, quality_level)
 # ---------------------------------------------------------------------------
 
-# Unified keyword-to-category map — single lookup per word replaces 5 set intersections.
-_KEYWORD_CATEGORIES: Dict[str, tuple] = {
-    "code": (
+# Unified keyword-to-category map — single lookup per word.
+_KEYWORD_MAP: Dict[str, str] = {
+    # code
+    **{w: "code" for w in (
         "debug", "implement", "refactor", "traceback", "error", "function",
         "module", "api", "endpoint", "build", "test", "database", "query",
         "schema", "kubernetes", "container", "fix", "bug", "crash", "python",
         "script", "algorithm", "audit", "vulnerabilities", "security",
         "authentication", "middleware", "migration", "deployment",
         "microservices", "distributed", "server", "incident",
-    ),
-    "reasoning": (
+    )},
+    # reasoning
+    **{w: "reasoning" for w in (
         "evaluate", "architecture", "optimize", "performance", "slow",
         "research", "cause", "explain", "redesign", "causes",
-    ),
-    "writing": (
+    )},
+    # writing
+    **{w: "writing" for w in (
         "write", "draft", "compose", "summarize", "rewrite", "edit",
         "email", "blog", "post", "readme", "documentation",
-    ),
-    "creative": (
+    )},
+    # creative
+    **{w: "creative" for w in (
         "creative", "story", "poem", "design", "ideas", "funny",
-    ),
-    "analysis": (
+    )},
+    # analysis
+    **{w: "analysis" for w in (
         "analyze", "data", "dashboard", "metrics", "correlation",
         "distribution", "coverage", "report", "percentage", "rate",
-    ),
+    )},
 }
-
-
-def _build_keyword_map() -> Dict[str, str]:
-    """Build unified keyword→category map for single-pass lookup."""
-    km: Dict[str, str] = {}
-    for cat, keywords in _KEYWORD_CATEGORIES.items():
-        for w in keywords:
-            km[w] = cat
-    return km
-
-
-_KEYWORD_MAP = _build_keyword_map()
 
 # Multi-word phrase matching — single regex with named groups for O(1) matching.
 # Each phrase maps to a category. The regex matches any phrase in the map.

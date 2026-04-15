@@ -837,14 +837,12 @@ def select_model(
                 pass  # Fall back to static weights
 
     # Build candidate list from config's model pool
-    models_cfg = routing_config.get("models", {})
-    candidates: List[ModelProfile] = []
-
-    for provider_name, model_names in models_cfg.items():
-        for model_name in model_names:
-            profile = MODEL_PROFILES.get(model_name)
-            if profile:
-                candidates.append(profile)
+    candidates = [
+        MODEL_PROFILES[m]
+        for model_names in routing_config.get("models", {}).values()
+        for m in model_names
+        if m in MODEL_PROFILES
+    ]
 
     if not candidates:
         return None

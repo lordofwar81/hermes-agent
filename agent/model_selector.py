@@ -629,6 +629,16 @@ quality_level — correlates with complexity and task importance:
 - maximum: production-critical, architecture decisions, comprehensive reviews, system-wide scope, security-related tasks"""
 
 
+# LLM classification validation constants (hoisted from _classify_with_llm)
+_LLM_VALID = {
+    "task_type": {"code", "reasoning", "writing", "analysis", "creative", "general"},
+    "complexity": {"simple", "moderate", "complex", "expert"},
+    "urgency": {"realtime", "normal", "deep"},
+    "quality_level": {"standard", "high", "maximum"},
+}
+_LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
+
+
 def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None:
     """Use glm-4.5-air (free, 200+ tps) for high-accuracy classification.
     Returns classification dict or None on any failure (fallback to heuristic).
@@ -700,20 +710,13 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 
         result = _json.loads(content)
 
-        # Validate all fields
-        _VALID = {
-            "task_type": {"code", "reasoning", "writing", "analysis", "creative", "general"},
-            "complexity": {"simple", "moderate", "complex", "expert"},
-            "urgency": {"realtime", "normal", "deep"},
-            "quality_level": {"standard", "high", "maximum"},
-        }
-        _DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
+        # Validate all fields (see module-level _LLM_VALID / _LLM_DEFAULTS)
 
-        for field, valid in _VALID.items():
+        for field, valid in _LLM_VALID.items():
             val = result.get(field)
             if val not in valid:
-                if field in _DEFAULTS:
-                    result[field] = _DEFAULTS[field]
+                if field in _LLM_DEFAULTS:
+                    result[field] = _LLM_DEFAULTS[field]
                 else:
                     return None
 
@@ -801,24 +804,24 @@ def select_model(
     except Exception:
         w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
 
-    # Dynamic weight adjustment via routing optimizer (if available)
-    # Blends optimizer-learned weights with config weights (70% config, 30% optimizer).
-    optimizer = _get_optimizer()
-    if optimizer is not None:
-        try:
-            optimizer.analyze_system_conditions()
-            opt_weights = optimizer.context.current_weights
-            w_quality = 0.7 * w_quality + 0.3 * opt_weights.get("quality", 0.40)
-            w_speed = 0.7 * w_speed + 0.3 * opt_weights.get("speed", 0.25)
-            w_context = 0.7 * w_context + 0.3 * opt_weights.get("context", 0.20)
-            w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
-        except Exception:
-            pass  # Fall back to static weights
-
     # Dynamic reweighting: for important tasks, quality dominates so that
     # specialist models can overcome the primary's speed/cost advantages.
+    # Checked BEFORE optimizer blend to skip wasted computation.
     if quality_level != "standard" or complexity == "expert":
         w_quality, w_speed, w_context, w_cost = 0.70, 0.08, 0.12, 0.10
+    else:
+        # Blend optimizer-learned weights with config weights (70/30 split)
+        optimizer = _get_optimizer()
+        if optimizer is not None:
+            try:
+                optimizer.analyze_system_conditions()
+                opt_weights = optimizer.context.current_weights
+                w_quality = 0.7 * w_quality + 0.3 * opt_weights.get("quality", 0.40)
+                w_speed = 0.7 * w_speed + 0.3 * opt_weights.get("speed", 0.25)
+                w_context = 0.7 * w_context + 0.3 * opt_weights.get("context", 0.20)
+                w_cost = 0.7 * w_cost + 0.3 * opt_weights.get("cost", 0.15)
+            except Exception:
+                pass  # Fall back to static weights
 
     # Build candidate list from config's model pool
     models_cfg = routing_config.get("models", {})

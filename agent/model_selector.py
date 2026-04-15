@@ -554,22 +554,26 @@ _ANALYSIS_KEYWORDS = frozenset(
     }
 )
 
-# Multi-word phrase matching — the sole source of intent-specific boosts.
-# Replaces the former error/redirect elif chain with a unified list.
-_PHRASE_MAP = (
-    ("how does", "reasoning"),
-    ("why does", "reasoning"),
-    ("why is", "reasoning"),
-    ("is the server", "reasoning"),
-    ("explain the traceback", "reasoning"),
-    ("write documentation", "writing"),
-    ("summarize the", "writing"),
-    ("error message to be", "writing"),
-    ("funny commit message", "creative"),
-    ("poem about", "creative"),
-    ("show me the query", "analysis"),
-    ("error rate", "analysis"),
-    ("how many errors", "analysis"),
+# Multi-word phrase matching — single regex with named groups for O(1) matching.
+# Each phrase maps to a category. The regex matches any phrase in the map.
+_PHRASE_MAP = {
+    "how does": "reasoning",
+    "why does": "reasoning",
+    "why is": "reasoning",
+    "is the server": "reasoning",
+    "explain the traceback": "reasoning",
+    "write documentation": "writing",
+    "summarize the": "writing",
+    "error message to be": "writing",
+    "funny commit message": "creative",
+    "poem about": "creative",
+    "show me the query": "analysis",
+    "error rate": "analysis",
+    "how many errors": "analysis",
+}
+# Sort phrases longest-first so longer phrases match before shorter substrings
+_PHRASE_RE = re.compile(
+    "|".join(sorted(_PHRASE_MAP.keys(), key=len, reverse=True))
 )
 
 
@@ -592,19 +596,19 @@ def _classify_heuristic(message: str) -> Dict[str, str]:
     creat_h = len(words & _CREATIVE_KEYWORDS)
 
     total_hits = code_h + reason_h + write_h + analy_h + creat_h
-    for phrase, category in _PHRASE_MAP:
-        if phrase in msg_lower:
-            total_hits += 1
-            if category == "code":
-                code_h += 1
-            elif category == "reasoning":
-                reason_h += 1
-            elif category == "writing":
-                write_h += 1
-            elif category == "analysis":
-                analy_h += 1
-            elif category == "creative":
-                creat_h += 1
+    for match in _PHRASE_RE.findall(msg_lower):
+        total_hits += 1
+        category = _PHRASE_MAP[match]
+        if category == "code":
+            code_h += 1
+        elif category == "reasoning":
+            reason_h += 1
+        elif category == "writing":
+            write_h += 1
+        elif category == "analysis":
+            analy_h += 1
+        elif category == "creative":
+            creat_h += 1
 
     if total_hits > 0:
         # Tie-breaking priority: reasoning > code > analysis > writing > creative

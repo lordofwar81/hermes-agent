@@ -867,11 +867,8 @@ def select_model(
             continue  # Model at capacity — pick next candidate
 
         # Apply quality level filter
-        if quality_level == "maximum" and quality_score < 0.82:
-            if profile.max_concurrent > 0:
-                concurrency_tracker.release(profile.name)
-            continue
-        if quality_level == "high" and quality_score < 0.68:
+        min_quality = 0.82 if quality_level == "maximum" else 0.68 if quality_level == "high" else 0.0
+        if quality_score < min_quality:
             if profile.max_concurrent > 0:
                 concurrency_tracker.release(profile.name)
             continue

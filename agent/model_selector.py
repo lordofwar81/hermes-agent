@@ -564,7 +564,6 @@ def _classify_with_llm(message: str) -> dict | None:
                 {"role": "user", "content": message},
             ],
             temperature=0.0,
-            max_tokens=4096,
             extra_body={"thinking": {"type": "disabled"}},
         )
 

@@ -733,11 +733,6 @@ def classify_message(
 
     Returns dict with keys: task_type, complexity, urgency, quality_level.
     """
-    # Fast-path: clearly trivial messages skip LLM
-    stripped = message.strip()
-    if not stripped or len(stripped) < 20:
-        return _classify_heuristic(message)
-
     # Try LLM classification for non-trivial messages
     if routing_config is not None:
         llm_result = _classify_with_llm(message, routing_config)

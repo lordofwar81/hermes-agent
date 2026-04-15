@@ -792,13 +792,10 @@ def select_model(
         quality_score = getattr(profile, ("code_quality" if task_type == "code" else task_type), profile.general)
 
         # Context score: does the model have enough context window?
-        if est_tokens > 0:
-            ratio = est_tokens / profile.context_window
-            if ratio > 0.8:
-                continue  # Too tight — skip model
-            ctx_score = max(0.0, 1.0 - ratio * 1.25)
-        else:
-            ctx_score = 1.0
+        ratio = est_tokens / profile.context_window
+        if ratio > 0.8:
+            continue  # Too tight — skip model
+        ctx_score = max(0.0, 1.0 - ratio * 1.25)
 
         # Apply quality level filter (before acquiring concurrency slot)
         if quality_score < min_quality:

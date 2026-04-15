@@ -706,11 +706,11 @@ def classify_message(
 
 # Weight parser — extracts percentage from config strings like "Quality (40%)"
 _WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
-_DEFAULT_WEIGHTS = {"quality": 0.40, "speed": 0.25, "context": 0.20, "cost": 0.15}
+_DEFAULT_WEIGHTS = {"quality": 0.40, "speed": 0.30, "cost": 0.30}
 
 
-def _parse_weights(priorities_cfg: dict) -> tuple[float, float, float, float]:
-    """Parse priority weights from config, returning (quality, speed, context, cost)."""
+def _parse_weights(priorities_cfg: dict) -> tuple[float, float, float]:
+    """Parse priority weights from config, returning (quality, speed, cost)."""
     def _pw(val, default):
         if isinstance(val, (int, float)):
             return float(val)
@@ -754,11 +754,11 @@ def select_model(
     else:
         # Read config weights only when we actually use them (standard quality)
         try:
-            w_quality, w_speed, _, w_cost = _parse_weights(
+            w_quality, w_speed, w_cost = _parse_weights(
                 routing_config.get("priorities", {})
             )
         except Exception:
-            w_quality, w_speed, w_cost = 0.40, 0.25, 0.15
+            w_quality, w_speed, w_cost = 0.40, 0.30, 0.30
         # Blend optimizer-learned weights with config weights (70/30 split)
         if optimizer is not None:
             try:

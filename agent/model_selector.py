@@ -638,6 +638,10 @@ _LLM_VALID = {
 }
 _LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
+# Pre-compiled regex for stripping markdown code fences from LLM responses
+_FENCE_OPEN = re.compile(r"^```(?:json)?\s*\n?")
+_FENCE_CLOSE = re.compile(r"\n?```\s*$")
+
 
 def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None:
     """Use glm-4.5-air (free, 200+ tps) for high-accuracy classification.
@@ -663,9 +667,8 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 
         # Try loading from .env file as fallback
         if not api_key:
-            env_path = os.path.expanduser("~/.hermes/.env")
             try:
-                with open(env_path) as f:
+                with open(os.path.expanduser("~/.hermes/.env")) as f:
                     for line in f:
                         line = line.strip()
                         if not line or line.startswith("#") or "=" not in line:
@@ -704,8 +707,8 @@ def _classify_with_llm(message: str, routing_config: dict = None) -> dict | None
 
         # Strip markdown code fences if present
         if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*\n?", "", content)
-            content = re.sub(r"\n?```\s*$", "", content)
+            content = _FENCE_OPEN.sub("", content)
+            content = _FENCE_CLOSE.sub("", content)
             content = content.strip()
 
         result = _json.loads(content)
@@ -759,6 +762,25 @@ def classify_message(
 # ---------------------------------------------------------------------------
 
 
+# Weight parser — extracts percentage from config strings like "Quality (40%)"
+_WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_DEFAULT_WEIGHTS = {"quality": 0.40, "speed": 0.25, "context": 0.20, "cost": 0.15}
+
+
+def _parse_weights(priorities_cfg: dict) -> Tuple[float, float, float, float]:
+    """Parse priority weights from config, returning (quality, speed, context, cost)."""
+    def _pw(val, default):
+        if isinstance(val, (int, float)):
+            return float(val)
+        m = _WEIGHT_RE.search(str(val))
+        return float(m.group(1)) / 100.0 if m else default
+
+    return tuple(
+        _pw(priorities_cfg.get(k, f"{int(v*100)}%"), v)
+        for k, v in _DEFAULT_WEIGHTS.items()
+    )
+
+
 def select_model(
     message: str,
     routing_config: Dict[str, Any],
@@ -788,19 +810,10 @@ def select_model(
         return None
 
     # Read priority weights from config (default to hardcoded if missing)
-    priorities_cfg = routing_config.get("priorities", {})
     try:
-        # Parse "Quality... (40%)" format
-        def parse_weight(val: str, default: float) -> float:
-            if isinstance(val, (int, float)):
-                return float(val)
-            m = re.search(r"(\d+(?:\.\d+)?)\s*%", str(val))
-            return float(m.group(1)) / 100.0 if m else default
-
-        w_quality = parse_weight(priorities_cfg.get("quality", "40%"), 0.40)
-        w_speed = parse_weight(priorities_cfg.get("speed", "25%"), 0.25)
-        w_context = parse_weight(priorities_cfg.get("context", "20%"), 0.20)
-        w_cost = parse_weight(priorities_cfg.get("cost", "15%"), 0.15)
+        w_quality, w_speed, w_context, w_cost = _parse_weights(
+            routing_config.get("priorities", {})
+        )
     except Exception:
         w_quality, w_speed, w_context, w_cost = 0.40, 0.25, 0.20, 0.15
 

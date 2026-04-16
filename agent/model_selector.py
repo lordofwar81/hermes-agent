@@ -152,10 +152,8 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     else:
         task_type = "general"
 
-    # Complexity — composite score from keyword density and length
-    complexity_score = total_hits
-    if len(message) > 50:
-        complexity_score += (len(message) - 50) / 25.0
+    # Complexity — keyword density and length
+    complexity_score = total_hits + max(0, (len(message) - 50) / 25.0) if len(message) > 50 else total_hits
 
     if complexity_score >= 5.0:
         complexity = "expert"

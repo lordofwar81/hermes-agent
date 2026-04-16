@@ -89,7 +89,7 @@ _PUNCT = ".,!?;:'\"()[]{}"
 
 # Single combined phrase regex — one search instead of four (+2 bonus)
 _PHRASE_RE = re.compile(
-    r"\b(?P<writing>summarize|(?:write|draft|compose|rewrite|edit)\b.*\b(?:documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter))"
+    r"\b(?P<writing>summarize|(?:write|draft|compose|rewrite|edit)\b.*\b(?:documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter|guide|manual|instructions|essay|article|notes|spec|report))"
     r"|\b(?P<creative>(?:write|compose)\b.*\b(?:poem|funny|story|creative|joke|song|haiku))"
     r"|\b(?P<analysis>how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)"
     r"|\b(?P<reasoning>explain)\b",

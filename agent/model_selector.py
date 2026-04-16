@@ -195,9 +195,7 @@ def _classify_with_llm(message: str) -> dict | None:
     return None
 
 
-def classify_message(
-    message: str, routing_config: dict[str, Any] = None
-) -> dict[str, str]:
+def classify_message(message: str) -> dict[str, str]:
     """Classify a user message. Heuristic-only classification."""
     return _classify_heuristic(message)
 
@@ -214,7 +212,7 @@ def select_model(
         return None
 
     # Classify the message
-    classification = classify_message(message, routing_config)
+    classification = classify_message(message)
     task_type = classification["task_type"]
     complexity = classification["complexity"]
     quality_level = classification["quality_level"]

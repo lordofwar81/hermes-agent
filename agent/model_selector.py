@@ -180,16 +180,11 @@ def select_model(
     if not candidates:
         return None
 
-    min_quality = 0.82 if quality_level == "maximum" else 0.0
     scored: list[tuple[float, ModelProfile]] = []
 
     for profile in candidates:
         # Quality score: task-specific capability
         quality_score = getattr(profile, "code_quality" if task_type == "code" else task_type, profile.general)
-
-        # Apply quality level filter
-        if quality_score < min_quality:
-            continue
 
         # Weighted composite score (cost as simple inverse)
         composite = w_quality * quality_score + w_speed * profile.speed + w_cost * max(0.2, 1.0 - profile.cost_per_request * 10.0)

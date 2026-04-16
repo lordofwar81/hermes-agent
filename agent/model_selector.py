@@ -53,12 +53,7 @@ _MODELS = (
     ("Huihui3.5-67B-A3B-APEX-I-Compact", "local", 0.76, 0.80, 0.70, 0.76, 0.60, 0.72, 0.38, 0.0),
 )
 
-MODEL_PROFILES: dict[str, ModelProfile] = {
-    m[0]: ModelProfile(name=m[0], provider=m[1], code_quality=m[2], reasoning=m[3],
-                       writing=m[4], analysis=m[5], creative=m[6], general=m[7],
-                       speed=m[8], cost_per_request=m[9])
-    for m in _MODELS
-}
+MODEL_PROFILES = {m[0]: ModelProfile(*m) for m in _MODELS}
 
 
 # Unified keyword-to-category map — single lookup per word.

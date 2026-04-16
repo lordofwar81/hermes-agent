@@ -38,275 +38,40 @@ class ModelProfile:
 
 
 # Build the model profiles from the known pool
-def _build_model_profiles() -> dict[str, ModelProfile]:
-    profiles: dict[str, ModelProfile] = {}
+# Each entry: (name, provider, code_quality, reasoning, writing, analysis, creative, general, speed, cost_per_request)
+_MODELS = (
+    # z-ai (unlimited pre-paid)
+    ("glm-5.1", "zai", 0.92, 0.93, 0.88, 0.90, 0.80, 0.88, 0.35, 0.0),
+    ("glm-5-turbo", "zai", 0.88, 0.88, 0.85, 0.86, 0.78, 0.85, 0.65, 0.0),
+    ("glm-5", "zai", 0.85, 0.87, 0.84, 0.85, 0.76, 0.82, 0.55, 0.0),
+    ("glm-4.7", "zai", 0.80, 0.82, 0.86, 0.83, 0.78, 0.82, 0.65, 0.0),
+    ("glm-4.6", "zai", 0.75, 0.76, 0.80, 0.77, 0.74, 0.78, 0.65, 0.0),
+    ("glm-4.5", "zai", 0.72, 0.73, 0.78, 0.74, 0.72, 0.75, 0.65, 0.0),
+    ("glm-4.5-air", "zai", 0.60, 0.62, 0.68, 0.64, 0.65, 0.66, 0.90, 0.0),
+    # venice ($7.40/day budget)
+    ("qwen-3-6-plus", "venice", 0.90, 0.91, 0.85, 0.88, 0.82, 0.87, 0.50, 0.05),
+    ("claude-sonnet-4-6", "venice", 0.94, 0.95, 0.92, 0.93, 0.88, 0.91, 0.45, 0.22),
+    ("zai-org-glm-5", "venice", 0.88, 0.89, 0.84, 0.86, 0.78, 0.84, 0.40, 0.04),
+    ("zai-org-glm-4.7", "venice", 0.78, 0.80, 0.83, 0.81, 0.76, 0.80, 0.55, 0.03),
+    ("zai-org-glm-4.7-flash", "venice", 0.65, 0.66, 0.70, 0.67, 0.68, 0.68, 0.80, 0.007),
+    ("deepseek-v3.2", "venice", 0.82, 0.84, 0.78, 0.82, 0.72, 0.80, 0.70, 0.008),
+    ("grok-4-20-beta", "venice", 0.85, 0.88, 0.82, 0.86, 0.80, 0.84, 0.30, 0.10),
+    ("qwen3-coder-480b-a35b-instruct", "venice", 0.93, 0.82, 0.72, 0.80, 0.60, 0.75, 0.35, 0.04),
+    ("qwen3-5-35b-a3b", "venice", 0.76, 0.78, 0.74, 0.76, 0.72, 0.76, 0.65, 0.02),
+    ("venice-uncensored", "venice", 0.60, 0.62, 0.72, 0.58, 0.85, 0.65, 0.75, 0.01),
+    # local (free, private, Vulkan)
+    ("Qwen3-Coder-30B-APEX-I-Compact", "local", 0.78, 0.74, 0.68, 0.72, 0.60, 0.70, 0.55, 0.0),
+    ("LFM2-24B-A2B-APEX-I-Compact", "local", 0.72, 0.70, 0.65, 0.68, 0.58, 0.68, 0.70, 0.0),
+    ("Qwopus-MoE-35B-A3B-APEX-I-Compact", "local", 0.74, 0.76, 0.66, 0.72, 0.56, 0.68, 0.40, 0.0),
+    ("Huihui3.5-67B-A3B-APEX-I-Compact", "local", 0.76, 0.80, 0.70, 0.76, 0.60, 0.72, 0.38, 0.0),
+)
 
-    def _add(name, provider, **kwargs):
-        profiles[name] = ModelProfile(name=name, provider=provider, **kwargs)
-
-    # === z-ai models (unlimited pre-paid) ===
-    _add(
-        "glm-5.1",
-        "zai",
-        code_quality=0.92,
-        reasoning=0.93,
-        writing=0.88,
-        analysis=0.90,
-        creative=0.80,
-        general=0.88,
-        speed=0.35,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-5-turbo",
-        "zai",
-        code_quality=0.88,
-        reasoning=0.88,
-        writing=0.85,
-        analysis=0.86,
-        creative=0.78,
-        general=0.85,
-        speed=0.65,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-5",
-        "zai",
-        code_quality=0.85,
-        reasoning=0.87,
-        writing=0.84,
-        analysis=0.85,
-        creative=0.76,
-        general=0.82,
-        speed=0.55,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-4.7",
-        "zai",
-        code_quality=0.80,
-        reasoning=0.82,
-        writing=0.86,
-        analysis=0.83,
-        creative=0.78,
-        general=0.82,
-        speed=0.65,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-4.6",
-        "zai",
-        code_quality=0.75,
-        reasoning=0.76,
-        writing=0.80,
-        analysis=0.77,
-        creative=0.74,
-        general=0.78,
-        speed=0.65,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-4.5",
-        "zai",
-        code_quality=0.72,
-        reasoning=0.73,
-        writing=0.78,
-        analysis=0.74,
-        creative=0.72,
-        general=0.75,
-        speed=0.65,
-        cost_per_request=0.0,
-    )
-    _add(
-        "glm-4.5-air",
-        "zai",
-        code_quality=0.60,
-        reasoning=0.62,
-        writing=0.68,
-        analysis=0.64,
-        creative=0.65,
-        general=0.66,
-        speed=0.90,
-        cost_per_request=0.0,
-    )
-
-    # === Venice models ($7.40/day budget) ===
-    _add(
-        "qwen-3-6-plus",
-        "venice",
-        code_quality=0.90,
-        reasoning=0.91,
-        writing=0.85,
-        analysis=0.88,
-        creative=0.82,
-        general=0.87,
-        speed=0.50,
-        cost_per_request=0.05,
-    )
-    _add(
-        "claude-sonnet-4-6",
-        "venice",
-        code_quality=0.94,
-        reasoning=0.95,
-        writing=0.92,
-        analysis=0.93,
-        creative=0.88,
-        general=0.91,
-        speed=0.45,
-        cost_per_request=0.22,
-    )
-    _add(
-        "zai-org-glm-5",
-        "venice",
-        code_quality=0.88,
-        reasoning=0.89,
-        writing=0.84,
-        analysis=0.86,
-        creative=0.78,
-        general=0.84,
-        speed=0.40,
-        cost_per_request=0.04,
-    )
-    _add(
-        "zai-org-glm-4.7",
-        "venice",
-        code_quality=0.78,
-        reasoning=0.80,
-        writing=0.83,
-        analysis=0.81,
-        creative=0.76,
-        general=0.80,
-        speed=0.55,
-        cost_per_request=0.03,
-    )
-    _add(
-        "zai-org-glm-4.7-flash",
-        "venice",
-        code_quality=0.65,
-        reasoning=0.66,
-        writing=0.70,
-        analysis=0.67,
-        creative=0.68,
-        general=0.68,
-        speed=0.80,
-        cost_per_request=0.007,
-    )
-    _add(
-        "deepseek-v3.2",
-        "venice",
-        code_quality=0.82,
-        reasoning=0.84,
-        writing=0.78,
-        analysis=0.82,
-        creative=0.72,
-        general=0.80,
-        speed=0.70,
-        cost_per_request=0.008,
-    )
-    _add(
-        "grok-4-20-beta",
-        "venice",
-        code_quality=0.85,
-        reasoning=0.88,
-        writing=0.82,
-        analysis=0.86,
-        creative=0.80,
-        general=0.84,
-        speed=0.30,
-        cost_per_request=0.10,
-    )
-    _add(
-        "qwen3-coder-480b-a35b-instruct",
-        "venice",
-        code_quality=0.93,
-        reasoning=0.82,
-        writing=0.72,
-        analysis=0.80,
-        creative=0.60,
-        general=0.75,
-        speed=0.35,
-        cost_per_request=0.04,
-    )
-    _add(
-        "qwen3-5-35b-a3b",
-        "venice",
-        code_quality=0.76,
-        reasoning=0.78,
-        writing=0.74,
-        analysis=0.76,
-        creative=0.72,
-        general=0.76,
-        speed=0.65,
-        cost_per_request=0.02,
-    )
-    _add(
-        "venice-uncensored",
-        "venice",
-        code_quality=0.60,
-        reasoning=0.62,
-        writing=0.72,
-        analysis=0.58,
-        creative=0.85,
-        general=0.65,
-        speed=0.75,
-        cost_per_request=0.01,
-    )
-
-    # === Local APEX models (free, private, Vulkan) ===
-    _add(
-        "Qwen3-Coder-30B-APEX-I-Compact",
-        "local",
-        code_quality=0.78,
-        reasoning=0.74,
-        writing=0.68,
-        analysis=0.72,
-        creative=0.60,
-        general=0.70,
-        speed=0.55,
-        cost_per_request=0.0,
-    )
-    _add(
-        "LFM2-24B-A2B-APEX-I-Compact",
-        "local",
-        code_quality=0.72,
-        reasoning=0.70,
-        writing=0.65,
-        analysis=0.68,
-        creative=0.58,
-        general=0.68,
-        speed=0.70,
-        cost_per_request=0.0,
-    )
-    _add(
-        "Qwopus-MoE-35B-A3B-APEX-I-Compact",
-        "local",
-        code_quality=0.74,
-        reasoning=0.76,
-        writing=0.66,
-        analysis=0.72,
-        creative=0.56,
-        general=0.68,
-        speed=0.40,
-        cost_per_request=0.0,
-    )
-    _add(
-        "Huihui3.5-67B-A3B-APEX-I-Compact",
-        "local",
-        code_quality=0.76,
-        reasoning=0.80,
-        writing=0.70,
-        analysis=0.76,
-        creative=0.60,
-        general=0.72,
-        speed=0.38,
-        cost_per_request=0.0,
-    )
-
-    return profiles
-
-
-# Singleton — built once, never modified
-MODEL_PROFILES = _build_model_profiles()
+MODEL_PROFILES: dict[str, ModelProfile] = {
+    m[0]: ModelProfile(name=m[0], provider=m[1], code_quality=m[2], reasoning=m[3],
+                       writing=m[4], analysis=m[5], creative=m[6], general=m[7],
+                       speed=m[8], cost_per_request=m[9])
+    for m in _MODELS
+}
 
 
 # ---------------------------------------------------------------------------

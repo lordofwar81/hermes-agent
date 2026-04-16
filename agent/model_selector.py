@@ -107,9 +107,8 @@ _QUESTION_RE = re.compile(
 
 # Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)
 _PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
-    # Writing intent — "write/draft/compose/rewrite/edit X about Y"
-    (re.compile(r"\b(write|draft|compose|rewrite|edit)\b.*\b(documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter)\b", re.I), "writing"),
-    (re.compile(r"\bsummarize\b", re.I), "writing"),
+    # Writing intent — "write/draft/compose/rewrite/edit X" or standalone "summarize"
+    (re.compile(r"\b(summarize|(write|draft|compose|rewrite|edit)\b.*\b(documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter))\b", re.I), "writing"),
     # Creative intent — "write a poem/funny/story"
     (re.compile(r"\b(write|compose)\b.*\b(poem|funny|story|creative|joke|song|haiku)\b", re.I), "creative"),
     # Analysis intent — quantitative queries

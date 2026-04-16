@@ -63,7 +63,8 @@ _KEYWORD_MAP: dict[str, str] = {
     # code
     **{w: "code" for w in (
         "debug", "implement", "module", "fix", "bug", "script",
-        "audit", "security", "server",
+        "audit", "security", "server", "refactor", "optimize",
+        "deploy", "compile", "upgrade", "configure",
     )},
     # reasoning
     **{w: "reasoning" for w in (

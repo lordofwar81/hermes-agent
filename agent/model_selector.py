@@ -191,12 +191,8 @@ def select_model(
         if quality_score < min_quality:
             continue
 
-        # Weighted composite score
-        composite = (
-            w_quality * quality_score
-            + w_speed * profile.speed
-            + w_cost * max(0.2, 0.7 - profile.cost_per_request * 15.0)
-        )
+        # Weighted composite score (cost as simple inverse)
+        composite = w_quality * quality_score + w_speed * profile.speed + w_cost * max(0.2, 1.0 - profile.cost_per_request * 10.0)
 
         scored.append((composite, profile))
 

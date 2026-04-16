@@ -10,14 +10,6 @@ import re
 from dataclasses import dataclass
 
 
-# ---------------------------------------------------------------------------
-# Model capabilities database
-# ---------------------------------------------------------------------------
-# Each entry maps model name to its capabilities and estimated costs.
-# This is the single source of truth for routing decisions.
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class ModelProfile:
     """Static profile for a model — capabilities, costs, characteristics."""
@@ -73,12 +65,6 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
     for m in _MODELS
 }
 
-
-# ---------------------------------------------------------------------------
-# Task classification — heuristic (no LLM call needed)
-# ---------------------------------------------------------------------------
-# Maps user message patterns to (task_type, complexity, urgency, quality_level)
-# ---------------------------------------------------------------------------
 
 # Unified keyword-to-category map — single lookup per word.
 _KEYWORD_MAP: dict[str, str] = {
@@ -204,13 +190,8 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     }
 
 
-# ---------------------------------------------------------------------------
-# LLM-based classification — stub (kept for test mock compatibility)
-# ---------------------------------------------------------------------------
-
-
 def _classify_with_llm(message: str) -> dict | None:
-    """Stub — LLM classifier removed; heuristic handles all classification."""
+    """Stub — kept for test mock compatibility. Heuristic handles all classification."""
     return None
 
 
@@ -219,11 +200,6 @@ def classify_message(
 ) -> dict[str, str]:
     """Classify a user message. Heuristic-only classification."""
     return _classify_heuristic(message)
-
-
-# ---------------------------------------------------------------------------
-# Model selection engine
-# ---------------------------------------------------------------------------
 
 
 def select_model(
@@ -300,10 +276,6 @@ def select_model(
 
     return (best_profile.provider, best_profile.name, best_reason)
 
-
-# ---------------------------------------------------------------------------
-# Main entry point — drop-in replacement for resolve_turn_route calls
-# ---------------------------------------------------------------------------
 
 _RUNTIME_KEYS = ("api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 

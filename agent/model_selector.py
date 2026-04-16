@@ -141,7 +141,6 @@ def classify_message(message: str) -> dict[str, str]:
         "task_type": task_type, "complexity": complexity,
         "urgency": urgency,
         "quality_level": "maximum" if task_type in ("code", "reasoning") and complexity in ("expert", "complex")
-        else "high" if task_type in ("code", "reasoning") or complexity == "complex"
         else "standard",
     }
 

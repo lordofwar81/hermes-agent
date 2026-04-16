@@ -100,10 +100,14 @@ _KEYWORD_MAP: dict[str, str] = {
 
 _WORD_RE = re.compile(r"\w+")
 
-# Question-starting patterns → reasoning intent boost
-_QUESTION_RE = re.compile(
-    r"^(why|how|is\s+the|what'?s?\s+the)\b", re.IGNORECASE
-)
+
+def _is_question(msg_lower: str) -> bool:
+    """Check if message starts with a question pattern → reasoning intent."""
+    return (msg_lower.startswith("why ") or msg_lower.startswith("how ")
+            or msg_lower.startswith("is the ")
+            or msg_lower.startswith("what's ") or msg_lower.startswith("whats ")
+            or msg_lower.startswith("what the "))
+
 
 # Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)
 _PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
@@ -131,7 +135,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
             hits[cat] += 1
 
     # Question pattern → reasoning boost
-    if _QUESTION_RE.search(msg_lower):
+    if _is_question(msg_lower):
         hits["reasoning"] += 1
 
     # Phrase overrides — strong intent signals (+2 bonus)

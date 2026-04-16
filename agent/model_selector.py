@@ -7,26 +7,21 @@ Returns None to fall through to the existing binary classifier.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from typing import NamedTuple
 
 
-@dataclass
-class ModelProfile:
+class ModelProfile(NamedTuple):
     """Static profile for a model — capabilities, costs, characteristics."""
-
     name: str
     provider: str  # "zai", "venice", "local"
-    # Capability scores (0.0–1.0, relative within pool)
     code_quality: float = 0.5
     reasoning: float = 0.5
     writing: float = 0.5
     analysis: float = 0.5
     creative: float = 0.5
     general: float = 0.5
-    # Performance
-    speed: float = 0.5  # tokens/sec relative (1.0 = fastest in pool)
-    # Cost
-    cost_per_request: float = 0.0  # 0.0 = free (local)
+    speed: float = 0.5
+    cost_per_request: float = 0.0
 
 
 # Build the model profiles from the known pool

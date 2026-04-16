@@ -419,15 +419,13 @@ _QUESTION_RE = re.compile(
 
 # Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)
 _PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
-    # Writing intent — "write/draft/compose X about Y"
-    (re.compile(r"\b(write|draft|compose)\b.*\b(documentation|readme|blog|email|post|proposal|announcement)\b", re.I), "writing"),
-    (re.compile(r"\b(rewrite|edit)\b.*\b(message|error|text|content|letter)\b", re.I), "writing"),
+    # Writing intent — "write/draft/compose/rewrite/edit X about Y"
+    (re.compile(r"\b(write|draft|compose|rewrite|edit)\b.*\b(documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter)\b", re.I), "writing"),
     (re.compile(r"\bsummarize\b", re.I), "writing"),
     # Creative intent — "write a poem/funny/story"
     (re.compile(r"\b(write|compose)\b.*\b(poem|funny|story|creative|joke|song|haiku)\b", re.I), "creative"),
     # Analysis intent — quantitative queries
-    (re.compile(r"\b(how\s+many|what\s+percentage|show\s+me\s+the)\b", re.I), "analysis"),
-    (re.compile(r"\b(error\s+rate|execution\s+time)\b", re.I), "analysis"),
+    (re.compile(r"\b(how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)\b", re.I), "analysis"),
     # Reasoning intent — "explain X"
     (re.compile(r"\bexplain\b", re.I), "reasoning"),
 ]

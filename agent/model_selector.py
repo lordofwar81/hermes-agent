@@ -57,33 +57,28 @@ MODEL_PROFILES = {m[0]: ModelProfile(*m) for m in _MODELS}
 
 
 # Unified keyword-to-category map — single lookup per word.
+# Minimal set: phrase regex handles most classification; keywords break ties
+# and provide signal for cases without phrase matches.
 _KEYWORD_MAP: dict[str, str] = {
     # code
     **{w: "code" for w in (
-        "debug", "implement", "refactor", "traceback", "error", "function",
-        "module", "api", "endpoint", "build", "test", "fix", "bug", "crash",
-        "python", "script", "algorithm", "audit", "vulnerabilities", "security",
-        "authentication", "server", "incident",
+        "debug", "implement", "module", "fix", "bug", "script",
+        "audit", "security", "server",
     )},
     # reasoning
     **{w: "reasoning" for w in (
-        "evaluate", "architecture", "optimize", "performance", "slow",
-        "research", "cause", "redesign", "causes", "difference",
+        "evaluate", "architecture", "performance", "research",
+        "cause", "redesign", "causes",
     )},
-    # writing
-    **{w: "writing" for w in (
-        "write", "draft", "compose", "summarize", "rewrite", "edit",
-        "email", "blog", "post", "readme", "documentation",
-    )},
-    # creative
-    **{w: "creative" for w in (
-        "creative", "story", "poem", "design", "ideas", "funny",
-    )},
+    # writing (most handled by phrase regex; readme is keyword-only)
+    "readme": "writing",
     # analysis
     **{w: "analysis" for w in (
-        "analyze", "data", "dashboard", "metrics", "correlation",
-        "distribution", "coverage", "report", "percentage", "rate",
+        "data", "metrics", "report", "rate",
     )},
+    # creative (most handled by phrase regex)
+    "design": "creative",
+    "ideas": "creative",
 }
 
 _WORD_RE = re.compile(r"\w+")

@@ -166,11 +166,8 @@ def select_model(
     if complexity == "simple":
         return None
 
-    # Quality-dominated weighting (no cost term — free models already win via speed)
-    if quality_level == "maximum":
-        w_quality, w_speed = 0.85, 0.15
-    else:
-        w_quality, w_speed = 0.60, 0.40
+    # Quality-dominated weighting (quality always primary, stronger for maximum tasks)
+    q_weight = 0.85 if quality_level == "maximum" else 0.60
 
     # Build candidate list from config's model pool
     candidates = [
@@ -190,7 +187,7 @@ def select_model(
         quality_score = getattr(profile, "code_quality" if task_type == "code" else task_type, profile.general)
 
         # Weighted composite score (quality + speed)
-        composite = w_quality * quality_score + w_speed * profile.speed
+        composite = q_weight * quality_score + (1 - q_weight) * profile.speed
 
         scored.append((composite, profile))
 

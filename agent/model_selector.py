@@ -414,7 +414,7 @@ _WORD_RE = re.compile(r"\w+")
 
 # Question-starting patterns → reasoning intent boost
 _QUESTION_RE = re.compile(
-    r"^(why|how|is\s+the|what'?s?\s+the|where|when|who)\b", re.IGNORECASE
+    r"^(why|how|is\s+the|what'?s?\s+the)\b", re.IGNORECASE
 )
 
 # Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)

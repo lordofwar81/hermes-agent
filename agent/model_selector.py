@@ -7,7 +7,6 @@ Returns None to fall through to the existing binary classifier.
 from __future__ import annotations
 
 import re
-import os
 from dataclasses import dataclass
 
 

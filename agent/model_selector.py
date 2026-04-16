@@ -152,15 +152,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
 
     # Complexity — keyword density and length
     complexity_score = total_hits + max(0.0, (len(message) - 50) / 25.0)
-
-    if complexity_score >= 5.0:
-        complexity = "expert"
-    elif complexity_score >= 3.0:
-        complexity = "complex"
-    elif complexity_score >= 1.0:
-        complexity = "moderate"
-    else:
-        complexity = "simple"
+    complexity = ("simple", "moderate", "complex", "expert")[min(int(complexity_score), 3)]
 
     # Urgency — quick keyword for realtime, expert/complex for deep
     urgency = "realtime" if "quick" in words else ("deep" if complexity in ("expert", "complex") else "normal")

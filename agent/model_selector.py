@@ -80,7 +80,7 @@ _KEYWORD_MAP: dict[str, str] = {
     # reasoning
     **{w: "reasoning" for w in (
         "evaluate", "architecture", "optimize", "performance", "slow",
-        "research", "cause", "explain", "redesign", "causes",
+        "research", "cause", "explain", "redesign", "causes", "difference",
     )},
     # writing
     **{w: "writing" for w in (
@@ -113,7 +113,7 @@ _PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\b(write|compose)\b.*\b(poem|funny|story|creative|joke|song|haiku)\b", re.I), "creative"),
     # Analysis intent — quantitative queries
     (re.compile(r"\b(how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)\b", re.I), "analysis"),
-    # Reasoning intent — "explain X"
+    # Reasoning intent — "explain X" overcomes code keyword competition
     (re.compile(r"\bexplain\b", re.I), "reasoning"),
 ]
 

@@ -112,6 +112,10 @@ def classify_message(message: str) -> dict[str, str]:
     if msg_lower.startswith(_Q_PREFIXES):
         hits["reasoning"] += 1
 
+    # Code signal: backtick-enclosed code snippets
+    if "`" in message:
+        hits["code"] += 1
+
     # Phrase override — single regex search (+2 bonus)
     m = _PHRASE_RE.search(msg_lower)
     if m:

@@ -61,16 +61,14 @@ _KEYWORD_MAP: dict[str, str] = {
     # code
     **{w: "code" for w in (
         "debug", "implement", "refactor", "traceback", "error", "function",
-        "module", "api", "endpoint", "build", "test", "database", "query",
-        "schema", "kubernetes", "container", "fix", "bug", "crash", "python",
-        "script", "algorithm", "audit", "vulnerabilities", "security",
-        "authentication", "middleware", "migration", "deployment",
-        "microservices", "distributed", "server", "incident",
+        "module", "api", "endpoint", "build", "test", "fix", "bug", "crash",
+        "python", "script", "algorithm", "audit", "vulnerabilities", "security",
+        "authentication", "server", "incident",
     )},
     # reasoning
     **{w: "reasoning" for w in (
         "evaluate", "architecture", "optimize", "performance", "slow",
-        "research", "cause", "explain", "redesign", "causes", "difference",
+        "research", "cause", "redesign", "causes", "difference",
     )},
     # writing
     **{w: "writing" for w in (

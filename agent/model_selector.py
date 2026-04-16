@@ -103,17 +103,15 @@ _WORD_RE = re.compile(r"\w+")
 # Question-starting prefixes → reasoning intent boost
 _Q_PREFIXES = ("why ", "how ", "is the ", "what's ", "whats ", "what the ")
 
-# Phrase-level intent overrides — signal stronger than individual keywords (+2 bonus)
-_PHRASE_OVERRIDES: list[tuple[re.Pattern, str]] = [
-    # Writing intent — "write/draft/compose/rewrite/edit X" or standalone "summarize"
-    (re.compile(r"\b(summarize|(write|draft|compose|rewrite|edit)\b.*\b(documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter))\b", re.I), "writing"),
-    # Creative intent — "write a poem/funny/story"
-    (re.compile(r"\b(write|compose)\b.*\b(poem|funny|story|creative|joke|song|haiku)\b", re.I), "creative"),
-    # Analysis intent — quantitative queries
-    (re.compile(r"\b(how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)\b", re.I), "analysis"),
-    # Reasoning intent — "explain X" overcomes code keyword competition
-    (re.compile(r"\bexplain\b", re.I), "reasoning"),
-]
+# Single combined phrase regex — one search instead of four (+2 bonus)
+_PHRASE_RE = re.compile(
+    r"\b(?P<writing>summarize|(?:write|draft|compose|rewrite|edit)\b.*\b(?:documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter))"
+    r"|\b(?P<creative>(?:write|compose)\b.*\b(?:poem|funny|story|creative|joke|song|haiku))"
+    r"|\b(?P<analysis>how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)"
+    r"|\b(?P<reasoning>explain)\b",
+    re.I,
+)
+_PHRASE_CATS = ("writing", "creative", "analysis", "reasoning")
 
 
 def _classify_heuristic(message: str) -> dict[str, str]:
@@ -132,10 +130,13 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     if any(msg_lower.startswith(p) for p in _Q_PREFIXES):
         hits["reasoning"] += 1
 
-    # Phrase overrides — strong intent signals (+2 bonus)
-    for pattern, cat in _PHRASE_OVERRIDES:
-        if pattern.search(message):
-            hits[cat] += 2
+    # Phrase override — single regex search (+2 bonus)
+    m = _PHRASE_RE.search(message)
+    if m:
+        for cat in _PHRASE_CATS:
+            if m.group(cat) is not None:
+                hits[cat] += 2
+                break
 
     total_hits = sum(hits.values())
 

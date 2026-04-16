@@ -176,8 +176,13 @@ def select_model(
 
     # Find best model by weighted composite score
     attr = "code_quality" if task_type == "code" else task_type
+    # Capability floor: reject models below minimum threshold for demanding tasks
+    min_cap = 0.75 if task_type in ("code", "reasoning") else 0.55
+    capable = [p for p in candidates if getattr(p, attr, p.general) >= min_cap]
+    if not capable:
+        return None  # No model meets minimum capability — fall through
     best_profile = max(
-        candidates,
+        capable,
         key=lambda p: q_weight * getattr(p, attr, p.general) + (1 - q_weight) * p.speed,
     )
     best_reason = f"{task_type}/{complexity}"

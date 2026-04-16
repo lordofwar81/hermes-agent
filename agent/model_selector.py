@@ -92,7 +92,7 @@ _PHRASE_RE = re.compile(
     r"\b(?P<writing>summarize|(?:write|draft|compose|rewrite|edit)\b.*\b(?:documentation|readme|blog|email|post|proposal|announcement|error|text|content|letter|guide|manual|instructions|essay|article|notes|spec|report))"
     r"|\b(?P<creative>(?:write|compose)\b.*\b(?:poem|funny|story|creative|joke|song|haiku))"
     r"|\b(?P<analysis>how\s+(?:many|much)|what\s+(?:percentage|is)|show\s+me\s+the|error\s+rate|execution\s+time|compare|difference\s+between|break\s+down)"
-    r"|\b(?P<reasoning>explain)\b",
+    r"|\b(?P<reasoning>explain|why\s+does|what\s+causes|describe\s+how)\b",
 )
 
 

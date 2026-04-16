@@ -100,6 +100,9 @@ _KEYWORD_MAP: dict[str, str] = {
 
 _WORD_RE = re.compile(r"\w+")
 
+# Tie-breaking order for equal scores (reasoning > code > analysis > writing > creative)
+_TIE_ORDER = ("reasoning", "code", "analysis", "writing", "creative")
+
 # Question-starting prefixes → reasoning intent boost
 _Q_PREFIXES = ("why ", "how ", "is the ", "what's ")
 
@@ -141,11 +144,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
 
     if total_hits > 0:
         # Tie-breaking priority: reasoning > code > analysis > writing > creative
-        best = max(hits.values())
-        for cat in ("reasoning", "code", "analysis", "writing", "creative"):
-            if hits[cat] == best:
-                task_type = cat
-                break
+        task_type = max(_TIE_ORDER, key=hits.__getitem__)
     else:
         task_type = "general"
 

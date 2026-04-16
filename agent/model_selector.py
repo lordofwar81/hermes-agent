@@ -165,12 +165,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
         complexity = "simple"
 
     # Urgency — quick keyword for realtime, expert/complex for deep
-    if "quick" in words:
-        urgency = "realtime"
-    elif complexity in ("expert", "complex"):
-        urgency = "deep"
-    else:
-        urgency = "normal"
+    urgency = "realtime" if "quick" in words else ("deep" if complexity in ("expert", "complex") else "normal")
 
     # Quality level — code/reasoning or complex tasks get elevated quality
     if task_type in ("code", "reasoning") and complexity in ("expert", "complex"):

@@ -150,7 +150,7 @@ def classify_message(message: str) -> dict[str, str]:
 
 def select_model(
     message: str,
-    routing_config: dict[str, Any],
+    routing_config: dict,
     primary_provider: str,
     primary_model: str,
 ) -> tuple[str, str, str] | None:
@@ -228,9 +228,9 @@ _RUNTIME_KEYS = ("api_key", "base_url", "provider", "api_mode", "command", "args
 
 def smart_select_route(
     user_message: str,
-    routing_config: dict[str, Any],
-    primary: dict[str, Any],
-) -> dict[str, Any] | None:
+    routing_config: dict,
+    primary: dict,
+) -> dict | None:
     """Try intelligent model selection. Returns None to fall through to smart_model_routing."""
     selection = select_model(
         message=user_message,

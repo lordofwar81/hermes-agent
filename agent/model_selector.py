@@ -135,10 +135,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     # Phrase override — single regex search (+2 bonus)
     m = _PHRASE_RE.search(message)
     if m:
-        for cat in ("writing", "creative", "analysis", "reasoning"):
-            if m.group(cat) is not None:
-                hits[cat] += 2
-                break
+        hits[m.lastgroup] += 2
 
     total_hits = sum(hits.values())
 

@@ -168,11 +168,8 @@ def select_model(
     if complexity == "simple":
         return None
 
-    # Dynamic reweighting: quality dominates for important tasks
-    if quality_level != "standard" or complexity == "expert":
-        w_quality, w_speed, w_cost = 0.70, 0.08, 0.10
-    else:
-        w_quality, w_speed, w_cost = 0.40, 0.30, 0.30
+    # Two-tier weighting: quality dominates for expert/maximum tasks
+    w_quality, w_speed, w_cost = (0.70, 0.08, 0.10) if quality_level == "maximum" else (0.40, 0.30, 0.30)
 
     # Build candidate list from config's model pool
     candidates = [

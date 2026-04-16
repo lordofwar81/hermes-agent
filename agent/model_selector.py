@@ -101,7 +101,7 @@ _KEYWORD_MAP: dict[str, str] = {
 _WORD_RE = re.compile(r"\w+")
 
 # Question-starting prefixes → reasoning intent boost
-_Q_PREFIXES = ("why ", "how ", "is the ", "what's ", "whats ", "what the ")
+_Q_PREFIXES = ("why ", "how ", "is the ", "what's ")
 
 # Single combined phrase regex — one search instead of four (+2 bonus)
 _PHRASE_RE = re.compile(

@@ -167,15 +167,13 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     # Urgency — quick keyword for realtime, expert/complex for deep
     urgency = "realtime" if "quick" in words else ("deep" if complexity in ("expert", "complex") else "normal")
 
-    # Quality level — code/reasoning or complex tasks get elevated quality
-    if task_type in ("code", "reasoning") and complexity in ("expert", "complex"):
-        quality_level = "maximum"
-    elif task_type in ("code", "reasoning") or complexity == "complex":
-        quality_level = "high"
-    else:
-        quality_level = "standard"
-
-    return {"task_type": task_type, "complexity": complexity, "urgency": urgency, "quality_level": quality_level}
+    return {
+        "task_type": task_type, "complexity": complexity,
+        "urgency": urgency,
+        "quality_level": "maximum" if task_type in ("code", "reasoning") and complexity in ("expert", "complex")
+        else "high" if task_type in ("code", "reasoning") or complexity == "complex"
+        else "standard",
+    }
 
 
 def _classify_with_llm(message: str) -> dict | None:

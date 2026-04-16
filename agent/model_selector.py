@@ -176,24 +176,12 @@ def select_model(
     if not candidates:
         return None
 
-    scored: list[tuple[float, ModelProfile]] = []
-
-    for profile in candidates:
-        # Quality score: task-specific capability
-        quality_score = getattr(profile, "code_quality" if task_type == "code" else task_type, profile.general)
-
-        # Weighted composite score (quality + speed)
-        composite = q_weight * quality_score + (1 - q_weight) * profile.speed
-
-        scored.append((composite, profile))
-
-    if not scored:
-        return None  # No candidates passed filters
-
-    # Sort by composite score descending
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    _, best_profile = scored[0]
+    # Find best model by weighted composite score
+    attr = "code_quality" if task_type == "code" else task_type
+    best_profile = max(
+        candidates,
+        key=lambda p: q_weight * getattr(p, attr, p.general) + (1 - q_weight) * p.speed,
+    )
     best_reason = f"{task_type}/{complexity}"
 
     # Don't route away from primary if the selector picks the same model

@@ -99,7 +99,6 @@ _PHRASE_RE = re.compile(
     r"|\b(?P<creative>(?:write|compose)\b.*\b(?:poem|funny|story|creative|joke|song|haiku))"
     r"|\b(?P<analysis>how\s+many|what\s+percentage|show\s+me\s+the|error\s+rate|execution\s+time)"
     r"|\b(?P<reasoning>explain)\b",
-    re.I,
 )
 
 
@@ -120,7 +119,7 @@ def classify_message(message: str) -> dict[str, str]:
         hits["reasoning"] += 1
 
     # Phrase override — single regex search (+2 bonus)
-    m = _PHRASE_RE.search(message)
+    m = _PHRASE_RE.search(msg_lower)
     if m:
         hits[m.lastgroup] += 2
 

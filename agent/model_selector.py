@@ -140,7 +140,6 @@ def classify_message(message: str) -> dict[str, str]:
     return {
         "task_type": task_type, "complexity": complexity,
         "urgency": urgency,
-        "quality_level": "maximum" if task_type in ("code", "reasoning") else "standard",
     }
 
 
@@ -159,14 +158,12 @@ def select_model(
     classification = classify_message(message)
     task_type = classification["task_type"]
     complexity = classification["complexity"]
-    quality_level = classification["quality_level"]
+    # Quality-dominated weighting (code/reasoning get stronger quality preference)
+    q_weight = 0.85 if task_type in ("code", "reasoning") else 0.60
 
     # If simple complexity, let the existing binary classifier handle it
     if complexity == "simple":
         return None
-
-    # Quality-dominated weighting (quality always primary, stronger for maximum tasks)
-    q_weight = 0.85 if quality_level == "maximum" else 0.60
 
     # Build candidate list from config's model pool
     candidates = [

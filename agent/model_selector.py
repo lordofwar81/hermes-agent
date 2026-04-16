@@ -131,9 +131,8 @@ def classify_message(message: str) -> dict[str, str]:
     else:
         task_type = "general"
 
-    # Complexity — keyword density and length
-    complexity_score = total_hits + max(0.0, (len(message) - 50) / 25.0)
-    complexity = ("simple", "moderate", "complex", "expert")[min(int(complexity_score), 3)]
+    # Complexity — keyword hit count only
+    complexity = ("simple", "moderate", "complex", "expert")[min(total_hits, 3)]
 
     # Urgency — quick keyword for realtime, expert/complex for deep
     urgency = "realtime" if "quick" in words else ("deep" if complexity in ("expert", "complex") else "normal")

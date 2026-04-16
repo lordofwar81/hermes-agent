@@ -182,12 +182,7 @@ def _classify_heuristic(message: str) -> dict[str, str]:
     else:
         quality_level = "standard"
 
-    return {
-        "task_type": task_type,
-        "complexity": complexity,
-        "urgency": urgency,
-        "quality_level": quality_level,
-    }
+    return {"task_type": task_type, "complexity": complexity, "urgency": urgency, "quality_level": quality_level}
 
 
 def _classify_with_llm(message: str) -> dict | None:

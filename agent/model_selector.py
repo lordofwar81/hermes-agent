@@ -91,7 +91,7 @@ _KEYWORD_MAP: dict[str, str] = {
 _WORD_RE = re.compile(r"\w+")
 
 # Question-starting prefixes → reasoning intent boost
-_Q_PREFIXES = ("why ", "how ", "is the ", "what's ")
+_Q_PREFIX_RE = re.compile(r"^(?:why |how |is the |what's )")
 
 # Single combined phrase regex — one search instead of four (+2 bonus)
 _PHRASE_RE = re.compile(
@@ -115,7 +115,7 @@ def classify_message(message: str) -> dict[str, str]:
             hits[cat] += 1
 
     # Question pattern → reasoning boost
-    if any(msg_lower.startswith(p) for p in _Q_PREFIXES):
+    if _Q_PREFIX_RE.match(msg_lower):
         hits["reasoning"] += 1
 
     # Phrase override — single regex search (+2 bonus)

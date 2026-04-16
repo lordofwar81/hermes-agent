@@ -66,16 +66,11 @@ class TestSelectModel:
     """
 
     @pytest.fixture(autouse=True)
-    def _mock_classifier(self, monkeypatch):
-        """Force heuristic-only classification (no LLM calls in tests).
-
-        Strips API keys AND mocks the LLM classifier to return None so
-        _classify_with_llm's .env file fallback path can't leak through.
-        """
+    def _strip_api_keys(self, monkeypatch):
+        """Strip API keys to ensure no LLM calls leak through in tests."""
         monkeypatch.delenv("GLM_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("Z_AI_API_KEY", raising=False)
-        monkeypatch.setattr("agent.model_selector._classify_with_llm", lambda *a, **kw: None)
 
     def test_returns_none_when_flag_off(self):
         config = {"enabled": True}

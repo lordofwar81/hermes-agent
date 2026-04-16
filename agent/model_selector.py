@@ -103,8 +103,8 @@ _PHRASE_RE = re.compile(
 )
 
 
-def _classify_heuristic(message: str) -> dict[str, str]:
-    """Keyword + phrase heuristic classifier. Returns task_type, complexity, urgency, quality_level."""
+def classify_message(message: str) -> dict[str, str]:
+    """Classify a user message. Keyword + phrase heuristic classifier."""
     msg_lower = message.lower()
     words = set(_WORD_RE.findall(msg_lower))
 
@@ -146,16 +146,6 @@ def _classify_heuristic(message: str) -> dict[str, str]:
         else "high" if task_type in ("code", "reasoning") or complexity == "complex"
         else "standard",
     }
-
-
-def _classify_with_llm(message: str) -> dict | None:
-    """Stub — kept for test mock compatibility. Heuristic handles all classification."""
-    return None
-
-
-def classify_message(message: str) -> dict[str, str]:
-    """Classify a user message. Heuristic-only classification."""
-    return _classify_heuristic(message)
 
 
 def select_model(

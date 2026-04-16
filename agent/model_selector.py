@@ -637,25 +637,6 @@ def classify_message(
 # ---------------------------------------------------------------------------
 
 
-# Weight parser — extracts percentage from config strings like "Quality (40%)"
-_WEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
-_DEFAULT_WEIGHTS = {"quality": 0.40, "speed": 0.30, "cost": 0.30}
-
-
-def _parse_weights(priorities_cfg: dict) -> tuple[float, float, float]:
-    """Parse priority weights from config, returning (quality, speed, cost)."""
-    def _pw(val, default):
-        if isinstance(val, (int, float)):
-            return float(val)
-        m = _WEIGHT_RE.search(str(val))
-        return float(m.group(1)) / 100.0 if m else default
-
-    return tuple(
-        _pw(priorities_cfg.get(k, f"{int(v*100)}%"), v)
-        for k, v in _DEFAULT_WEIGHTS.items()
-    )
-
-
 def select_model(
     message: str,
     routing_config: dict[str, Any],
@@ -677,17 +658,11 @@ def select_model(
     if complexity == "simple":
         return None
 
-    # Dynamic reweighting: for important tasks, quality dominates so that
-    # specialist models can overcome the primary's speed/cost advantages.
+    # Dynamic reweighting: quality dominates for important tasks
     if quality_level != "standard" or complexity == "expert":
         w_quality, w_speed, w_cost = 0.70, 0.08, 0.10
     else:
-        try:
-            w_quality, w_speed, w_cost = _parse_weights(
-                routing_config.get("priorities", {})
-            )
-        except Exception:
-            w_quality, w_speed, w_cost = 0.40, 0.30, 0.30
+        w_quality, w_speed, w_cost = 0.40, 0.30, 0.30
 
     # Build candidate list from config's model pool
     candidates = [

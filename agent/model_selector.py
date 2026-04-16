@@ -503,132 +503,19 @@ def _classify_heuristic(message: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# LLM-based classification — uses glm-4.5-air for high-accuracy routing
+# LLM-based classification — stub (kept for test mock compatibility)
 # ---------------------------------------------------------------------------
-
-_CLASSIFY_SYSTEM_PROMPT = """You are a message classifier for an AI model routing system. Classify the user message with maximum precision.
-
-Return ONLY valid JSON with exactly these keys:
-{"task_type": "...", "complexity": "...", "urgency": "...", "quality_level": "..."}
-
-CLASSIFICATION RULES:
-
-task_type — classify by PRIMARY INTENT:
-- "code": implementation, debugging, refactoring, deployment, testing, git ops, infrastructure changes. User wants code produced or modified.
-- "reasoning": explaining why/how, comparing approaches, evaluating trade-offs, root cause analysis, architecture decisions, research into causes/mechanisms. User wants understanding or a decision.
-- "writing": composing prose: docs, READMEs, emails, reports, articles, blog posts, documentation. User wants text authored.
-- "analysis": examining data, metrics, patterns, coverage, trends, telemetry, dashboards. User wants insights extracted from data.
-- "creative": fiction, art, brainstorming, humor, roleplay, design exploration. User wants creative output.
-- "general": greetings, acknowledgments, simple questions, chitchat.
-
-KEY DISTINCTIONS (memorize these):
-- "write a Python script" → code. "write a README" → writing. "write documentation" → writing.
-- "analyze performance" → analysis. "explain why it's slow" → reasoning.
-- "research the root cause" → reasoning. "evaluate the test report" → analysis.
-- "review the code/PR" → code. "review the dashboards/metrics" → analysis.
-- "deploy to production" → code. "explain deployment strategy" → reasoning.
-- "implement X with Y" → code. "compare X vs Y" → reasoning.
-- "debug the error" → code. "what causes the error" → reasoning.
-- "audit the codebase" → code. "audit the architecture" → reasoning.
-
-complexity — err on the side of HIGHER complexity for technical work:
-- simple: trivial, < 30 seconds, factual lookup, greeting, single-word answer
-- moderate: single clear task, one file/component, routine operation, basic script
-- complex: multi-step, multi-component, requires domain expertise, integration between systems, optimization, root cause investigation, any task involving Kubernetes/Docker/distributed systems/microservices
-- expert: architecture decisions, system-wide scope, security audits, production deployments, "from scratch" builds, anything involving "entire codebase/system", deep domain research requiring specialist knowledge
-
-urgency:
-- realtime: user explicitly wants speed (quick, fast, ASAP, simple, brief)
-- normal: standard processing
-- deep: complex work benefiting from the most capable model
-
-quality_level — correlates with complexity and task importance:
-- standard: casual, routine, greetings, trivial tasks
-- high: any non-trivial coding, reasoning, analysis, or professional writing task
-- maximum: production-critical, architecture decisions, comprehensive reviews, system-wide scope, security-related tasks"""
-
-
-# LLM classification validation constants (hoisted from _classify_with_llm)
-_LLM_VALID = {
-    "task_type": {"code", "reasoning", "writing", "analysis", "creative", "general"},
-    "complexity": {"simple", "moderate", "complex", "expert"},
-    "urgency": {"realtime", "normal", "deep"},
-    "quality_level": {"standard", "high", "maximum"},
-}
-_LLM_DEFAULTS = {"urgency": "normal", "quality_level": "standard"}
 
 
 def _classify_with_llm(message: str) -> dict | None:
-    """Use glm-4.5-air for high-accuracy classification. Returns None on failure."""
-    try:
-        import json
-        from openai import OpenAI
-
-        # Discover Z.ai API credentials
-        api_key = None
-        for env_var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
-            api_key = os.environ.get(env_var)
-            if api_key:
-                break
-        if not api_key:
-            base = os.environ.get("OPENAI_BASE_URL", "")
-            if "z.ai" in base:
-                api_key = os.environ.get("OPENAI_API_KEY")
-
-        if not api_key:
-            return None
-
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.z.ai/api/coding/paas/v4",
-            timeout=5.0,
-        )
-
-        response = client.chat.completions.create(
-            model="glm-4.5-air",
-            messages=[
-                {"role": "system", "content": _CLASSIFY_SYSTEM_PROMPT},
-                {"role": "user", "content": message},
-            ],
-            temperature=0.0,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
-
-        content = response.choices[0].message.content
-        if not content:
-            return None
-        content = content.strip()
-
-        # Strip markdown code fences if present
-        if content.startswith("```"):
-            content = content.removeprefix("```json\n").removeprefix("```\n").removeprefix("```")
-            content = content.removesuffix("```").strip()
-
-        result = json.loads(content)
-
-        # Validate all fields (see module-level _LLM_VALID / _LLM_DEFAULTS)
-
-        for field, valid in _LLM_VALID.items():
-            val = result.get(field)
-            if val not in valid:
-                if field in _LLM_DEFAULTS:
-                    result[field] = _LLM_DEFAULTS[field]
-                else:
-                    return None
-
-        return {k: result[k] for k in ("task_type", "complexity", "urgency", "quality_level")}
-    except Exception:
-        return None
+    """Stub — LLM classifier removed; heuristic handles all classification."""
+    return None
 
 
 def classify_message(
     message: str, routing_config: dict[str, Any] = None
 ) -> dict[str, str]:
-    """Classify a user message. Tries LLM first, then heuristic fallback."""
-    if routing_config is not None:
-        llm_result = _classify_with_llm(message)
-        if llm_result is not None:
-            return llm_result
+    """Classify a user message. Heuristic-only classification."""
     return _classify_heuristic(message)
 
 

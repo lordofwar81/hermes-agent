@@ -81,10 +81,11 @@ _KEYWORD_MAP: dict[str, str] = {
     "ideas": "creative",
 }
 
-_WORD_RE = re.compile(r"\w+")
+# Question-starting prefixes → reasoning intent boost (tuple for startswith)
+_Q_PREFIXES = ("why ", "how ", "is the ", "what's ")
 
-# Question-starting prefixes → reasoning intent boost
-_Q_PREFIX_RE = re.compile(r"^(?:why |how |is the |what's )")
+# Punctuation to strip from split words
+_PUNCT = ".,!?;:'\"()[]{}"
 
 # Single combined phrase regex — one search instead of four (+2 bonus)
 _PHRASE_RE = re.compile(
@@ -98,17 +99,17 @@ _PHRASE_RE = re.compile(
 def classify_message(message: str) -> dict[str, str]:
     """Classify a user message. Keyword + phrase heuristic classifier."""
     msg_lower = message.lower()
-    words = set(_WORD_RE.findall(msg_lower))
 
-    # Count keyword hits via single-pass lookup
+    # Count keyword hits via single-pass lookup (split + strip, no regex)
     hits = {"code": 0, "reasoning": 0, "writing": 0, "analysis": 0, "creative": 0}
-    for w in words:
+    for w in msg_lower.split():
+        w = w.strip(_PUNCT)
         cat = _KEYWORD_MAP.get(w)
         if cat:
             hits[cat] += 1
 
-    # Question pattern → reasoning boost
-    if _Q_PREFIX_RE.match(msg_lower):
+    # Question pattern → reasoning boost (startswith, no regex)
+    if msg_lower.startswith(_Q_PREFIXES):
         hits["reasoning"] += 1
 
     # Phrase override — single regex search (+2 bonus)
@@ -128,7 +129,7 @@ def classify_message(message: str) -> dict[str, str]:
     complexity = ("simple", "moderate", "complex", "expert")[min(total_hits, 3)]
 
     # Urgency — quick keyword for realtime, expert/complex for deep
-    urgency = "realtime" if "quick" in words else ("deep" if complexity in ("expert", "complex") else "normal")
+    urgency = "realtime" if "quick" in msg_lower else ("deep" if complexity in ("expert", "complex") else "normal")
 
     return {
         "task_type": task_type, "complexity": complexity,

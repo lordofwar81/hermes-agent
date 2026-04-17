@@ -76,7 +76,7 @@ _KEYWORD_MAP: dict[str, str] = {
     "readme": "writing",
     # analysis
     **{w: "analysis" for w in (
-        "analyze", "data", "metrics", "report", "rate",
+        "analyze", "data", "metrics", "report",
     )},
     # creative (most handled by phrase regex)
     "design": "creative",

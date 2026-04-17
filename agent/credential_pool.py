@@ -193,6 +193,11 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
+    # Z.ai-specific rate limit error codes
+    # 1302: Rate limit exceeded
+    # 1305: Too many requests
+    if error_code in (1302, 1305):
+        return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 

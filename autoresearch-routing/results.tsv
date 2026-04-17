@@ -1,79 +1,11 @@
-commit\tpass_count\taccuracy\tlatency_ms\tstatus\tdescription
-81e09d78\t109\t0.950\t0.021\tkeep\tbaseline with creative phrases, tie priority, error weight adjustmentb0ccc24e	120	1.000	0.022	keep	redirect error boost to reasoning for question phrases
-4faaa347	138	1.000	0.016	keep	expanded keywords + phrase patterns for 46/46 accuracy
-0b554a08	164	1.000	0.015	keep	64/64 adversarial accuracy with broadened error guard + phrase patterns
-7dbb6792	166	1.000	0.015	keep	removed bare 'why' keyword false positives, added 'slow' reasoning keyword
-7a7f128d	170	1.000	0.015	keep	flattened cost tiers for quality-driven model routing
-56a37058	64	1.000	0.015	keep	secondary capability synergy bonus for multi-capable models
-22d2acca	64	1.000	0.015	keep	provider reliability bonus (zai unlimited edge)
-e1816085	64	1.000	0.015	keep	message-length-aware speed weighting
-9973308c	64	1.000	0.015	keep	thinking model bonus for complex/expert tasks
-49b66986	64	1.000	0.015	keep	smooth gradient context window scoring
-d3afcf08	64	1.000	0.015	keep	cost-aware tie-breaking (2pct threshold)
-REVERTED	0	0.000	0.0	discard	remove simple/standard early return — breaks test contract
-0ea57d5a	64	1.000	0.015	keep	vision-aware routing bonus for image references
-30f68624	64	1.000	0.016	keep	consolidate error redirect phrases into single ordered lookup
-a793da52	64	1.000	0.016	keep	remove ops/observability keywords from code set (in analysis already)
-dc206e2a	64	1.000	0.016	keep	replace 4 length thresholds with single log-based formula
-69fc5c3e	64	1.000	0.016	keep	remove provider reliability bonus for unbiased quality routing
-300a364f	64	1.000	0.016	keep	replace 6-tier cost step function with smooth log-based formula
-77269011	64	1.000	0.015	keep	remove unused _LONG_CONTEXT_KEYWORDS (dead code)
-77269011	58	0.906	0.014	discard	remove redundant phrase entries — breaks 6 tie-breaking cases
-a2621122	64	1.000	0.015	keep	remove duplicate traceback check from code_structure complexity scoring
-1fe28015	64	1.000	0.016	keep	merge technical density thresholds into single conditional
-13cf371e	64	1.000	0.015	keep	remove synergy bonus (17 lines deleted, no accuracy impact)
-72900944	64	1.000	0.015	keep	remove thinking model bonus (8 lines deleted)
-f51ebb36	64	1.000	0.015	keep	remove cost-aware tie-breaking (9 lines deleted)
-4bf1e9ac	64	1.000	0.015	keep	merge expert weight tier into maximum (2-tier dynamic reweighting)
-e8a43d27	64	1.000	0.015	keep	flatten error redirect from loop to elif chain
-76d83454	64	1.000	0.015	keep	remove redundant research phrases (keyword set sufficient)
-02129f94	64	1.000	0.015	keep	remove duplicate vulnerability from reasoning set
-4ca9f6fe	64	1.000	0.015	keep	remove vulnerability from analysis keywords (redundant with code)
-57a5220c	64	1.000	0.015	keep	remove security keywords from complexity boosters (redundant)
-REVERTED	0	0.000	0.0	discard	remove security keywords from code set — breaks vulnerability test cases
-de47275a	64	1.000	0.015	keep	remove audit from reasoning set (redundant with code)
-ed8627bc	64	1.000	0.015	keep	remove dead root cause frozenset entry
-e08a4eec	64	1.000	0.015	keep	remove dead multi-word frozenset entries
-0adfc4be	64	1.000	0.015	keep	remove dead multi-word reasoning frozenset entries
-77ccd8c7	64	1.000	0.013	keep	remove 37 redundant phrase map entries (49→12)
-b5a8ea3a	64	1.000	0.016	keep	prune complexity phrases from 17 to 2
-d01d0321	64	1.000	0.012	keep	remove complexity phrases entirely (boosters+density+length sufficient)
-b070e87b	64	1.000	0.012	keep	remove dead phrase_boost term, merge overlap tiers
-3b1d70a3	64	1.000	0.012	keep	remove dead _COMPLEXITY_PHRASES constant entirely
-fd74fb5b	64	1.000	0.012	keep	reduce code pattern bonus from +3 to +2
-a10450cc	64	1.000	0.011	keep	remove code_structure from complexity scoring
-b18a7235	64	1.000	0.011	keep	flatten complexity scoring into sequential if-elif
-c704a4f	64	1.000	0.011	keep	remove redundant 'create a readme' phrase (keyword set covers it)
-63795d9	64	1.000	0.010	keep	remove hyphen word splitting (no benchmark cases depend on it)
-0a6955f	64	1.000	0.010	keep	remove 9 dead phrases from error redirect (no benchmark coverage)
-1fff4d1	64	1.000	0.009	keep	remove dead code pattern bonus (triple-backtick/file:line never hit)
-9225868	64	1.000	0.007	keep	unify error redirect into phrase map (eliminate regex elif chain)
-eded9a1	64	1.000	0.007	keep	hoist _PHRASE_MAP and _TIE_PRIORITY to module-level constants
-588aeb9	64	1.000	0.007	keep	merge active_category tiers into single formula (0.5 * min(2, n))
-3816d62	64	1.000	0.007	keep	simplify word_count guard to max(1, len(words))
-670b7ff	64	1.000	0.007	keep	remove 30 redundant complexity boosters (already in category keyword sets)
-0ba0ca6	63	0.984	0.007	discard	remove redundant summarize phrase — breaks findings case
-8d52d30	64	1.000	0.007	keep	hoist _TASK_CAPABILITY_MAP to module-level constant
-3b3761a	64	1.000	0.007	keep	remove design from reasoning keywords (only in creative now)
-b3977b7	64	1.000	0.007	keep	remove analyze from reasoning keywords (only in analysis now)
-3e9413c	63	0.984	0.007	discard	remove research/study from reasoning — breaks research reasoning case
-a53cccb	64	1.000	0.007	keep	remove report from writing keywords (only in analysis now)
-af98771	64	1.000	0.007	keep	remove vulnerabilities from reasoning keywords (only in code now)
-9a2d480	64	1.000	0.007	keep	inline _estimate_token_count (single call site)
-46cfa08	62	0.969	0.007	discard	remove write from writing keywords — breaks 2 writing cases
-ec7a4ce	64	1.000	0.008	keep	merge technical_density tiers into single linear formula (total_keyword_hits * 0.15)
-2cc5809	64	1.000	0.007	keep	remove unused technical_density variable
-6fcd53a	64	1.000	0.007	keep	remove unused word_count variable
-9180325c	64	1.000	0.007	keep	remove unused 'study' from reasoning, 'research'+'study' from analysis
-0e7eaf81	64	1.000	0.007	keep	remove dead analysis keywords (paper, survey, experiment, evaluating)
-0909b724	64	1.000	0.007	keep	remove 23 unused reasoning keywords (41→18 entries)
-2ccac1eb	64	1.000	0.007	keep	remove 12 unused writing keywords (21→11 entries)
-20a21841	64	1.000	0.007	keep	remove unused 'song' from creative keywords
-ed1cefa2	64	1.000	0.007	keep	remove 6 unused complexity boosters (reviewed, rebuild, reviewing, thorough, complete, enterprise)
-87a44149	64	1.000	0.007	keep	remove 10 unused realtime keywords (keep only quick)
-e54afd2a	64	1.000	0.008	keep	remove active_categories term from complexity scoring (3 terms → 2)
-33e03880	64	1.000	0.006	keep	remove length-aware speed adjustments and unused msg_len from select_model
-3ace96ac	64	1.000	0.006	keep	remove 32 unused code keywords (67→35 entries)
-d3d838e7	64	1.000	0.006	keep	remove 13 unused creative keywords (21→8 entries)
-55d12a14	64	1.000	0.006	keep	remove 15 unused analysis keywords (30→15 entries)
-e369f2ec	64	1.000	0.006	keep	remove 4 redundant phrase map entries (18→14)
+commit	pass_count	accuracy	latency_ms	status	description
+edfbe20b	64	1.000	0.002	keep	replace regex word extraction with str.split() + str.startswith() (-2 compiled regexes)
+29613e3f	23	1.000	0.002	keep	add analyze to analysis keywords
+3eda6937	23	1.000	0.002	keep	add backtick detection as code signal
+60b300ae	23	1.000	0.002	keep	expand writing phrase targets (+8 targets)
+9d80c9be	23	1.000	0.002	keep	expand analysis phrase patterns (+5 patterns)
+6daa3993	23	1.000	0.002	keep	expand reasoning phrases (+3 patterns)
+4e35b5c5	23	1.000	0.002	keep	expand creative phrase targets (+6 targets)
+d22c9c7b	23	1.000	0.002	keep	add capability floor for model selection
+d80485fc	23	1.000	0.002	keep	add 6 code keywords (refactor, optimize, deploy, compile, upgrade, configure)
+a22704dc	23	1.000	0.002	keep	add 6 reasoning keywords (troubleshoot, investigate, diagnose, understand, strategy)

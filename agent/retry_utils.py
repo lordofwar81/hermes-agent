@@ -16,12 +16,26 @@ _jitter_counter = 0
 _jitter_lock = threading.Lock()
 
 
+# Provider-specific backoff settings (in seconds)
+PROVIDER_BACKOFF_SETTINGS = {
+    "zai": {
+        "base_delay": 10.0,  # Longer base delay for Z.ai due to false rate limits
+        "max_delay": 300.0,  # 5 minutes max for Z.ai
+    },
+    "default": {
+        "base_delay": 5.0,
+        "max_delay": 120.0,
+    }
+}
+
+
 def jittered_backoff(
     attempt: int,
     *,
     base_delay: float = 5.0,
     max_delay: float = 120.0,
     jitter_ratio: float = 0.5,
+    provider: str = "default",
 ) -> float:
     """Compute a jittered exponential backoff delay.
 
@@ -31,6 +45,7 @@ def jittered_backoff(
         max_delay: Maximum delay cap in seconds.
         jitter_ratio: Fraction of computed delay to use as random jitter
             range.  0.5 means jitter is uniform in [0, 0.5 * delay].
+        provider: Provider identifier for provider-specific backoff settings.
 
     Returns:
         Delay in seconds: min(base * 2^(attempt-1), max_delay) + jitter.
@@ -38,6 +53,12 @@ def jittered_backoff(
     The jitter decorrelates concurrent retries so multiple sessions
     hitting the same provider don't all retry at the same instant.
     """
+    # Apply provider-specific settings
+    provider_settings = PROVIDER_BACKOFF_SETTINGS.get(provider, PROVIDER_BACKOFF_SETTINGS["default"])
+    if provider != "default":
+        base_delay = provider_settings.get("base_delay", base_delay)
+        max_delay = provider_settings.get("max_delay", max_delay)
+
     global _jitter_counter
     with _jitter_lock:
         _jitter_counter += 1

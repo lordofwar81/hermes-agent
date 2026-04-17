@@ -70,7 +70,7 @@ _KEYWORD_MAP: dict[str, str] = {
     **{w: "reasoning" for w in (
         "evaluate", "architecture", "performance", "research",
         "cause", "redesign", "causes", "troubleshoot", "investigate",
-        "diagnose", "understand", "strategy",
+        "diagnose", "understand", "strategy", "compare",
     )},
     # writing (most handled by phrase regex; readme is keyword-only)
     "readme": "writing",

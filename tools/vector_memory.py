@@ -292,7 +292,8 @@ class VectorMemoryStore:
             if filters:
                 for key, value in filters.items():
                     if key in ["source", "memory_type", "epistemic_status"]:
-                        query_builder = query_builder.where(f"{key} = '{value}'")
+                        safe_value = self._escape_filter_value(value)
+                        query_builder = query_builder.where(f"{key} = '{safe_value}'")
                     elif key == "min_confidence":
                         query_builder = query_builder.where(
                             f"confidence >= {float(value)}"
@@ -337,11 +338,19 @@ class VectorMemoryStore:
             logger.error(f"Search failed: {e}")
             return []
 
+    def _escape_filter_value(self, value: Any) -> str:
+        """Escape a value for safe use in LanceDB .where() filter strings."""
+        if isinstance(value, (int, float)):
+            return str(value)
+        # Escape single quotes by doubling them (SQL standard)
+        return str(value).replace("'", "''")
+
     def get_memory(self, memory_id: str) -> Optional[Dict[str, Any]]:
         """Get a memory by ID."""
         try:
+            safe_id = self._escape_filter_value(memory_id)
             results = (
-                self.table.search().where(f"id = '{memory_id}'").limit(1).to_list()
+                self.table.search().where(f"id = '{safe_id}'").limit(1).to_list()
             )
             if results:
                 return results[0]

@@ -31,7 +31,44 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
+
+# Optional vector memory integration
+try:
+    from tools.vector_memory import VectorMemoryStore
+
+    HAS_VECTOR_MEMORY = True
+except ImportError:
+    HAS_VECTOR_MEMORY = False
+    VectorMemoryStore = None
+
+try:
+    from tools.contradiction_detector import (
+        handle_memory_with_contradiction_check,
+        add_epistemic_methods_to_class,
+    )
+
+    HAS_CONTRADICTION_DETECTOR = True
+except ImportError:
+    HAS_CONTRADICTION_DETECTOR = False
+    handle_memory_with_contradiction_check = None
+    add_epistemic_methods_to_class = None
+
+# Vector memory store singleton
+_vector_store = None
+
+
+def _get_vector_store():
+    """Get or create vector memory store instance."""
+    global _vector_store
+    if HAS_VECTOR_MEMORY and _vector_store is None:
+        try:
+            _vector_store = VectorMemoryStore()
+        except Exception as e:
+            logger.error(f"Failed to initialize vector memory store: {e}")
+            _vector_store = None
+    return _vector_store
+
 
 from utils import atomic_replace
 
@@ -48,6 +85,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
 # Where memory files live — resolved dynamically so profile overrides
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
@@ -55,6 +93,12 @@ logger = logging.getLogger(__name__)
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
+
+
+# Backward-compatible alias — gateway/run.py imports this at runtime inside
+# a function body, so it gets the correct snapshot for that process.  New code
+# should prefer get_memory_dir().
+MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -66,26 +110,43 @@ ENTRY_DELIMITER = "\n§\n"
 
 _MEMORY_THREAT_PATTERNS = [
     # Prompt injection
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
+    (r"you\s+are\s+now\s+", "role_hijack"),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (
+        r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)",
+        "bypass_restrictions",
+    ),
     # Exfiltration via curl/wget with secrets
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_wget"),
+    (
+        r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)",
+        "read_secrets",
+    ),
     # Persistence via shell rc
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
+    (r"authorized_keys", "ssh_backdoor"),
+    (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access"),
+    (r"\$HOME/\.hermes/\.env|\~/\.hermes/\.env", "hermes_env"),
 ]
 
 # Subset of invisible chars for injection detection
 _INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 
@@ -241,7 +302,9 @@ class MemoryStore:
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(
+                    target, "Entry already exists (no duplicate added)."
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -273,7 +336,10 @@ class MemoryStore:
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
         if not new_content:
-            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+            return {
+                "success": False,
+                "error": "new_content cannot be empty. Use 'remove' to delete entries.",
+            }
 
         # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
@@ -293,7 +359,9 @@ class MemoryStore:
                 # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = [
+                        e[:80] + ("..." if len(e) > 80 else "") for _, e in matches
+                    ]
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -343,7 +411,9 @@ class MemoryStore:
                 # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    previews = [
+                        e[:80] + ("..." if len(e) > 80 else "") for _, e in matches
+                    ]
                     return {
                         "success": False,
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
@@ -401,9 +471,13 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = (
+                f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            )
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = (
+                f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            )
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -475,32 +549,189 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+        return tool_error(
+            "Memory is not available. It may be disabled in config or this environment.",
+            success=False,
+        )
 
-    if target not in ("memory", "user"):
-        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+    if target not in ("memory", "user", "vector"):
+        return tool_error(
+            f"Invalid target '{target}'. Use 'memory', 'user', or 'vector'.",
+            success=False,
+        )
 
-    if action == "add":
-        if not content:
-            return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+    if target == "vector":
+        # Vector memory store operations
+        vector_store = _get_vector_store()
+        if not vector_store:
+            return tool_error("Vector memory store not available.", success=False)
+        if action == "add":
+            if not content:
+                return tool_error(
+                    "Content is required for 'add' action.", success=False
+                )
+            # Determine epistemic status and handle contradictions
+            epistemic_status = "stated"
+            confidence = 0.5
+            contradiction_note = ""
 
-    elif action == "replace":
-        if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
-        if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+            if HAS_CONTRADICTION_DETECTOR and handle_memory_with_contradiction_check:
+                detection = handle_memory_with_contradiction_check(
+                    content, vector_store.table
+                )
+                logger.debug(f"Contradiction detection result: {detection}")
+                logger.debug(f"Resolution: {detection.get('resolution')}")
+                if detection.get("contradiction_found"):
+                    resolution = detection.get("resolution", "keep_new")
+                    similar = detection.get("similar_memories", [])
+                    contradiction_note = (
+                        f" (contradiction detected, resolution: {resolution})"
+                    )
 
-    elif action == "remove":
-        if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
-        result = store.remove(target, old_text)
+                    if resolution == "keep_new":
+                        # Mark old memory as contradicted
+                        if similar:
+                            old_id = similar[0].get("id")
+                            if old_id:
+                                vector_store.update_epistemic_status(
+                                    old_id, "contradicted", confidence=0.2
+                                )
+                    elif resolution == "keep_old":
+                        # Discard new memory
+                        result = {
+                            "success": False,
+                            "message": "Contradiction detected, keeping old memory.",
+                            "contradiction": True,
+                        }
+                        return json.dumps(result, ensure_ascii=False)
+                    elif resolution == "keep_both":
+                        # Mark old as contradicted, add new as contradicted
+                        if similar:
+                            old_id = similar[0].get("id")
+                            if old_id:
+                                vector_store.update_epistemic_status(
+                                    old_id, "contradicted", confidence=0.2
+                                )
+                        epistemic_status = "contradicted"
+                        confidence = 0.2
+                    else:  # discard_new
+                        result = {
+                            "success": False,
+                            "message": "Contradiction detected, discarding new memory.",
+                            "contradiction": True,
+                        }
+                        return json.dumps(result, ensure_ascii=False)
 
+            # Add memory with determined epistemic status
+            memory_id = vector_store.add_memory(
+                text=content,
+                source="user",
+                memory_type="general",
+                session_id="",
+                epistemic_status=epistemic_status,
+                confidence=confidence,
+            )
+            if memory_id:
+                # Extract temporal events
+                try:
+                    from .temporal_extractor import extract_and_store_temporal
+
+                    extract_and_store_temporal(
+                        memory_id, content, use_llm_fallback=True
+                    )
+                except ImportError as e:
+                    logger.debug(f"Temporal extractor not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Temporal extraction failed: {e}")
+
+                # Extract relationships
+                try:
+                    from .relationship_extractor import extract_and_store_relationships
+
+                    extract_and_store_relationships(
+                        memory_id, content, vector_store, use_llm_fallback=True
+                    )
+                except ImportError as e:
+                    logger.debug(f"Relationship extractor not available: {e}")
+                except Exception as e:
+                    logger.warning(f"Relationship extraction failed: {e}")
+
+                result = {
+                    "success": True,
+                    "memory_id": memory_id,
+                    "message": f"Vector memory added.{contradiction_note}",
+                }
+            else:
+                result = {"success": False, "error": "Failed to add vector memory."}
+        elif action == "verify":
+            # verify requires old_text as memory_id
+            if not old_text:
+                return tool_error(
+                    "old_text (memory ID) is required for 'verify' action.",
+                    success=False,
+                )
+            success = vector_store.update_epistemic_status(
+                old_text, "verified", confidence=0.9
+            )
+            result = {"success": success, "message": f"Memory {old_text} verified."}
+        elif action == "contradict":
+            if not old_text:
+                return tool_error(
+                    "old_text (memory ID) is required for 'contradict' action.",
+                    success=False,
+                )
+            success = vector_store.update_epistemic_status(
+                old_text, "contradicted", confidence=0.2
+            )
+            result = {
+                "success": success,
+                "message": f"Memory {old_text} marked as contradicted.",
+            }
+        elif action == "retract":
+            if not old_text:
+                return tool_error(
+                    "old_text (memory ID) is required for 'retract' action.",
+                    success=False,
+                )
+            success = vector_store.update_epistemic_status(
+                old_text, "retracted", confidence=0.0
+            )
+            result = {"success": success, "message": f"Memory {old_text} retracted."}
+        else:
+            return tool_error(
+                f"Action '{action}' not supported for vector target. Use: add, verify, contradict, retract",
+                success=False,
+            )
+        return json.dumps(result, ensure_ascii=False)
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
-
-    return json.dumps(result, ensure_ascii=False)
+        # Built-in memory store (memory/user)
+        if action == "add":
+            if not content:
+                return tool_error(
+                    "Content is required for 'add' action.", success=False
+                )
+            result = store.add(target, content)
+        elif action == "replace":
+            if not old_text:
+                return tool_error(
+                    "old_text is required for 'replace' action.", success=False
+                )
+            if not content:
+                return tool_error(
+                    "content is required for 'replace' action.", success=False
+                )
+            result = store.replace(target, old_text, content)
+        elif action == "remove":
+            if not old_text:
+                return tool_error(
+                    "old_text is required for 'remove' action.", success=False
+                )
+            result = store.remove(target, old_text)
+        else:
+            return tool_error(
+                f"Unknown action '{action}'. Use: add, replace, remove", success=False
+            )
+        return json.dumps(result, ensure_ascii=False)
 
 
 def check_memory_requirements() -> bool:
@@ -530,11 +761,15 @@ MEMORY_SCHEMA = {
         "state to memory; use session_search to recall those from past transcripts.\n"
         "If you've discovered a new way to do something, solved a problem that could be "
         "necessary later, save it as a skill with the skill tool.\n\n"
-        "TWO TARGETS:\n"
+        "THREE TARGETS:\n"
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
-        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
+        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n"
+        "- 'vector': vector memory with epistemic status (stated, verified, contradicted, retracted) -- "
+        "use for important facts where confidence and contradiction detection matter.\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it). For vector target also: "
+        "verify (upgrade epistemic status to verified), contradict (mark as contradicted), "
+        "retract (mark as retracted).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -542,21 +777,21 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "verify", "contradict", "retract"],
+                "description": "The action to perform. For 'vector' target: verify, contradict, retract update epistemic status.",
             },
             "target": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "enum": ["memory", "user", "vector"],
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile, 'vector' for vector memory with epistemic status.",
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
+                "description": "The entry content. Required for 'add' and 'replace'.",
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "Short unique substring identifying the entry to replace or remove.",
             },
         },
         "required": ["action", "target"],
@@ -576,11 +811,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+    ),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

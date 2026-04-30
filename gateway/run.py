@@ -6439,12 +6439,48 @@ class GatewayRunner:
                 pass
 
             if not self._is_session_run_current(_quick_key, run_generation):
-                logger.info(
-                    "Discarding stale agent result for %s — generation %d is no longer current",
-                    _quick_key or "?",
-                    run_generation,
-                )
+                # Preserve completed work instead of silently discarding.
+                # If the agent produced a substantive response, save it as a
+                # stale-result artifact and notify the user rather than dropping
+                # hours of compute into the void.
+                _stale_response = agent_result.get("final_response") or ""
+                _stale_tool_calls = agent_result.get("tool_call_count", 0) or 0
                 _stale_adapter = self.adapters.get(source.platform)
+
+                if _stale_response and _stale_response != "(empty)":
+                    _truncated = _stale_response[:4000] + ("..." if len(_stale_response) > 4000 else "")
+                    _summary_msg = (
+                        f"📋 **Stale result preserved** (gen {run_generation} superseded).\n"
+                        f"The agent completed {_stale_tool_calls} tool calls before this "
+                        f"result was superseded by a newer message.\n\n"
+                        f"**Completed work:**\n{_truncated}\n\n"
+                        f"*This result was saved because it contained substantive work.*"
+                    )
+                    logger.info(
+                        "Preserving stale agent result for %s — generation %d superseded, "
+                        "response had %d chars, %d tool calls",
+                        _quick_key or "?",
+                        run_generation,
+                        len(_stale_response),
+                        _stale_tool_calls,
+                    )
+                    # Deliver the preserved result to the user
+                    try:
+                        if _stale_adapter and hasattr(_stale_adapter, "send_message"):
+                            import asyncio
+                            asyncio.ensure_future(
+                                _stale_adapter.send_message(source.chat_id, _summary_msg)
+                            )
+                    except Exception:
+                        pass
+                else:
+                    logger.info(
+                        "Discarding stale agent result for %s — generation %d is no longer current "
+                        "(empty response, no work to preserve)",
+                        _quick_key or "?",
+                        run_generation,
+                    )
+
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,
@@ -12659,19 +12695,36 @@ class GatewayRunner:
 
         _elapsed = time.time() - _start
         if not _run_still_current():
-            logger.info(
-                "Discarding stale proxy result for %s — generation %d is no longer current",
-                session_key or "?",
-                run_generation or 0,
-            )
+            # Preserve partial proxy response instead of discarding
+            if full_response:
+                logger.info(
+                    "Preserving stale proxy result for %s — generation %d superseded, "
+                    "partial response had %d chars after %.1fs",
+                    session_key or "?",
+                    run_generation or 0,
+                    len(full_response),
+                    _elapsed,
+                )
+                # Return the partial response so the caller can deliver it
+            else:
+                logger.info(
+                    "Discarding stale proxy result for %s — generation %d is no longer current "
+                    "(empty response)",
+                    session_key or "?",
+                    run_generation or 0,
+                )
             return {
-                "final_response": "",
-                "messages": [],
-                "api_calls": 0,
+                "final_response": full_response or "",
+                "messages": [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": full_response},
+                ] if full_response else [],
+                "api_calls": 1,
                 "tools": [],
                 "history_offset": len(history),
                 "session_id": session_id,
                 "response_previewed": False,
+                "_stale_preserved": bool(full_response),
             }
         logger.info(
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",

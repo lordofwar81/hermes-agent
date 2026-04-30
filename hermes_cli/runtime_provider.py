@@ -373,6 +373,30 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             if (canonical or "").strip().lower() == requested_norm:
                 return None
 
+    # "local" is a virtual provider used by model_selector for localhost models.
+    # Resolve it to the first custom provider whose name matches (case-insensitive)
+    # or whose base_url points to localhost/127.0.0.1.
+    if requested_norm == "local":
+        config = load_config()
+        for entry in get_compatible_custom_providers(config):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            base_url = str(entry.get("base_url") or "").strip()
+            name_norm = _normalize_custom_provider_name(name)
+            if name_norm != "local" and "localhost" not in base_url and "127.0.0.1" not in base_url:
+                continue
+            result = {
+                "name": name or "local",
+                "base_url": base_url,
+                "api_key": str(entry.get("api_key") or "").strip(),
+            }
+            model_name = str(entry.get("model", "") or "").strip()
+            if model_name:
+                result["model"] = model_name
+            return result
+        return None
+
     config = load_config()
     
     # First check providers: dict (new-style user-defined providers)
@@ -951,6 +975,39 @@ def resolve_runtime_provider(
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
+
+    # "custom" provider: resolve from config.yaml model.* fields, then env vars.
+    # (e.g. OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4).
+    # Without this, resolve_provider("custom", ...) falls through to
+    # "openrouter" when explicit_api_key is set, because "custom" is not in
+    # PROVIDER_REGISTRY and the explicit key triggers the openrouter shortcut.
+    if requested_provider == "custom":
+        model_cfg = _get_model_config()
+        cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        # Legacy: 'api' field used as api_key fallback (#1760)
+        cfg_api_key = (model_cfg.get("api_key") or model_cfg.get("api") or "").strip()
+        cfg_api_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        cfg_source = "config"
+
+        custom_base = explicit_base_url or cfg_base_url or os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        custom_key = explicit_api_key or cfg_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        custom_api_mode = cfg_api_mode or _detect_api_mode_for_url(custom_base) or "chat_completions"
+
+        if custom_base:
+            # ollama.com endpoints need OLLAMA_API_KEY, not OPENAI_API_KEY
+            if "ollama.com" in custom_base.lower():
+                ollama_key = os.getenv("OLLAMA_API_KEY", "").strip()
+                if ollama_key:
+                    custom_key = ollama_key
+
+            return {
+                "provider": "custom",
+                "api_mode": custom_api_mode,
+                "base_url": custom_base,
+                "api_key": custom_key or "no-key-required",
+                "source": cfg_source,
+                "requested_provider": requested_provider,
+            }
 
     provider = resolve_provider(
         requested_provider,

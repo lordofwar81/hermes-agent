@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -228,9 +228,9 @@ class ToolRegistry:
         name: str,
         toolset: str,
         schema: dict,
-        handler: Callable,
-        check_fn: Callable = None,
-        requires_env: list = None,
+        handler: Callable[..., Any],
+        check_fn: Callable[..., Any] | None = None,
+        requires_env: list[str] | None = None,
         is_async: bool = False,
         description: str = "",
         emoji: str = "",

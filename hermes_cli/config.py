@@ -3693,18 +3693,29 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _expand_env_vars(obj):
-    """Recursively expand ``${VAR}`` references in config values.
+    """Recursively expand ``${VAR}`` and ``$VAR`` references in config values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
     ``os.environ``) are kept verbatim so callers can detect them.
+
+    ``${VAR}`` is expanded first, then bare ``$VAR`` (word-boundary
+    anchored) for backward compat.  The braced form takes priority.
     """
     if isinstance(obj, str):
-        return re.sub(
+        # Expand ${VAR} first (braced form — precise)
+        obj = re.sub(
             r"\${([^}]+)}",
             lambda m: os.environ.get(m.group(1), m.group(0)),
             obj,
         )
+        # Then expand bare $VAR (word-boundary — e.g. $HERMES_HOME/path)
+        obj = re.sub(
+            r"\$([A-Za-z_][A-Za-z0-9_]*)",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            obj,
+        )
+        return obj
     if isinstance(obj, dict):
         return {k: _expand_env_vars(v) for k, v in obj.items()}
     if isinstance(obj, list):

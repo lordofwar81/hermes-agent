@@ -70,3 +70,18 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Backup files (never commit editor backups)
+*.bak
+*.backup
+*.orig
+*.v1.*
+*.v2.*
+*~
+
+# Shell variable expansion artifacts
+$*/
+
+# Root-level test files (belong in tests/)
+/test_*.py
+venv_test/

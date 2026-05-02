@@ -160,9 +160,8 @@ def _get_local_command_template() -> Optional[str]:
 
     whisper_binary = _find_whisper_binary()
     if whisper_binary:
-        quoted_binary = shlex.quote(whisper_binary)
         return (
-            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
+            f"{whisper_binary} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}"
         )
     return None
@@ -496,12 +495,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 return {"success": False, "transcript": "", "error": prep_error}
 
             command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
+                input_path=prepared_input,
+                output_dir=output_dir,
+                language=language,
+                model=normalized_model,
             )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

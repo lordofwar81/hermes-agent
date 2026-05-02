@@ -6450,7 +6450,9 @@ class GatewayRunner:
                 status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
             elif status_code == 402:
                 status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
-            elif status_code == 429:
+            elif status_code == 429 or status_code in (1302, 1305):
+                # 429: Standard rate limit
+                # 1302, 1305: Z.ai-specific rate limit errors
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
                 _err_json = {}

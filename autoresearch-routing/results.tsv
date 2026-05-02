@@ -1,0 +1,11 @@
+commit	pass_count	accuracy	latency_ms	status	description
+edfbe20b	64	1.000	0.002	keep	replace regex word extraction with str.split() + str.startswith() (-2 compiled regexes)
+29613e3f	23	1.000	0.002	keep	add analyze to analysis keywords
+3eda6937	23	1.000	0.002	keep	add backtick detection as code signal
+60b300ae	23	1.000	0.002	keep	expand writing phrase targets (+8 targets)
+9d80c9be	23	1.000	0.002	keep	expand analysis phrase patterns (+5 patterns)
+6daa3993	23	1.000	0.002	keep	expand reasoning phrases (+3 patterns)
+4e35b5c5	23	1.000	0.002	keep	expand creative phrase targets (+6 targets)
+d22c9c7b	23	1.000	0.002	keep	add capability floor for model selection
+d80485fc	23	1.000	0.002	keep	add 6 code keywords (refactor, optimize, deploy, compile, upgrade, configure)
+a22704dc	23	1.000	0.002	keep	add 6 reasoning keywords (troubleshoot, investigate, diagnose, understand, strategy)

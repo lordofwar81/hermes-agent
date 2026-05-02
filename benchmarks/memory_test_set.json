@@ -1,0 +1,75 @@
+{
+  "name": "Hermes Memory System Benchmark v1.0",
+  "description": "Test temporal reasoning, relationship extraction, and basic search.",
+  "created": "2026-04-10",
+  "test_cases": [
+    {
+      "id": "temporal_relative",
+      "description": "Relative date filtering: memories from last week",
+      "memories": [
+        {
+          "id": "mem_temp_1",
+          "text": "I visited Paris last week.",
+          "source": "user",
+          "memory_type": "fact",
+          "epistemic_status": "stated",
+          "confidence": 0.8,
+          "created_at_offset_days": -3
+        },
+        {
+          "id": "mem_temp_2",
+          "text": "I will visit Tokyo next month.",
+          "source": "user",
+          "memory_type": "fact",
+          "epistemic_status": "stated",
+          "confidence": 0.8,
+          "created_at_offset_days": 0
+        }
+      ],
+      "queries": [
+        {
+          "query": "last week",
+          "expected_memory_ids": ["mem_temp_1"],
+          "mode": "hybrid",
+          "top_k": 10
+        }
+      ]
+    },
+    {
+      "id": "relationship_is_a",
+      "description": "Extract is_a relationship between memories",
+      "memories": [
+        {
+          "id": "mem_rel_1",
+          "text": "Python is a programming language.",
+          "source": "user",
+          "memory_type": "fact",
+          "epistemic_status": "stated",
+          "confidence": 0.8
+        },
+        {
+          "id": "mem_rel_2",
+          "text": "Python is a snake.",
+          "source": "user",
+          "memory_type": "fact",
+          "epistemic_status": "stated",
+          "confidence": 0.8
+        }
+      ],
+      "queries": [
+        {
+          "query": "Python",
+          "expected_memory_ids": ["mem_rel_1", "mem_rel_2"],
+          "mode": "hybrid",
+          "top_k": 10
+        },
+        {
+          "query": "related_to:mem_rel_1",
+          "expected_memory_ids": ["mem_rel_2"],
+          "mode": "vector",
+          "top_k": 10
+        }
+      ]
+    }
+  ]
+}

@@ -3,9 +3,14 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import fcntl
+import logging
 import re
 import sqlite3
 import threading
+import urllib.request
+import urllib.error
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -24,7 +29,8 @@ CREATE TABLE IF NOT EXISTS facts (
     helpful_count   INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    hrr_vector      BLOB,
+    neural_embed    BLOB
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -76,23 +82,284 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 """
 
 # Trust adjustment constants
-_HELPFUL_DELTA   =  0.05
+_HELPFUL_DELTA = 0.05
 _UNHELPFUL_DELTA = -0.10
-_TRUST_MIN       =  0.0
-_TRUST_MAX       =  1.0
+_TRUST_MIN = 0.0
+_TRUST_MAX = 1.0
 
-# Entity extraction patterns
-_RE_CAPITALIZED  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')
+# ── Entity extraction patterns ──────────────────────────────────────
+# Each pattern targets a distinct structural signal in fact text.
+# Order matters: higher-specificity patterns first.
+
+# 1. Multi-word capitalized phrases  e.g. "TurboQuant", "Bosgame M5"
+_RE_CAPITALIZED = re.compile(
+    r"\b((?:[A-Z][a-z]*\.\w+|[A-Z][a-z]+|[A-Z]+)"
+    r"(?:\s+(?:[A-Z][a-z]*\.\w+|[A-Z][a-z]+|[A-Z]+))+)\b"
+)
+
+# 2. Single-word PascalCase/camelCase identifiers  e.g. "SearXNG", "TurboQuant"
+#    Catches mixed-case words with internal capitals — NOT simple all-caps like API
+_RE_TECH_TERM = re.compile(r"\b([A-Z][a-z]+[A-Z][a-zA-Z]*)\b")
+
+# 3. Quoted terms (double then single)
 _RE_DOUBLE_QUOTE = re.compile(r'"([^"]+)"')
 _RE_SINGLE_QUOTE = re.compile(r"'([^']+)'")
-_RE_AKA          = re.compile(
-    r'(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)',
+
+# 4. AKA patterns  e.g. "Guido aka BDFL"
+_RE_AKA = re.compile(
+    r"(\w+(?:\s+\w+)*)\s+(?:aka|also known as)\s+(\w+(?:\s+\w+)*)",
+    re.IGNORECASE,
+)
+
+# 6. Parenthetical labels  e.g. "(Vulkan-only)", "(JSON API)"
+#    Skips pure dates like "(Apr 5)" and compound lists
+_RE_PAREN_LABEL = re.compile(r"\(([^,)]{2,35})\)")
+
+# 7. File paths and config files  e.g. "/home/user/llama.cpp", "config.yaml"
+#    Requires a leading / or specific extension. Skips bare URLs.
+_RE_FILEPATH = re.compile(
+    r"((?:/[\w.-]+)+/\S+?\.\w{1,5}"
+    r"|[\w][\w.-]*\.(?:yaml|py|db|json|toml|cfg|conf|md|txt|sh|gguf|bin))\b"
+)
+
+# 7. Version-like strings  e.g. "glm-5-turbo", "qwen2.5-0.5b", "v2.0"
+_RE_VERSION_ID = re.compile(r"\b([a-zA-Z][\w.-]*(?:-\d[\d.]*(?:[a-z]\d*)?))\b")
+
+# 8. Key-value labels before colons  e.g. "System:", "Search stack:"
+_RE_KEY_LABEL = re.compile(r"^([\w\s]{2,25}?):", re.MULTILINE)
+
+# Stopwords — never extract these as entities
+_ENTITY_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "using",
+        "with",
+        "for",
+        "and",
+        "but",
+        "or",
+        "not",
+        "all",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "too",
+        "very",
+        "just",
+        "also",
+        "then",
+        "than",
+        "that",
+        "this",
+        "these",
+        "those",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "how",
+        "when",
+        "where",
+        "why",
+        "if",
+        "else",
+        "from",
+        "into",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "up",
+        "about",
+        "after",
+        "before",
+        "over",
+        "under",
+        "between",
+        "through",
+        "during",
+        "without",
+        "within",
+        "per",
+        "its",
+        "it",
+        "he",
+        "she",
+        "they",
+        "them",
+        "his",
+        "her",
+        "their",
+        "my",
+        "your",
+        "our",
+        "me",
+        "him",
+        "us",
+        "we",
+        "you",
+        "any",
+        "own",
+        "now",
+        "new",
+        "old",
+        "first",
+        "last",
+        "next",
+        "same",
+        "only",
+        # SQL/technical keywords that aren't useful as entities
+        "text",
+        "default",
+        "integer",
+        "null",
+        "blob",
+        "primary",
+        "autoincrement",
+        "bytes",
+        "values",
+        "table",
+        "column",
+        "schema",
+        "text default",
+        # Epistemic states (used as values, not entities)
+        "stated",
+        "inferred",
+        "verified",
+        "contradicted",
+        "retracted",
+    }
+)
+
+# Pattern for entities to skip — fragments that look like garbage
+_RE_SKIP_FRAGMENT = re.compile(
+    r"^(?:bytes?\s+\d|row|line|field|file|page|test fact|not\s+/)",
     re.IGNORECASE,
 )
 
 
 def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
+
+
+_log = logging.getLogger(__name__)
+
+# ── Neural embed client ────────────────────────────────────────────
+
+# Default embed server — local llama.cpp with mxbai-embed-large-v1
+_DEFAULT_EMBED_URL = "http://localhost:11434/v1/embeddings"
+_DEFAULT_EMBED_MODEL = "mxbai-embed-large-v1-f16.gguf"
+_DEFAULT_EMBED_KEY = "notempty"
+_EMBED_TIMEOUT = 5  # seconds — fail fast, don't block memory writes
+
+
+class EmbedClient:
+    """Minimal OpenAI-compatible embed client. Graceful on failure."""
+
+    def __init__(
+        self,
+        url: str = _DEFAULT_EMBED_URL,
+        model: str = _DEFAULT_EMBED_MODEL,
+        api_key: str = _DEFAULT_EMBED_KEY,
+        timeout: int = _EMBED_TIMEOUT,
+    ):
+        self.url = url
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+        self._alive: bool | None = None  # None = not yet probed
+
+    @property
+    def alive(self) -> bool:
+        """Check if embed server is reachable (cached after first call)."""
+        if self._alive is not None:
+            return self._alive
+        self._alive = self._probe()
+        return self._alive
+
+    def _probe(self) -> bool:
+        try:
+            req = urllib.request.Request(
+                self.url.replace("/embeddings", "/models"),
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                return True
+        except Exception:
+            return False
+
+    def embed(self, text: str) -> "np.ndarray | None":
+        """Get embedding for a single text. Returns None on any failure."""
+        if not self.alive:
+            return None
+
+        try:
+            import json
+            import numpy as np
+
+            payload = json.dumps(
+                {
+                    "input": text,
+                    "model": self.model,
+                }
+            ).encode()
+
+            req = urllib.request.Request(
+                self.url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read())
+                vec = np.array(result["data"][0]["embedding"], dtype=np.float32)
+                return vec
+        except Exception:
+            _log.debug("Embed request failed, marking server as down")
+            self._alive = False
+            return None
+
+    def embed_batch(self, texts: list[str]) -> list["np.ndarray | None"]:
+        """Embed multiple texts. Returns None for any that fail."""
+        return [self.embed(t) for t in texts]
 
 
 class MemoryStore:
@@ -103,22 +370,21 @@ class MemoryStore:
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
+        embed_client: EmbedClient | None = None,
     ) -> None:
         if db_path is None:
             from hermes_constants import get_hermes_home
+
             db_path = str(get_hermes_home() / "memory_store.db")
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
-        self._conn: sqlite3.Connection = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            timeout=10.0,
-        )
+        self._embed = embed_client or EmbedClient()
+        self._conn: sqlite3.Connection = None  # type: ignore[assignment]
         self._lock = threading.RLock()
-        self._conn.row_factory = sqlite3.Row
+        self._lock_fd = None
         self._init_db()
 
     # ------------------------------------------------------------------
@@ -126,13 +392,74 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _init_db(self) -> None:
-        """Create tables, indexes, and triggers if they do not exist. Enable WAL mode."""
+        """Create tables, enable WAL mode, check integrity."""
+        # Acquire file-level lock for multi-process safety
+        lock_path = self.db_path.with_suffix(self.db_path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_fd = open(lock_path, "w")
+        fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=30.0,
+        )
+        self._conn.row_factory = sqlite3.Row
+
+        # Check integrity before proceeding
+        try:
+            result = self._conn.execute("PRAGMA integrity_check").fetchone()
+            if result[0] != "ok":
+                logger.error(f"Database integrity check failed: {result[0]}")
+                self._conn.close()
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                self._lock_fd.close()
+                self._lock_fd = None
+                raise RuntimeError(f"Database corruption detected: {result[0]}")
+        except sqlite3.DatabaseError as e:
+            logger.error(f"Database corrupted: {e}")
+            self._conn.close()
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            self._lock_fd.close()
+            self._lock_fd = None
+            raise
+
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
-        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()
+        }
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+            self._conn.commit()
+            # Backfill vectors for any pre-existing facts that were inserted
+            # via raw SQL and bypassed add_fact()'s HRR computation.
+            if self._hrr_available:
+                rows = self._conn.execute(
+                    "SELECT fact_id, content FROM facts WHERE hrr_vector IS NULL"
+                ).fetchall()
+                if rows:
+                    categories: set[str] = set()
+                    for row in rows:
+                        self._compute_hrr_vector(row["fact_id"], row["content"])
+                        categories.add(
+                            self._conn.execute(
+                                "SELECT category FROM facts WHERE fact_id = ?",
+                                (row["fact_id"],),
+                            ).fetchone()["category"]
+                        )
+                    for cat in categories:
+                        self._rebuild_bank(cat)
+                    logger.info(
+                        "HRR migration: backfilled vectors for %d existing facts",
+                        len(rows),
+                    )
+        # Migrate: add neural_embed column if missing
+        if "neural_embed" not in columns:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN neural_embed BLOB")
+            self._conn.commit()
+            _log.info("Added neural_embed column to facts table")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -180,6 +507,10 @@ class MemoryStore:
 
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
+
+            # Compute neural embedding (async-safe, graceful on failure)
+            self._compute_neural_embed(fact_id, content)
+
             self._rebuild_bank(category)
 
             return fact_id
@@ -292,9 +623,12 @@ class MemoryStore:
             if content is not None:
                 self._compute_hrr_vector(fact_id, content)
             # Rebuild bank for relevant category
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
+            cat = (
+                category
+                or self._conn.execute(
+                    "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
+                ).fetchone()["category"]
+            )
             self._rebuild_bank(cat)
 
             return True
@@ -381,9 +715,9 @@ class MemoryStore:
             self._conn.commit()
 
             return {
-                "fact_id":      fact_id,
-                "old_trust":    old_trust,
-                "new_trust":    new_trust,
+                "fact_id": fact_id,
+                "old_trust": old_trust,
+                "new_trust": new_trust,
                 "helpful_count": row["helpful_count"] + helpful_increment,
             }
 
@@ -392,37 +726,79 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _extract_entities(self, text: str) -> list[str]:
-        """Extract entity candidates from text using simple regex rules.
+        """Extract entity candidates from fact text using layered regex rules.
 
-        Rules applied (in order):
-        1. Capitalized multi-word phrases  e.g. "John Doe"
-        2. Double-quoted terms             e.g. "Python"
-        3. Single-quoted terms             e.g. 'pytest'
-        4. AKA patterns                    e.g. "Guido aka BDFL" -> two entities
+        Patterns applied (in priority order):
+        1. Multi-word capitalized phrases    e.g. "Bosgame M5", "Local Vulkan"
+        2. Single-word technical identifiers  e.g. "SearXNG", "ROCm", "SQLite"
+        3. Double-quoted terms               e.g. "Python"
+        4. Single-quoted terms               e.g. 'pytest'
+        5. AKA patterns                      e.g. "Guido aka BDFL" -> two entities
+        6. Parenthetical labels              e.g. "(Apr 5)", "(JSON API)"
+        7. File paths and config files       e.g. "/home/user/llama.cpp"
+        8. Version-like identifiers          e.g. "glm-5-turbo", "v2.0"
+        9. Key-value labels at line starts   e.g. "System:", "Search stack:"
 
         Returns a deduplicated list preserving first-seen order.
+        Single-character and stopword matches are filtered.
         """
         seen: set[str] = set()
         candidates: list[str] = []
 
         def _add(name: str) -> None:
             stripped = name.strip()
-            if stripped and stripped.lower() not in seen:
+            if (
+                stripped
+                and len(stripped) >= 2
+                and stripped.lower() not in _ENTITY_STOPWORDS
+                and not _RE_SKIP_FRAGMENT.match(stripped)
+                and stripped.lower() not in seen
+            ):
                 seen.add(stripped.lower())
                 candidates.append(stripped)
 
+        # 1. Multi-word capitalized phrases
         for m in _RE_CAPITALIZED.finditer(text):
             _add(m.group(1))
 
-        for m in _RE_DOUBLE_QUOTE.finditer(text):
+        # 2. Single-word technical identifiers (PascalCase, camelCase, ALL_CAPS)
+        for m in _RE_TECH_TERM.finditer(text):
             _add(m.group(1))
 
+        # 3-4. Quoted terms
+        for m in _RE_DOUBLE_QUOTE.finditer(text):
+            _add(m.group(1))
         for m in _RE_SINGLE_QUOTE.finditer(text):
             _add(m.group(1))
 
+        # 5. AKA patterns
         for m in _RE_AKA.finditer(text):
             _add(m.group(1))
             _add(m.group(2))
+
+        # 6. Parenthetical labels
+        for m in _RE_PAREN_LABEL.finditer(text):
+            label = m.group(1).strip()
+            # Skip date-only parentheticals like "Apr 5" or "10/04/2026"
+            if not re.match(
+                r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+                r"\s+\d{1,2}|\d{1,2}[/\s]\d{1,2}[/\s]\d{2,4}$",
+                label,
+                re.IGNORECASE,
+            ):
+                _add(label)
+
+        # 7. File paths
+        for m in _RE_FILEPATH.finditer(text):
+            _add(m.group(1))
+
+        # 8. Version identifiers
+        for m in _RE_VERSION_ID.finditer(text):
+            _add(m.group(1))
+
+        # 9. Key-value labels
+        for m in _RE_KEY_LABEL.finditer(text):
+            _add(m.group(1).strip())
 
         return candidates
 
@@ -450,9 +826,7 @@ class MemoryStore:
             return int(alias_row["entity_id"])
 
         # Create new entity
-        cur = self._conn.execute(
-            "INSERT INTO entities (name) VALUES (?)", (name,)
-        )
+        cur = self._conn.execute("INSERT INTO entities (name) VALUES (?)", (name,))
         self._conn.commit()
         return int(cur.lastrowid)  # type: ignore[return-value]
 
@@ -491,6 +865,24 @@ class MemoryStore:
             )
             self._conn.commit()
 
+    def _compute_neural_embed(self, fact_id: int, content: str) -> None:
+        """Compute and cache neural embedding for a fact. Graceful on failure."""
+        if not self._embed.alive:
+            return
+
+        vec = self._embed.embed(content)
+        if vec is not None:
+            try:
+                import numpy as np
+
+                self._conn.execute(
+                    "UPDATE facts SET neural_embed = ? WHERE fact_id = ?",
+                    (vec.tobytes(), fact_id),
+                )
+                self._conn.commit()
+            except Exception:
+                pass  # Non-critical — HRR + FTS5 still work
+
     def _rebuild_bank(self, category: str) -> None:
         """Full rebuild of a category's memory bank from all its fact vectors."""
         with self._lock:
@@ -504,7 +896,9 @@ class MemoryStore:
             ).fetchall()
 
             if not rows:
-                self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
+                self._conn.execute(
+                    "DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,)
+                )
                 self._conn.commit()
                 return
 
@@ -564,8 +958,18 @@ class MemoryStore:
         return dict(row)
 
     def close(self) -> None:
-        """Close the database connection."""
-        self._conn.close()
+        """Close the database connection and release locks."""
+        if self._conn:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            self._conn.close()
+            self._conn = None  # type: ignore[assignment]
+        if self._lock_fd:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            self._lock_fd.close()
+            self._lock_fd = None
 
     def __enter__(self) -> "MemoryStore":
         return self

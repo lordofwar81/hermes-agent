@@ -432,6 +432,7 @@ class ContextCompressor(ContextEngine):
                 provider or "none", base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error
+        self._context_probe_persistable: bool = False  # Whether probe result should persist
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0

@@ -143,6 +143,44 @@ hermes_cli = ["web_dist/**/*"]
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
 
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true
+# Ignore missing stubs for third-party packages without type annotations
+ignore_missing_imports = true
+# Exclude generated, vendor, and non-Python directories
+exclude = [
+    "venv",
+    "venv_test",
+    "__pycache__",
+    ".eggs",
+    "build",
+    "dist",
+    "node_modules",
+    "mini-swe-agent",
+    "environments/benchmarks",
+    "skills",
+    "optional-skills",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "tools/registry.py",
+    "tools/model_tools.py",
+    "agent/error_classifier.py",
+    "agent/memory_manager.py",
+    "gateway/platforms/base.py",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

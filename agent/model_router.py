@@ -81,6 +81,9 @@ class TaskClassifier:
         "debug", "debugging", "implement", "implementation",
         "patch", "traceback", "stacktrace", "exception", "error", "fix",
         "bug", "module", "script", "server", "test", "security",
+        "function", "class", "import", "compile", "deploy",
+        "api", "endpoint", "database", "sql", "query",
+        "build", "docker", "kubernetes", "bash", "terminal",
     })
 
     REFACTOR_KEYWORDS = frozenset({
@@ -538,26 +541,51 @@ class ModelRouter:
     ) -> Optional[ProviderCredential]:
         """Select the best credential for a task category.
 
-        ZAI is the default for all interactive tasks — local models (Mac Studio,
-        MiniMax) have context detection issues, compression failures, and speed
-        problems.  Local models are only used when ZAI is circuit-broken.
+        Routing tiers:
+          GREETING / SIMPLE  → Mac-Qwen 35B (fast, saves Z.ai budget)
+          CODE / EXPERT      → Z.ai GLM (superior for complex tasks)
+          ANALYSIS / REASONING → Z.ai primary, Mac-Qwen fallback
+          All (Z.ai down)    → Mac-Qwen → MiniMax (circuit-breaker chain)
         """
 
+        # EXPERT: try Venice first, then Z.ai
         if category == TaskCategory.EXPERT:
             if self._budget.is_budget_available():
                 venice = self._get_best_venice(blocked)
                 if venice:
                     return venice
+            zai = self._get_best_zai()
+            if zai:
+                return zai
 
-        zai = self._get_best_zai()
-        if zai:
-            return zai
+        # GREETING / SIMPLE: Mac-Qwen first — fast local, saves cloud costs
+        if category in (TaskCategory.GREETING, TaskCategory.SIMPLE):
+            mac = self._get_best_mac(blocked, estimated_tokens)
+            if mac:
+                return mac
+            zai = self._get_best_zai()
+            if zai:
+                return zai
 
-        if category in (TaskCategory.CODE, TaskCategory.ANALYSIS, TaskCategory.REASONING):
-            mac = self._registry.get("mac-studio-qwen36")
-            if mac and self._breaker.is_available("mac_studio") and self._fits_context(mac, estimated_tokens) and self._check_local_health(mac):
+        # CODE: Z.ai first — GLM models vastly superior for implementation
+        if category == TaskCategory.CODE:
+            zai = self._get_best_zai()
+            if zai:
+                return zai
+            mac = self._get_best_mac(blocked, estimated_tokens)
+            if mac:
                 return mac
 
+        # ANALYSIS / REASONING: Z.ai primary, Mac-Qwen fallback
+        if category in (TaskCategory.ANALYSIS, TaskCategory.REASONING):
+            zai = self._get_best_zai()
+            if zai:
+                return zai
+            mac = self._get_best_mac(blocked, estimated_tokens)
+            if mac:
+                return mac
+
+        # Final fallback: Mac-Qwen → MiniMax
         return self._get_fastest_available(blocked, estimated_tokens)
 
     def _fits_context(self, cred: ProviderCredential, estimated_tokens: int) -> bool:
@@ -589,10 +617,17 @@ class ModelRouter:
                 return cred
         return None
 
-    def _get_fastest_available(self, blocked: list[str], estimated_tokens: int = 0) -> Optional[ProviderCredential]:
-        """Get fastest available model (Mac Studio or ZAI turbo)."""
+    def _get_best_mac(self, blocked: list[str], estimated_tokens: int = 0) -> Optional[ProviderCredential]:
+        """Get Mac-Qwen 35B if available, healthy, and fits context."""
         mac = self._registry.get("mac-studio-qwen36")
-        if mac and "mac_studio" not in blocked and self._fits_context(mac, estimated_tokens):
+        if mac and "mac_studio" not in blocked and self._fits_context(mac, estimated_tokens) and self._check_local_health(mac):
+            return mac
+        return None
+
+    def _get_fastest_available(self, blocked: list[str], estimated_tokens: int = 0) -> Optional[ProviderCredential]:
+        """Get fastest available model (Mac-Qwen or ZAI turbo)."""
+        mac = self._get_best_mac(blocked, estimated_tokens)
+        if mac:
             return mac
 
         zai = self._get_best_zai()

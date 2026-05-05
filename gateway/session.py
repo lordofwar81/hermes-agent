@@ -224,7 +224,8 @@ def _discord_tools_loaded() -> bool:
         cfg = load_config()
         enabled = _get_platform_tools(cfg, "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to check Discord tool config: %s", exc)
         return False
 
 
@@ -256,8 +257,8 @@ def build_session_context_prompt(
             entry = platform_registry.get(context.source.platform.value)
             if entry and entry.pii_safe:
                 _is_pii_safe = True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("platform_registry PII check failed: %s", exc)
     redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
@@ -682,7 +683,7 @@ class SessionStore:
             from hermes_state import SessionDB
             self._db = SessionDB()
         except Exception as e:
-            print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+            logger.warning("SQLite session store unavailable, falling back to JSONL: %s", e)
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -704,11 +705,11 @@ class SessionStore:
                     for key, entry_data in data.items():
                         try:
                             self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
+                        except (ValueError, KeyError) as exc:
+                            logger.debug("Skipping session entry %s: %s", key, exc)
                             continue
             except Exception as e:
-                print(f"[gateway] Warning: Failed to load sessions: {e}")
+                logger.warning("Failed to load sessions: %s", e)
 
         self._loaded = True
     
@@ -839,8 +840,8 @@ class SessionStore:
         if self._db:
             try:
                 return self._db.session_count() > 1
-            except Exception:
-                pass  # fall through to heuristic
+            except Exception as exc:
+                logger.debug("session_count() failed, falling back to heuristic: %s", exc)
         # Fallback: check if sessions.json was loaded with existing data.
         # This covers the rare case where the DB is unavailable.
         with self._lock:
@@ -944,7 +945,7 @@ class SessionStore:
             try:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
-                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+                logger.warning("Failed to create SQLite session: %s", e)
 
         return entry
 

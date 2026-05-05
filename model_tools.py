@@ -136,7 +136,7 @@ def _run_async(coro):
                             asyncio.gather(*pending, return_exceptions=True)
                         )
                 except Exception:
-                    pass
+                    logger.debug("Error cancelling pending tasks in worker loop cleanup", exc_info=True)
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -426,6 +426,7 @@ def _compute_tool_definitions(
                 schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
                 dynamic = schema_fn()
             except Exception:
+                logger.warning("Failed to build dynamic schema for %s", discord_tool_name, exc_info=True)
                 dynamic = None
             if dynamic is None:
                 filtered_tools = [
@@ -731,7 +732,7 @@ def handle_function_call(
                     tool_call_id=tool_call_id or "",
                 )
             except Exception:
-                pass
+                logger.warning("pre_tool_call hook failed for %s", function_name, exc_info=True)
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)

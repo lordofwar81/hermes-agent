@@ -6742,10 +6742,8 @@ def _cmd_update_check():
             capture_output=True,
             text=True,
         )
-        upstream_exists = False
         compare_branch = "origin/main"
     else:
-        upstream_exists = True
         compare_branch = "upstream/main"
 
     if fetch_result.returncode != 0:

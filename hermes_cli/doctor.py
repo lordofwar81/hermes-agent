@@ -406,7 +406,6 @@ def run_doctor(args):
                 known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
             except Exception:
                 _resolve_auth_provider = None
-                pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (

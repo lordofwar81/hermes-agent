@@ -540,7 +540,6 @@ class BaseEnvironment(ABC):
         _pid = getattr(proc, "pid", None)
         _iter_count = 0
         _last_heartbeat = _now
-        _last_interrupt_state = False
         _cb_was_none = _get_activity_callback() is None
         if _DEBUG_INTERRUPT:
             logger.info(
@@ -710,7 +709,6 @@ class BaseEnvironment(ABC):
         and Local don't need file sync — the host filesystem is directly
         visible inside the container/process.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Unified execute()

@@ -1413,12 +1413,10 @@ class BasePlatformAdapter(ABC):
         
         Returns True if connection was successful.
         """
-        pass
     
     @abstractmethod
     async def disconnect(self) -> None:
         """Disconnect from the platform."""
-        pass
     
     @abstractmethod
     async def send(
@@ -1440,7 +1438,6 @@ class BasePlatformAdapter(ABC):
         Returns:
             SendResult with success status and message ID
         """
-        pass
 
     # Default: the adapter treats ``finalize=True`` on edit_message as a
     # no-op and is happy to have the stream consumer skip redundant final
@@ -1620,7 +1617,6 @@ class BasePlatformAdapter(ABC):
         Override in subclasses if the platform supports it.
         metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
-        pass
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator (if the platform uses one).
@@ -1628,7 +1624,6 @@ class BasePlatformAdapter(ABC):
         Override in subclasses that start background typing loops.
         Default is a no-op for platforms with one-shot typing indicators.
         """
-        pass
 
     async def send_multiple_images(
         self,
@@ -3244,7 +3239,6 @@ class BasePlatformAdapter(ABC):
         - name: Chat name
         - type: "dm", "group", "channel"
         """
-        pass
     
     def format_message(self, content: str) -> str:
         """

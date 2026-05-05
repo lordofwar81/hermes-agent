@@ -631,7 +631,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if sandbox is None:
             return
 
-        snapshot_id = self._snapshot_sandbox(sandbox)
+        self._snapshot_sandbox(sandbox)
         # Always stop the sandbox during cleanup to avoid resource leaks,
         # matching the Modal and Daytona patterns.
         self._stop_sandbox(sandbox)

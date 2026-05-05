@@ -278,7 +278,7 @@ class SessionDB:
         except Exception:
             pass  # Best effort — never fatal.
 
-    def close(self):
+    def close(self) -> None:
         """Close the database connection.
 
         Attempts a PASSIVE WAL checkpoint first so that exiting processes
@@ -380,7 +380,7 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
-    def _init_schema(self):
+    def _init_schema(self) -> None:
         """Create tables and FTS if they don't exist, reconcile columns.
 
         Schema management follows the declarative reconciliation pattern
@@ -518,14 +518,14 @@ class SessionDB:
         self,
         session_id: str,
         source: str,
-        model: str = None,
-        model_config: Dict[str, Any] = None,
-        system_prompt: str = None,
-        user_id: str = None,
-        parent_session_id: str = None,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+        system_prompt: Optional[str] = None,
+        user_id: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
-        def _do(conn):
+        def _do(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
                    system_prompt, parent_session_id, started_at)

@@ -414,7 +414,6 @@ class TestSessionContext:
         """Session context is per-thread — one thread's context doesn't leak."""
         hermes_logging.setup_logging(hermes_home=hermes_home)
 
-        results = {}
 
         def thread_a():
             hermes_logging.set_session_context("thread_a_session")

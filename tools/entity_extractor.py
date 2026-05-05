@@ -25,7 +25,7 @@ Usage:
 
 import re
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ def _is_org_term(term: str) -> bool:
 
 def _classify_entity(name: str) -> str:
     """Classify entity type based on name patterns."""
-    name_lower = name.lower()
+    name.lower()
 
     # Check for tech terms
     if _is_tech_term(name):

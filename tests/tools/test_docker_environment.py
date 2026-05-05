@@ -1,8 +1,6 @@
 import logging
 from io import StringIO
 import subprocess
-import sys
-import types
 
 import pytest
 
@@ -205,7 +203,7 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persistent=false, cleanup() must schedule docker stop + rm."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = _mock_subprocess_run(monkeypatch)
+    _mock_subprocess_run(monkeypatch)
 
     popen_cmds = []
     monkeypatch.setattr(

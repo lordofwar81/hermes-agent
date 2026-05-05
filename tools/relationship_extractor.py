@@ -13,7 +13,6 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
 
 from .llm_extractor import extract_relationship
 
@@ -376,7 +375,6 @@ def extract_and_store_relationships(
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser(description="Relationship extractor CLI")

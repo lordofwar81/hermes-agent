@@ -1,9 +1,8 @@
 """Tests for interrupt handling in concurrent tool execution."""
 
-import concurrent.futures
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -105,7 +104,7 @@ def test_concurrent_interrupt_cancels_pending(monkeypatch):
     # Create a tool that blocks until interrupted
     barrier = threading.Event()
 
-    original_invoke = agent._invoke_tool
+    agent._invoke_tool
 
     def slow_tool(name, args, task_id, call_id=None):
         if name == "slow_one":

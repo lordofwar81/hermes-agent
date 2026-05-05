@@ -18,7 +18,6 @@ together at the end. Script exits 0 iff every scenario passed or was
 cleanly SKIPPED (with reason).
 """
 
-import json
 import multiprocessing as mp
 import os
 import shutil
@@ -632,7 +631,7 @@ def _(home, kb):
         for i in range(1000):
             kb.claim_task(conn, tid)
             # Force close the run directly so we can make another claim
-            rid = kb.latest_run(conn, tid).id
+            kb.latest_run(conn, tid).id
             kb._end_run(conn, tid, outcome="reclaimed", summary=f"attempt {i}")
             conn.execute(
                 "UPDATE tasks SET status='ready', claim_lock=NULL, "
@@ -671,7 +670,7 @@ def _(home, kb):
                     assignee="w",
                 )
         t0 = time.monotonic()
-        stats = kb.board_stats(conn)
+        kb.board_stats(conn)
         el_stats = (time.monotonic() - t0) * 1000
         t0 = time.monotonic()
         tasks = kb.list_tasks(conn)
@@ -906,7 +905,7 @@ def _(home, kb):
         # Empty summary on complete → accept
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, summary="")
-        run = kb.latest_run(conn, tid)
+        kb.latest_run(conn, tid)
         # Empty summary falls back to result; both empty → None on run
         print(f"  empty body accepted, empty-title rejected")
     finally:
@@ -926,7 +925,7 @@ def _(home, kb):
         back = kb.get_task(conn, tid)
         assert back.tenant == weird_tenant
         # board_stats groups by tenant — verify it doesn't fall over
-        stats = kb.board_stats(conn)
+        kb.board_stats(conn)
         print(f"  multiline tenant stored and stats still work")
     finally:
         conn.close()

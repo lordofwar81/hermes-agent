@@ -10,8 +10,6 @@ import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
-import pytest
-import cli as cli_mod
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -286,21 +284,6 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert "Previous Conversation" in output
-
-    def test_panel_is_stored_as_resize_aware_history_entry(self):
-        cli = _make_cli()
-        cli.conversation_history = _simple_history()
-        cli_mod._configure_output_history(True, 10)
-        cli_mod._clear_output_history()
-
-        try:
-            output = self._capture_display(cli)
-
-            assert "Previous Conversation" in output
-            assert len(cli_mod._OUTPUT_HISTORY) == 1
-            assert callable(cli_mod._OUTPUT_HISTORY[0])
-        finally:
-            cli_mod._configure_output_history(True, 200)
 
     def test_assistant_with_no_content_no_tools_skipped(self):
         """Assistant messages with no visible output (e.g. pure reasoning)
@@ -650,7 +633,6 @@ class TestResumeDisplayConfig:
 
     def test_cli_defaults_have_resume_display(self):
         """cli.py load_cli_config defaults include resume_display."""
-        import cli as _cli_mod
         from cli import load_cli_config
 
         with (

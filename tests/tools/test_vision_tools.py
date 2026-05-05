@@ -1,6 +1,5 @@
 """Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
 
-import asyncio
 import json
 import logging
 import os
@@ -346,7 +345,7 @@ class TestErrorLoggingExcInfo:
                 patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
                 # Make unlink fail to trigger cleanup warning
-                original_unlink = Path.unlink
+                Path.unlink
 
                 def failing_unlink(self, *args, **kwargs):
                     raise PermissionError("no permission")

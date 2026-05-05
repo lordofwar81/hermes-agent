@@ -2,7 +2,6 @@
 
 import contextvars
 
-import pytest
 
 
 def test_default_origin_is_foreground():

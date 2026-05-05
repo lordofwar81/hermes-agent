@@ -5,7 +5,6 @@ inherited the full default toolset, allowing it to perform non-skill side
 effects (terminal, send_message, delegate_task, etc.).
 """
 
-import threading
 from unittest.mock import patch
 
 

@@ -13,7 +13,7 @@ import queue
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock, mock_open
+from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
@@ -696,7 +696,7 @@ class TestConvertToPng:
             with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
                 # Force ImportError for Pillow
                 import hermes_cli.clipboard as cb
-                original = cb._convert_to_png
+                cb._convert_to_png
 
                 def patched_convert(path):
                     # Skip Pillow, go straight to ImageMagick

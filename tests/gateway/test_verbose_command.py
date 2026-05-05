@@ -1,6 +1,5 @@
 """Tests for gateway /verbose command (config-gated tool progress cycling)."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -121,7 +120,7 @@ class TestVerboseCommand:
         # off -> new -> all -> verbose -> off
         expected = ["new", "all", "verbose", "off"]
         for mode in expected:
-            result = await runner._handle_verbose_command(_make_event())
+            await runner._handle_verbose_command(_make_event())
             saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             actual = saved["display"]["platforms"]["telegram"]["tool_progress"]
             assert actual == mode, \

@@ -18,9 +18,7 @@ Run:
     pytest tests/test_agent_loop_vllm.py -v -k "single"
 """
 
-import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -265,7 +263,7 @@ async def test_vllm_managed_server_produces_nodes():
         ]
 
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
-            result = await agent.run(messages)
+            await agent.run(messages)
 
         # Get the managed state — should have SequenceNodes
         state = managed.get_state()

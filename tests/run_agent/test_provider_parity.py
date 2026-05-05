@@ -4,12 +4,10 @@ and handles responses properly for all supported providers.
 Ensures changes to one provider path don't silently break another.
 """
 
-import json
-import os
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
@@ -62,7 +60,6 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     if model:
         kwargs["model"] = model
     base_url="https://openrouter.ai/api/v1",
-    api_key="test-key",
     base_url="https://openrouter.ai/api/v1",
     return AIAgent(**kwargs)
 
@@ -674,7 +671,7 @@ class TestNormalizeCodexResponse:
                            base_url="https://chatgpt.com/backend-api/codex")
 
     def test_text_response(self, monkeypatch):
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="message", status="completed",
@@ -688,7 +685,7 @@ class TestNormalizeCodexResponse:
         assert reason == "stop"
 
     def test_reasoning_summary_extracted(self, monkeypatch):
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="reasoning",
@@ -707,7 +704,7 @@ class TestNormalizeCodexResponse:
         assert reason == "stop"
 
     def test_encrypted_content_captured(self, monkeypatch):
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="reasoning",
@@ -727,7 +724,7 @@ class TestNormalizeCodexResponse:
         assert msg.codex_reasoning_items[0]["id"] == "rs_456"
 
     def test_no_encrypted_content_when_missing(self, monkeypatch):
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="message", status="completed",
@@ -740,7 +737,7 @@ class TestNormalizeCodexResponse:
         assert msg.codex_reasoning_items is None
 
     def test_tool_calls_extracted(self, monkeypatch):
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="function_call", status="completed",
@@ -756,7 +753,7 @@ class TestNormalizeCodexResponse:
 
     def test_message_items_captured_with_id_and_phase(self, monkeypatch):
         """Exact message items (with id/phase) must be captured for cache replay."""
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(
@@ -784,7 +781,7 @@ class TestNormalizeCodexResponse:
 
     def test_message_items_none_when_no_messages(self, monkeypatch):
         """Only reasoning + tool calls should yield None codex_message_items."""
-        agent = self._make_codex_agent(monkeypatch)
+        self._make_codex_agent(monkeypatch)
         response = SimpleNamespace(
             output=[
                 SimpleNamespace(type="function_call", status="completed",

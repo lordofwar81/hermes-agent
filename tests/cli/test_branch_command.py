@@ -10,10 +10,8 @@ Verifies that:
 """
 
 import os
-import uuid
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -163,7 +161,6 @@ class TestBranchCommandCLI:
     def test_branch_updates_agent_session_log_file(self, cli_instance, session_db, tmp_path):
         """Branching must redirect the agent's session_log_file to the new session's path."""
         from cli import HermesCLI
-        from pathlib import Path
 
         logs_dir = tmp_path / "sessions"
         logs_dir.mkdir()

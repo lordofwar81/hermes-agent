@@ -24,13 +24,12 @@ Usage:
     fused = rrf_fusion(vector_results, bm25_results, alpha=0.7)
 """
 
-import json
 import logging
 import re
 import sqlite3
 import string
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)

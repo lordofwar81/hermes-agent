@@ -725,7 +725,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
 
 
 def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _chat_messages_to_responses_input
     items = _chat_messages_to_responses_input(
         [
@@ -754,7 +754,7 @@ def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeyp
 
 
 def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _chat_messages_to_responses_input
     items = _chat_messages_to_responses_input(
         [
@@ -783,7 +783,7 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
 
 
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
     preflight = _preflight_codex_api_kwargs(
         {
@@ -810,7 +810,7 @@ def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch
 
 
 def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
 
     with pytest.raises(ValueError, match="function_call_output is missing call_id"):
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
@@ -826,7 +826,7 @@ def test_preflight_codex_api_kwargs_rejects_function_call_output_without_call_id
 
 
 def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
     kwargs["some_unknown_field"] = "value"
 
@@ -836,7 +836,7 @@ def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypat
 
 
 def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
     kwargs["reasoning"] = {"effort": "high", "summary": "auto"}
     kwargs["include"] = ["reasoning.encrypted_content"]
@@ -852,7 +852,7 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
 
 
 def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()
     kwargs["service_tier"] = "priority"
 
@@ -933,7 +933,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
         _codex_commentary_message_response("I'll inspect the repository first.")
@@ -945,7 +945,7 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
     """Incomplete Codex output messages must not be replayed as completed."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
 
     response = SimpleNamespace(
@@ -978,7 +978,7 @@ def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
     produces a confident-looking summary, tool_trace is empty because no
     tools actually ran, parent can't audit the claim.
     """
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
 
     leaked_content = (
@@ -1015,7 +1015,7 @@ def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_pre
     happens to contain `to=functions.*` (unlikely but possible), trust the
     structured call — don't wipe content that came alongside a real tool use.
     """
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
 
     response = SimpleNamespace(
@@ -1051,7 +1051,7 @@ def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_pre
 def test_normalize_codex_response_no_leak_passes_through(monkeypatch):
     """Sanity: normal assistant content that doesn't contain the leak pattern
     is returned verbatim with finish_reason=stop."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
 
     response = SimpleNamespace(
@@ -1430,7 +1430,7 @@ def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch
     Without this fix, reasoning-only responses get finish_reason='stop' which
     sends them into the empty-content retry loop (3 retries then failure).
     """
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
         _codex_reasoning_only_response()
@@ -1445,7 +1445,7 @@ def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch
 
 def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
     """If a response has both reasoning and message content, it should still be 'stop'."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     response = SimpleNamespace(
         output=[
             SimpleNamespace(
@@ -1538,7 +1538,7 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     """When converting a reasoning-only interim message to Responses API input,
     the reasoning items must be followed by an assistant message (even if empty)
     to satisfy the API's 'required following item' constraint."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     messages = [
         {"role": "user", "content": "think hard"},
         {
@@ -1567,7 +1567,7 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
 
 def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch):
     """Stored Codex assistant message statuses must survive replay normalization."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     from agent.codex_responses_adapter import (
         _chat_messages_to_responses_input,
         _preflight_codex_input_items,
@@ -1708,7 +1708,7 @@ def test_duplicate_detection_distinguishes_different_codex_message_items(monkeyp
 def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):
     """Duplicate reasoning item IDs across multi-turn incomplete responses
     must be deduplicated so the Responses API doesn't reject with HTTP 400."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     messages = [
         {"role": "user", "content": "think hard"},
         {
@@ -1747,7 +1747,7 @@ def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch
 
 def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     """_preflight_codex_input_items should also deduplicate reasoning items by ID."""
-    agent = _build_agent(monkeypatch)
+    _build_agent(monkeypatch)
     raw_input = [
         {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
         {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},

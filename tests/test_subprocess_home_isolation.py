@@ -9,9 +9,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/4426
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

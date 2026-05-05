@@ -1,6 +1,5 @@
 """Tests for agent.error_classifier — structured API error classification."""
 
-import pytest
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
@@ -24,7 +23,6 @@ class MockAPIError(Exception):
 
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
-    pass
 
 
 class ReadTimeout(MockTransportError):

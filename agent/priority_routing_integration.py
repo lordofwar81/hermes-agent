@@ -23,7 +23,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import yaml
 
 from agent.trivial_task_classifier import TrivialTaskClassifier, ComplexityDetector
 from agent.budget_enforcer import VeniceBudgetEnforcer
@@ -74,7 +73,7 @@ def route_with_priority(
         PriorityRoutingDecision with route and analysis
     """
     # Initialize components
-    router = PriorityRouter(config_path)
+    PriorityRouter(config_path)
     budget_enforcer = VeniceBudgetEnforcer(config_path)
 
     # Step 1: Check budget FIRST (before any routing)
@@ -309,8 +308,8 @@ def get_priority_routing_summary(
     Returns:
         Dict with routing analysis summary
     """
-    router = PriorityRouter(config_path)
-    budget_enforcer = VeniceBudgetEnforcer(config_path)
+    PriorityRouter(config_path)
+    VeniceBudgetEnforcer(config_path)
 
     # Get routing decision
     decision = route_with_priority(message, {}, {}, config_path)

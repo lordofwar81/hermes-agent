@@ -1,7 +1,6 @@
 """Regression tests for Nous OAuth refresh + agent-key mint interactions."""
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 

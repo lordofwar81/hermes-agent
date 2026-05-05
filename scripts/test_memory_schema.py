@@ -2,7 +2,6 @@ import sys
 sys.path.insert(0, '.')
 
 # Import memory tool to trigger registration
-import tools.memory_tool
 from tools.registry import registry
 
 schema = registry.get_schema('memory')

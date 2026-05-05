@@ -96,8 +96,7 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     env = LocalEnvironment(cwd="/tmp")
     try:
         result_holder = {}
-        proc_holder = {}
-        started = threading.Event()
+        threading.Event()
         raise_at = [None]  # set by the main thread to tell worker when
 
         # Drive execute() on a separate thread so we can SIGNAL-interrupt it
@@ -155,7 +154,6 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
         import ctypes
-        import sys as _sys
         # py-thread-state exception targets need the ident, not the Thread
         tid = t.ident
         assert tid is not None

@@ -3,8 +3,7 @@
 import json
 import os
 from io import BytesIO
-from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -139,7 +138,7 @@ class TestBuildOAuthAuth:
 
     def test_pre_registered_client_id_stored(self, tmp_path, monkeypatch):
         try:
-            from mcp.client.auth import OAuthClientProvider
+            pass
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
@@ -158,7 +157,7 @@ class TestBuildOAuthAuth:
 
     def test_scope_passed_through(self, tmp_path, monkeypatch):
         try:
-            from mcp.client.auth import OAuthClientProvider
+            pass
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
@@ -304,7 +303,7 @@ class TestOAuthPortSharing:
         mod._oauth_port = None
 
         try:
-            from mcp.client.auth import OAuthClientProvider
+            pass
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
@@ -388,7 +387,7 @@ class TestBuildOAuthAuthNonInteractive:
     def test_noninteractive_without_cached_tokens_warns(self, tmp_path, monkeypatch, caplog):
         """Without cached tokens, non-interactive mode logs a clear warning."""
         try:
-            from mcp.client.auth import OAuthClientProvider
+            pass
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 
@@ -408,7 +407,7 @@ class TestBuildOAuthAuthNonInteractive:
     def test_noninteractive_with_cached_tokens_no_warning(self, tmp_path, monkeypatch, caplog):
         """With cached tokens, non-interactive mode logs no 'no cached tokens' warning."""
         try:
-            from mcp.client.auth import OAuthClientProvider
+            pass
         except ImportError:
             pytest.skip("MCP SDK auth not available")
 

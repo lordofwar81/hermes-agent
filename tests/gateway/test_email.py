@@ -18,9 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 from gateway.platforms.base import SendResult
 
@@ -287,7 +285,7 @@ class TestDispatchMessage(unittest.TestCase):
 
         adapter._message_handler = mock_handler
         # Override handle_message to capture the event directly
-        original_handle = adapter.handle_message
+        adapter.handle_message
 
         async def capture_handle(event):
             captured_events.append(event)

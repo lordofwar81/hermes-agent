@@ -3,7 +3,7 @@
 import asyncio
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -130,7 +130,7 @@ class TestSSHBulkDownload:
         # The stdout kwarg should be a file object opened for writing
         call_kwargs = mock_run.call_args
         # stdout is passed as a keyword arg
-        stdout_val = call_kwargs.kwargs.get("stdout") or call_kwargs[1].get("stdout")
+        call_kwargs.kwargs.get("stdout") or call_kwargs[1].get("stdout")
         # The file was opened via `with open(dest, "wb") as f` and passed as stdout=f.
         # After the context manager exits, the file is closed, but we can verify
         # the dest path was used by checking if the file was created.

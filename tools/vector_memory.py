@@ -29,13 +29,12 @@ Usage:
     store.update_epistemic_status(memory_id, "verified", confidence=0.9)
 """
 
-import json
 import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Union
-from dataclasses import dataclass, asdict
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
 import requests
 
 logger = logging.getLogger(__name__)

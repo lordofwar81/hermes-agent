@@ -2,8 +2,6 @@
 
 import json
 import logging
-import os
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -13,7 +11,6 @@ from agent.auxiliary_client import (
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
-    auxiliary_max_tokens_param,
     call_llm,
     async_call_llm,
     _build_call_kwargs,
@@ -317,7 +314,7 @@ class TestExpiredCodexFallback:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _resolve_auto, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
             # Should NOT be Codex, should be Anthropic (or another available provider)
             assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
@@ -393,7 +390,7 @@ class TestExpiredCodexFallback:
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None, "Should resolve token"
             adapter = client.chat.completions
@@ -448,7 +445,7 @@ class TestExpiredCodexFallback:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
-            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            from agent.auxiliary_client import _try_anthropic
             client, model = _try_anthropic()
             assert client is not None
             adapter = client.chat.completions

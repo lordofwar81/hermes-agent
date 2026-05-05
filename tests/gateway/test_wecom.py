@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 
 

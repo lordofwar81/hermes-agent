@@ -11,7 +11,6 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, date
 
 from .llm_extractor import extract_temporal
 

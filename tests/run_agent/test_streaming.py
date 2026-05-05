@@ -3,11 +3,8 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
-import json
-import threading
-import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1433,7 +1430,7 @@ class TestCopilotACPStreamingDecision:
 
             assert _use_streaming is False
             # Call the non-streaming path as the loop would
-            response = mock_non_stream({})
+            mock_non_stream({})
             mock_stream.assert_not_called()
 
     @patch("run_agent.get_tool_definitions", return_value=[])

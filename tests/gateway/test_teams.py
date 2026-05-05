@@ -1,15 +1,12 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import asyncio
-import os
 import sys
 import types
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.config import PlatformConfig
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 

@@ -175,7 +175,6 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
-from hermes_cli.config import cfg_get
 
 
 

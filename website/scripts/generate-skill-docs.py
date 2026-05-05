@@ -14,10 +14,8 @@ Sidebar is updated to nest all per-skill pages under Skills → Bundled / Option
 
 from __future__ import annotations
 import re
-import sys
 from collections import defaultdict
 from pathlib import Path
-from textwrap import dedent
 from typing import Any
 
 import yaml
@@ -339,7 +337,7 @@ def render_skill_page(
     if len(short_desc) > 160:
         short_desc = short_desc[:157] + "..."
 
-    title = f"{name}"
+    f"{name}"
     # Heuristic nicer title from name
     display_name = name.replace("-", " ").replace("_", " ").title()
 

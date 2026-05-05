@@ -2,7 +2,6 @@
 state management, streaming TTS activation, voice message prefix, _vprint."""
 
 import ast
-import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -185,8 +184,6 @@ class TestStreamingTTSActivation:
         use_streaming_tts = False
         try:
             from tools.tts_tool import (
-                _load_tts_config as _load_tts_cfg,
-                _get_provider as _get_prov,
                 _import_elevenlabs,
                 _import_sounddevice,
             )

@@ -5,7 +5,6 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -71,10 +70,8 @@ class TestHandleUpdateCommand:
             MockPath.return_value = MagicMock()
             MockPath.__truediv__ = Path.__truediv__
             # Easier: just patch the __file__ resolution in the method
-            pass
 
         # Simpler approach — mock at method level using a wrapper
-        from gateway.run import GatewayRunner
         runner = _make_runner()
 
         with patch("gateway.run._hermes_home", tmp_path):
@@ -83,7 +80,7 @@ class TestHandleUpdateCommand:
             # Since Path(__file__) resolves to the real gateway/run.py,
             # project_root will be the real hermes-agent dir (which HAS .git).
             # Patch Path to control this.
-            original_path = Path
+            pass
 
             class FakePath(type(Path())):
                 pass
@@ -205,7 +202,7 @@ class TestHandleUpdateCommand:
              patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
-            result = await runner._handle_update_command(event)
+            await runner._handle_update_command(event)
 
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()

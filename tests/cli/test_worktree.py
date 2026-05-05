@@ -5,11 +5,9 @@ Verifies worktree creation, cleanup, .worktreeinclude handling,
 """
 
 import os
-import shutil
 import subprocess
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture

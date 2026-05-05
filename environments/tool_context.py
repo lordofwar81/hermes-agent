@@ -26,7 +26,7 @@ Example usage in a compute_reward():
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import asyncio
 import concurrent.futures
@@ -51,7 +51,7 @@ def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str)
     If not (e.g., called from sync code), runs directly.
     """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         # We're in an async context -- need to run in thread
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(

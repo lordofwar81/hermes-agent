@@ -24,12 +24,9 @@ import logging
 import math
 import shutil
 import sqlite3
-import tempfile
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Union
-import pandas as pd
+from typing import Dict, List, Any, Optional
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -349,7 +346,7 @@ class MemoryExporter:
         try:
             # Determine LanceDB path from vector store
             # This is hacky - depends on lancedb implementation
-            import lancedb
+            pass
 
             # We'll just copy the entire vector_memory directory
             vector_memory_dir = Path.home() / ".hermes" / "vector_memory"
@@ -448,7 +445,7 @@ def memory_export_tool(args: Dict[str, Any], **kwargs) -> str:
 def check_memory_export_requirements() -> bool:
     """Check if requirements for memory export are met."""
     try:
-        import lancedb
+        pass
 
         return True
     except ImportError:

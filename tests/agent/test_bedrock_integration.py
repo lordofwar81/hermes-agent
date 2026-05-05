@@ -9,7 +9,6 @@ Note: Tests that import ``hermes_cli.auth`` or ``hermes_cli.runtime_provider``
 require Python 3.10+ due to ``str | None`` type syntax in the import chain.
 """
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -93,7 +92,6 @@ class TestResolveProvider:
 
     def test_explicit_bedrock_resolves(self, monkeypatch):
         """When user explicitly requests 'bedrock', it should resolve."""
-        from hermes_cli.auth import PROVIDER_REGISTRY
         # bedrock is in the registry, so resolve_provider should return it
         from hermes_cli.auth import resolve_provider
         result = resolve_provider("bedrock")
@@ -256,7 +254,6 @@ class TestPackaging:
     """Verify bedrock optional dependency is declared."""
 
     def test_bedrock_extra_exists(self):
-        import configparser
         from pathlib import Path
         # Read pyproject.toml to verify [bedrock] extra
         toml_path = Path(__file__).parent.parent.parent / "pyproject.toml"

@@ -24,11 +24,10 @@ Usage:
     resolve = resolve_contradiction(new_text, old_id, "keep_new", vector_memory_store)
 """
 
-import json
 import logging
 import re
 import sys
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -47,7 +46,7 @@ except ImportError:
     )
 
 try:
-    import lancedb
+    pass
 
     HAS_LANCEDB = True
 except ImportError:
@@ -376,7 +375,7 @@ def handle_memory_with_contradiction_check(
     # Apply resolution
     if suggestion == "keep_new":
         # Mark old memory as contradicted
-        old_id = contradictions[0]["old_memory"]["id"]
+        contradictions[0]["old_memory"]["id"]
         # TODO: Update old memory's epistemic_status to "contradicted"
         # TODO: Add new memory
         result["added"] = True
@@ -385,7 +384,7 @@ def handle_memory_with_contradiction_check(
         result["added"] = False
     elif suggestion == "keep_both":
         # Mark both as contradicted
-        old_id = contradictions[0]["old_memory"]["id"]
+        contradictions[0]["old_memory"]["id"]
         # TODO: Update old memory's epistemic_status to "contradicted"
         # TODO: Add new memory with epistemic_status "contradicted"
         result["added"] = True

@@ -289,8 +289,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._cron_skipped = True
                 return
 
-            from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
-            from plugins.memory.honcho.session import HonchoSessionManager
+            from plugins.memory.honcho.client import HonchoClientConfig
 
             cfg = HonchoClientConfig.from_global_config()
             if not cfg.enabled or not (cfg.api_key or cfg.base_url):

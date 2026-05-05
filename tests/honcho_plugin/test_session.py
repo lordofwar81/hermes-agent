@@ -1097,7 +1097,7 @@ class TestDialecticDepth:
         provider._session_key = "test"
         provider._base_context_cache = "existing context"
 
-        result = provider._run_dialectic_depth("test query")
+        provider._run_dialectic_depth("test query")
         # Only 1 call because pass 0 had sufficient signal
         assert provider._manager.dialectic_query.call_count == 1
 
@@ -1193,7 +1193,6 @@ class TestDialecticCadenceAdvancesOnSuccess:
         return provider
 
     def test_empty_dialectic_result_does_not_advance_cadence(self):
-        import time as _time
         provider = self._make_provider()
         provider._session_key = "test"
         provider._manager.dialectic_query.return_value = ""  # silent failure

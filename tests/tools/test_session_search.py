@@ -2,8 +2,6 @@
 
 import asyncio
 import json
-import time
-import pytest
 
 from tools.session_search_tool import (
     _format_timestamp,

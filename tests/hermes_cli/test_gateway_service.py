@@ -500,7 +500,7 @@ class TestLaunchdServiceRecovery:
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        target = f"{domain}/{label}"
+        f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
             if "bootout" in cmd:
@@ -1129,8 +1129,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_auto_detected_root_is_rejected(self, monkeypatch):
         """When root is auto-detected (not explicitly requested), raise."""
-        import pwd
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "root")
@@ -1146,7 +1144,7 @@ class TestSystemServiceIdentityRootHandling:
         import grp
 
         root_info = pwd.getpwnam("root")
-        root_group = grp.getgrgid(root_info.pw_gid).gr_name
+        grp.getgrgid(root_info.pw_gid).gr_name
 
         username, group, home = gateway_cli._system_service_identity(run_as_user="root")
         assert username == "root"
@@ -1154,8 +1152,6 @@ class TestSystemServiceIdentityRootHandling:
 
     def test_non_root_user_passes_through(self, monkeypatch):
         """Normal non-root user works as before."""
-        import pwd
-        import grp
 
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
@@ -1955,7 +1951,7 @@ class TestMigrateLegacyCommand:
         """Verify the argparse subparser is registered and parses flags."""
         import hermes_cli.main as cli_main
 
-        parser = cli_main.build_parser() if hasattr(cli_main, "build_parser") else None
+        cli_main.build_parser() if hasattr(cli_main, "build_parser") else None
         # Fall back to calling main's setup helper if direct access isn't exposed
         # The key thing: the subparser must exist. We verify by constructing
         # a namespace through argparse directly — but if build_parser isn't

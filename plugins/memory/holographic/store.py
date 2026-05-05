@@ -722,7 +722,6 @@ class MemoryStore:
         vec = self._embed.embed(content)
         if vec is not None:
             try:
-                import numpy as np
                 self._conn.execute(
                     "UPDATE facts SET neural_embed = ? WHERE fact_id = ?",
                     (vec.tobytes(), fact_id),

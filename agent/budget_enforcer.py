@@ -11,7 +11,6 @@ Classes:
 from __future__ import annotations
 
 import json
-import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -206,7 +205,7 @@ class VeniceSpendTracker:
             True if budget should be reset for new day
         """
         now = datetime.now(self._reset_timezone)
-        current_date = now.strftime("%Y-%m-%d")
+        now.strftime("%Y-%m-%d")
         current_hour = now.hour
 
         # Check if we've crossed the reset time
@@ -227,7 +226,7 @@ class VeniceSpendTracker:
             return False
 
         data = self._load_data()
-        current_date = self._get_current_date_key()
+        self._get_current_date_key()
 
         # Keep only last 30 days of data
         if "summary" in data:

@@ -9,9 +9,7 @@ selection to reduce context bloat (target 60-80% less tokens than naive inclusio
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
@@ -260,7 +258,6 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """No background prefetch needed."""
-        pass
 
     def sync_turn(
         self, user_content: str, assistant_content: str, *, session_id: str = ""
@@ -299,11 +296,9 @@ class BuiltinMemoryProvider(MemoryProvider):
     # Optional hooks
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Optional per‑turn notification."""
-        pass
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Optional session‑end processing."""
-        pass
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Extract insights before compression."""
@@ -311,8 +306,6 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     def on_delegation(self, task: str, result: str, **kwargs) -> None:
         """Observe subagent completion."""
-        pass
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built‑in memory writes to vector store (already done by memory_tool)."""
-        pass

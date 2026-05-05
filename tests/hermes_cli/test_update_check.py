@@ -87,7 +87,7 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
-        result = banner.check_for_updates()
+        banner.check_for_updates()
     # Should have fallen back to project root and run git commands
     assert mock_run.call_count >= 1
 

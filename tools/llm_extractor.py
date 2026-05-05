@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Union
 import requests
 
 logger = logging.getLogger(__name__)

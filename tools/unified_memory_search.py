@@ -38,7 +38,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from tools.registry import registry
 
@@ -182,7 +182,6 @@ def parse_query(query: str) -> ParsedQuery:
 
     # First pass: extract relative date expressions (multi-word)
     # We'll process the query as a whole, removing matched patterns
-    remaining_text = query
 
     # Pattern for relative date expressions (multi-word)
     # We'll use _parse_relative_date_expr on each word and also try consecutive pairs
@@ -698,8 +697,7 @@ def unified_memory_search_tool(args: Dict[str, Any], **kwargs) -> str:
 def check_unified_search_requirements() -> bool:
     """Check if requirements for unified search are met."""
     try:
-        import lancedb
-        from .bm25_memory import BM25MemoryStore
+        pass
 
         return True
     except ImportError:

@@ -1,7 +1,6 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -16,20 +15,17 @@ from acp.schema import (
     AvailableCommandsUpdate,
     Implementation,
     InitializeResponse,
-    ListSessionsResponse,
     LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
     SessionModelState,
-    SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
-    Usage,
     UsageUpdate,
     UserMessageChunk,
 )

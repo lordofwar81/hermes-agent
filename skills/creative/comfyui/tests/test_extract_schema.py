@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from extract_schema import (
     extract_schema,
@@ -177,7 +176,7 @@ class TestDuplicateDeduplication:
         schema = extract_schema(wf)
         params = schema["parameters"]
         # Both seeds present with disambiguated names
-        seed_keys = [k for k in params if "seed" in k]
+        [k for k in params if "seed" in k]
         # Symmetric: both renamed (no bare "seed")
         assert "seed" not in params
         assert "seed_3" in params and "seed_4" in params

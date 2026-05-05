@@ -2,7 +2,6 @@
 
 import time
 import pytest
-from pathlib import Path
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -11,7 +10,6 @@ from agent.insights import (
     _format_duration,
     _bar_chart,
     _has_known_pricing,
-    _DEFAULT_PRICING,
 )
 
 
@@ -596,7 +594,6 @@ class TestEdgeCases:
 
     def test_tool_usage_from_tool_calls_json(self, db):
         """Tool usage should be extracted from tool_calls JSON when tool_name is NULL."""
-        import json as _json
         db.create_session(session_id="s1", source="cli", model="test")
         # Assistant message with tool_calls (this is what CLI produces)
         db.append_message("s1", role="assistant", content="Let me search",
@@ -708,7 +705,7 @@ class TestEdgeCases:
         assert report["platforms"][0]["platform"] == "cli"
 
         # Terminal format should NOT show platform section for single platform
-        text = engine.format_terminal(report)
+        engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 

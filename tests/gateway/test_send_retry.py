@@ -235,7 +235,7 @@ class TestSendWithRetryExhausted:
         network_err = SendResult(success=False, error="ConnectError")
         adapter._send_results = [network_err, network_err, network_err]
 
-        original_send = adapter.send
+        adapter.send
         call_count = [0]
 
         async def send_with_notice_failure(chat_id, content, **kwargs):

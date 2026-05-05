@@ -2,17 +2,13 @@
 
 import os
 import json
-import tempfile
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.config import (
-    DEFAULT_CONFIG,
     reload_env,
     redact_key,
-    _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
 
@@ -1343,7 +1339,7 @@ class TestProbeGatewayHealth:
         # Both paths should fail (no server), but we verify they were constructed
         # correctly by checking the URLs attempted.
         calls = []
-        original_urlopen = ws.urllib.request.urlopen
+        ws.urllib.request.urlopen
 
         def mock_urlopen(req, **kwargs):
             calls.append(req.full_url)

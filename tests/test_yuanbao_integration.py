@@ -20,7 +20,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from gateway.config import Platform, PlatformConfig, GatewayConfig
 from gateway.platforms.yuanbao import YuanbaoAdapter
 
@@ -378,7 +377,7 @@ class TestP0ChatLockEviction:
 
         # Lock the oldest entry
         oldest_key = next(iter(adapter._outbound._chat_locks))
-        oldest_lock = adapter._outbound._chat_locks[oldest_key]
+        adapter._outbound._chat_locks[oldest_key]
         # Simulate a held lock by acquiring it in a non-async way (set _locked)
         # asyncio.Lock is not held until actually acquired; so we test the
         # method logic by acquiring the first lock manually.

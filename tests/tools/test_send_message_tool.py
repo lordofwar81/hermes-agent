@@ -1189,7 +1189,6 @@ class TestSendMatrixUrlEncoding:
 
     def test_room_id_is_percent_encoded_in_url(self):
         """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
-        import aiohttp
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1477,7 +1476,7 @@ class TestSendDiscordForumMedia:
         session.post = MagicMock(return_value=thread_resp)
 
         post_calls = []
-        orig_post = session.post
+        session.post
 
         def track_post(url, **kwargs):
             post_calls.append({"url": url, "kwargs": kwargs})

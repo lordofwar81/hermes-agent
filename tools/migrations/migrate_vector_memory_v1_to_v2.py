@@ -23,11 +23,8 @@ Usage:
 """
 
 import argparse
-import json
-import os
 import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -36,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     import lancedb
-    import pandas as pd
     import pyarrow as pa
 except ImportError as e:
     print(f"Error: Required module missing: {e}")
@@ -159,7 +155,7 @@ def migrate_table(table):
     arrow_table = pa.Table.from_pandas(df)
 
     # Create new table with updated schema
-    new_table = db.create_table(temp_table_name, arrow_table)
+    db.create_table(temp_table_name, arrow_table)
     print(f"  Created temporary table {temp_table_name}")
 
     # Drop old table and rename new one

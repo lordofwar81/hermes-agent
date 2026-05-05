@@ -8,8 +8,6 @@ Verifies that:
 3. Context-overflow failures produce helpful error messages suggesting /compact.
 """
 
-import pytest
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -48,7 +46,6 @@ class TestGeneric400Heuristic:
         """A generic 400 with a small session should still be treated
         as a non-retryable client error (not context overflow)."""
         error_msg = "error"
-        status_code = 400
         approx_tokens = 1000  # Small session
         api_messages = [{"role": "user", "content": "hi"}]
 
@@ -65,14 +62,13 @@ class TestGeneric400Heuristic:
         # The heuristic should NOT trigger for small sessions
         ctx_len = 200000
         is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
-        is_generic_error = len(error_msg.strip()) < 30
+        len(error_msg.strip()) < 30
         assert not is_large_session  # Small session → heuristic doesn't fire
 
     def test_generic_400_with_large_token_count_triggers_heuristic(self):
         """A generic 400 with high token count should be treated as
         probable context overflow."""
         error_msg = "error"
-        status_code = 400
         ctx_len = 200000
         approx_tokens = 100000  # > 40% of 200k
         api_messages = [{"role": "user", "content": "hi"}] * 20
@@ -93,7 +89,6 @@ class TestGeneric400Heuristic:
         """A generic 400 with >80 messages should trigger the heuristic
         even if estimated tokens are low."""
         error_msg = "error"
-        status_code = 400
         ctx_len = 200000
         approx_tokens = 5000  # Low token estimate
         api_messages = [{"role": "user", "content": "x"}] * 100  # > 80 messages
@@ -107,9 +102,6 @@ class TestGeneric400Heuristic:
         """A 400 with a specific, long error message should NOT trigger
         the heuristic even with a large session."""
         error_msg = "invalid model: anthropic/claude-nonexistent-model is not available"
-        status_code = 400
-        ctx_len = 200000
-        approx_tokens = 100000
 
         is_generic_error = len(error_msg.strip()) < 30
         assert not is_generic_error  # Long specific message → heuristic doesn't fire

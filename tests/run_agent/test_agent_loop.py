@@ -5,7 +5,6 @@ Tests the multi-turn agent engine using mocked servers, without needing
 real API keys or running servers.
 """
 
-import asyncio
 import json
 import sys
 from dataclasses import dataclass
@@ -22,7 +21,6 @@ try:
     from environments.agent_loop import (
         AgentResult,
         HermesAgentLoop,
-        ToolError,
         _extract_reasoning_from_message,
         resize_tool_pool,
     )

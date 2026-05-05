@@ -2,9 +2,7 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 import hermes_constants
 from hermes_constants import get_default_hermes_root, is_container

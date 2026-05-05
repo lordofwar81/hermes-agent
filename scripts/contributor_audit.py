@@ -17,7 +17,6 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -264,7 +263,7 @@ def collect_salvaged_contributors(since_tag, until="HEAD"):
 
         # Also credit the PR author
         pr_author = pr.get("author", {})
-        pr_author_login = pr_author.get("login", "") if isinstance(pr_author, dict) else ""
+        pr_author.get("login", "") if isinstance(pr_author, dict) else ""
 
         for pattern in SALVAGE_PATTERNS:
             for match in pattern.finditer(body):

@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import logging
-import os
-import types
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
-    _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
     _resolve_git_url,
     _sanitize_plugin_name,
-    plugins_command,
 )
 
 
@@ -164,7 +159,6 @@ class TestCmdInstall:
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install
-        import argparse
 
         with pytest.raises(SystemExit):
             cmd_install("")

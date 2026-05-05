@@ -1,11 +1,8 @@
 """Tests for the IRC platform adapter plugin."""
 
 import asyncio
-import os
-import sys
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -231,7 +228,7 @@ class TestIRCAdapterMessageParsing:
 
         # Mock handle_message to capture the event
         dispatched = []
-        original_dispatch = adapter._dispatch_message
+        adapter._dispatch_message
 
         async def capture_dispatch(**kwargs):
             dispatched.append(kwargs)

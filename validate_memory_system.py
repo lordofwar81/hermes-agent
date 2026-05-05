@@ -9,7 +9,6 @@ sys.path.insert(0, ".")
 import json
 import logging
 import tempfile
-import os
 from pathlib import Path
 
 logging.basicConfig(level=logging.WARNING)  # suppress debug logs

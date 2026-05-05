@@ -16,7 +16,7 @@ with ``APIConnectionError('Connection error.')`` whose cause was
 That is the exact scenario this test reproduces at object level without a
 network, so it runs in CI on every PR.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from run_agent import AIAgent
 

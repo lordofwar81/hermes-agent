@@ -595,7 +595,7 @@ class TestEndToEnd:
 
         # 从 biz payload 中读取 to_account 和 msg_body
         from gateway.platforms.yuanbao_proto import (
-            _parse_fields, _fields_to_dict, _get_string, _get_repeated_bytes, WT_LEN
+            _parse_fields, _fields_to_dict, _get_string, _get_repeated_bytes
         )
         biz = dec["data"]
         fdict = _fields_to_dict(_parse_fields(biz))

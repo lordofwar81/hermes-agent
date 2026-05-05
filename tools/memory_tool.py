@@ -31,7 +31,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 
 # Optional vector memory integration
 try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import os
 import time
 from pathlib import Path
 
@@ -233,7 +232,7 @@ def test_heartbeat_extends_claim(kanban_home):
         t = kb.create_task(conn, title="x", assignee="a")
         claimer = "host:hb"
         kb.claim_task(conn, t, claimer=claimer, ttl_seconds=60)
-        original = kb.get_task(conn, t).claim_expires
+        kb.get_task(conn, t).claim_expires
         # Rewind then heartbeat.
         conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (0, t))
         ok = kb.heartbeat_claim(conn, t, claimer=claimer, ttl_seconds=3600)

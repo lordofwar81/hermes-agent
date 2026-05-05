@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
     from environments.tool_call_parsers import (
-        ParseResult,
         ToolCallParser,
         get_parser,
         list_parsers,

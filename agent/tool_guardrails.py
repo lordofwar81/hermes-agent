@@ -10,10 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+
+_HALLUCINATED_TOOL_PATTERN = re.compile(
+    r"\[Calling tool:\s*(\w+)\s*\(",
+    re.IGNORECASE,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -76,6 +82,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    hallucinated_tool_detection: bool = True
+    hallucinated_tool_max_retries: int = 2
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -96,6 +104,12 @@ class ToolCallGuardrailConfig:
         return cls(
             warnings_enabled=_as_bool(data.get("warnings_enabled"), defaults.warnings_enabled),
             hard_stop_enabled=_as_bool(data.get("hard_stop_enabled"), defaults.hard_stop_enabled),
+            hallucinated_tool_detection=_as_bool(
+                data.get("hallucinated_tool_detection"), defaults.hallucinated_tool_detection
+            ),
+            hallucinated_tool_max_retries=_positive_int(
+                data.get("hallucinated_tool_max_retries"), defaults.hallucinated_tool_max_retries
+            ),
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
@@ -378,6 +392,25 @@ class ToolCallGuardrailController:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def check_text_content(self, content: str) -> ToolGuardrailDecision | None:
+        if not self.config.hallucinated_tool_detection or not content:
+            return None
+        match = _HALLUCINATED_TOOL_PATTERN.search(content)
+        if not match:
+            return None
+        tool_name = match.group(1)
+        return ToolGuardrailDecision(
+            action="warn",
+            code="hallucinated_tool_call_in_text",
+            message=(
+                f"The model wrote '[Calling tool: {tool_name}(...)]' as plain text "
+                "instead of issuing a structured tool call. This means the tool was "
+                "NOT actually executed. You MUST use the proper tool_calls mechanism — "
+                "do NOT write tool call syntax in your text response."
+            ),
+            tool_name=tool_name,
+        )
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

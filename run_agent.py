@@ -13892,6 +13892,55 @@ class AIAgent:
                     self._empty_content_retries = 0
                     self._thinking_prefill_retries = 0
 
+                    # ── Hallucinated tool-call detection ───────────────
+                    # Models (especially glm-5-turbo) sometimes write
+                    # "[Calling tool: execute_code(...)]" as plain text
+                    # instead of issuing structured tool_calls.  The agent
+                    # loop sees finish_reason="stop" with no tool_calls and
+                    # exits — but the tool was never actually executed.
+                    # Detect this pattern and nudge the model to retry with
+                    # proper tool calls.
+                    _halluc_decision = self._tool_guardrails.check_text_content(
+                        final_response
+                    )
+                    if (
+                        _halluc_decision
+                        and getattr(self, "_hallucinated_tool_retries", 0)
+                        < self._tool_guardrails.config.hallucinated_tool_max_retries
+                    ):
+                        self._hallucinated_tool_retries = getattr(
+                            self, "_hallucinated_tool_retries", 0
+                        ) + 1
+                        logger.warning(
+                            "Hallucinated tool call detected in text: %s — "
+                            "nudging retry (%d/%d)",
+                            _halluc_decision.tool_name,
+                            self._hallucinated_tool_retries,
+                            self._tool_guardrails.config.hallucinated_tool_max_retries,
+                        )
+                        self._emit_status(
+                            f"⚠️ Model hallucinated tool call "
+                            f"'{_halluc_decision.tool_name}' in text — "
+                            f"nudging proper tool use"
+                        )
+                        halluc_msg = self._build_assistant_message(
+                            assistant_message, finish_reason
+                        )
+                        messages.append(halluc_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "⚠️ SYSTEM: You wrote '[Calling tool: ...]' as "
+                                "plain text, but that does NOT actually execute "
+                                "the tool. You MUST use the structured tool_calls "
+                                "mechanism to invoke tools. Please retry your "
+                                "previous tool call properly."
+                            ),
+                        })
+                        continue
+                    elif not _halluc_decision:
+                        self._hallucinated_tool_retries = 0
+
                     if (
                         self.api_mode == "codex_responses"
                         and self.valid_tool_names

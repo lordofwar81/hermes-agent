@@ -332,6 +332,7 @@ class ContextCompressor(ContextEngine):
 
     @property
     def name(self) -> str:
+        """Return the engine identifier string."""
         return "compressor"
 
     def on_session_reset(self) -> None:
@@ -392,6 +393,22 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
     ):
+        """Initialize the context compressor.
+
+        Args:
+            model: Main model identifier used for context-length lookup.
+            threshold_percent: Fraction of context window that triggers compression.
+            protect_first_n: Number of head messages to always preserve.
+            protect_last_n: Minimum tail messages to protect (overridden by token budget).
+            summary_target_ratio: Ratio of threshold used for tail token budget (clamped 0.10–0.80).
+            quiet_mode: Suppress info/warning log messages when True.
+            summary_model_override: Optional model to use for summarization instead of main model.
+            base_url: API base URL for the main model.
+            api_key: API key for the main model.
+            config_context_length: Override context length from config (``None`` = auto-detect).
+            provider: Provider identifier (e.g. ``"anthropic"``, ``"openai"``).
+            api_mode: API compatibility mode string.
+        """
         self.model = model
         self.base_url = base_url
         self.api_key = api_key

@@ -355,12 +355,14 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 def is_local_endpoint(base_url: str) -> bool:
     """Return True if base_url points to a local machine.
 
-    Recognises loopback (``localhost``, ``127.0.0.0/8``, ``::1``),
-    container-internal DNS names (``host.docker.internal`` et al.),
-    RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
-    link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale CGNAT
-    is included so remote-but-trusted Ollama boxes reached over a
-    Tailscale mesh get the same timeout auto-bumps as localhost Ollama.
+    Recognises loopback, container-internal DNS names, RFC-1918 private
+    ranges, link-local, and Tailscale CGNAT.
+
+    Args:
+        base_url: API base URL to check.
+
+    Returns:
+        True if the URL resolves to a local or trusted-private address.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized:
@@ -405,9 +407,15 @@ def is_local_endpoint(base_url: str) -> bool:
 
 
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Detect which local server is running at base_url by probing known endpoints.
+    """Detect which local server is running at *base_url* by probing known endpoints.
 
-    Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    Args:
+        base_url: API base URL to probe.
+        api_key: Optional bearer token for authentication.
+
+    Returns:
+        Server type string (``"ollama"``, ``"lm-studio"``, ``"vllm"``,
+        ``"llamacpp"``), or ``None`` if no known server is detected.
     """
     import httpx
 
@@ -540,7 +548,15 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
 
 
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
+    """Fetch model metadata from OpenRouter (cached for 1 hour).
+
+    Args:
+        force_refresh: If True, bypass the in-memory cache and re-fetch.
+
+    Returns:
+        Mapping of model ID to metadata dict with keys ``context_length``,
+        ``max_completion_tokens``, ``name``, and ``pricing``.
+    """
     global _model_metadata_cache, _model_metadata_cache_time
 
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
@@ -582,8 +598,17 @@ def fetch_endpoint_model_metadata(
 ) -> Dict[str, Dict[str, Any]]:
     """Fetch model metadata from an OpenAI-compatible ``/models`` endpoint.
 
-    This is used for explicit custom endpoints where hardcoded global model-name
-    defaults are unreliable. Results are cached in memory per base URL.
+    Used for explicit custom endpoints where hardcoded defaults are unreliable.
+    Results are cached in memory per base URL.
+
+    Args:
+        base_url: API base URL to query.
+        api_key: Optional bearer token for authentication.
+        force_refresh: If True, bypass the in-memory cache and re-fetch.
+
+    Returns:
+        Mapping of model ID to metadata dict. Empty dict on failure or if
+        the URL points to OpenRouter.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
@@ -765,8 +790,13 @@ def _load_context_cache() -> Dict[str, int]:
 def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
 
-    Cache key is ``model@base_url`` so the same model name served from
-    different providers can have different limits.
+    Cache key is ``model@base_url`` so the same model served from different
+    providers can have different limits.
+
+    Args:
+        model: Model identifier (after provider-prefix stripping).
+        base_url: API base URL for the provider.
+        length: Context length in tokens to persist.
     """
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
@@ -784,7 +814,15 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
 
 
 def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
-    """Look up a previously discovered context length for model+provider."""
+    """Look up a previously discovered context length for model+provider.
+
+    Args:
+        model: Model identifier (after provider-prefix stripping).
+        base_url: API base URL for the provider.
+
+    Returns:
+        Cached context length in tokens, or ``None`` if not cached.
+    """
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     return cache.get(key)
@@ -807,7 +845,15 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
 
 
 def get_next_probe_tier(current_length: int) -> Optional[int]:
-    """Return the next lower probe tier, or None if already at minimum."""
+    """Return the next lower context-length probe tier.
+
+    Args:
+        current_length: The context length that just failed.
+
+    Returns:
+        The next smaller tier value from :data:`CONTEXT_PROBE_TIERS`, or
+        ``None`` if already at the minimum.
+    """
     for tier in CONTEXT_PROBE_TIERS:
         if tier < current_length:
             return tier
@@ -815,13 +861,16 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Try to extract the actual context limit from an API error message.
+    """Extract the actual context limit from an API error message.
 
-    Many providers include the limit in their error text, e.g.:
-      - "maximum context length is 32768 tokens"
-      - "context_length_exceeded: 131072"
-      - "Maximum context size 32768 exceeded"
-      - "model's max context length is 65536"
+    Many providers include the limit in their error text, e.g.
+    ``"maximum context length is 32768 tokens"``.
+
+    Args:
+        error_msg: Raw error string from the provider API.
+
+    Returns:
+        Extracted context limit in tokens, or ``None`` if not found.
     """
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
@@ -843,20 +892,17 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
 
 
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
-    """Detect an "output cap too large" error and return how many output tokens are available.
+    """Detect an ``max_tokens``-too-large error and return available output tokens.
 
-    Background — two distinct context errors exist:
-      1. "Prompt too long"  — the INPUT itself exceeds the context window.
-           Fix: compress history and/or halve context_length.
-      2. "max_tokens too large" — input is fine, but input + requested_output > window.
-           Fix: reduce max_tokens (the output cap) for this call.
-           Do NOT touch context_length — the window hasn't shrunk.
+    Distinguishes "prompt too long" errors from "output cap too large" errors.
+    For the latter, the fix is to reduce ``max_tokens``, not ``context_length``.
 
-    Anthropic's API returns errors like:
-      "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
+    Args:
+        error_msg: Raw error string from the provider API.
 
-    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
-    the error does not look like a max_tokens-too-large error.
+    Returns:
+        Number of output tokens that would fit, or ``None`` if the error is
+        not an output-cap error.
     """
     error_lower = error_msg.lower()
 
@@ -908,11 +954,16 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     """Query an Ollama server for the model's context length.
 
     Returns the model's maximum context from GGUF metadata via ``/api/show``,
-    or the explicit ``num_ctx`` from the Modelfile if set.  Returns None if
-    the server is unreachable or not Ollama.
+    or the explicit ``num_ctx`` from the Modelfile if set.
 
-    This is the value that should be passed as ``num_ctx`` in Ollama chat
-    requests to override the default 2048.
+    Args:
+        model: Model identifier (may include provider prefix).
+        base_url: Ollama server base URL.
+        api_key: Optional bearer token for authentication.
+
+    Returns:
+        Context length in tokens, or ``None`` if the server is unreachable
+        or not Ollama.
     """
     import httpx
 
@@ -1259,6 +1310,17 @@ def get_model_context_length(
     7. models.dev registry lookup (provider-aware)
     8. Thin hardcoded defaults (broad family patterns)
     9. Default fallback (256K)
+
+    Args:
+        model: Model identifier (may include provider prefix).
+        base_url: API base URL for the provider.
+        api_key: Optional bearer token or API key.
+        config_context_length: Explicit user-configured override.
+        provider: Provider identifier string (e.g. ``"anthropic"``).
+        custom_providers: Custom provider configuration list for per-model overrides.
+
+    Returns:
+        Context length in tokens.
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1445,9 +1507,13 @@ def get_model_context_length(
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate (~4 chars/token) for pre-flight checks.
 
-    Uses ceiling division so short texts (1-3 chars) never estimate as
-    0 tokens, which would cause the compressor and pre-flight checks to
-    systematically undercount when many short tool results are present.
+    Uses ceiling division so short texts never estimate as 0 tokens.
+
+    Args:
+        text: String to estimate token count for.
+
+    Returns:
+        Estimated number of tokens.
     """
     if not text:
         return 0
@@ -1455,7 +1521,14 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (pre-flight only)."""
+    """Rough token estimate for a message list (pre-flight only).
+
+    Args:
+        messages: List of chat message dicts.
+
+    Returns:
+        Estimated number of tokens.
+    """
     total_chars = sum(len(str(msg)) for msg in messages)
     return (total_chars + 3) // 4
 
@@ -1468,10 +1541,15 @@ def estimate_request_tokens_rough(
 ) -> int:
     """Rough token estimate for a full chat-completions request.
 
-    Includes the major payload buckets Hermes sends to providers:
-    system prompt, conversation messages, and tool schemas.  With 50+
-    tools enabled, schemas alone can add 20-30K tokens — a significant
-    blind spot when only counting messages.
+    Includes system prompt, conversation messages, and tool schemas.
+
+    Args:
+        messages: List of chat message dicts.
+        system_prompt: System prompt text.
+        tools: List of tool schema dicts.
+
+    Returns:
+        Estimated number of tokens.
     """
     total_chars = 0
     if system_prompt:

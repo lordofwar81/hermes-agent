@@ -359,7 +359,7 @@ class ProviderRegistry:
                     "model", "qwen3.6-35b-a3b-abliterated-heretic-mlx"
                 ),
                 base_url=mac_cfg.get(
-                    "base_url", "http://192.168.1.149:1234/v1"
+                    "base_url", "http://192.168.1.149:8001/v1"
                 ),
                 api_key=mac_key,
                 context_length=mac_cfg.get("context_length", 32768),

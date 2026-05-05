@@ -1630,13 +1630,41 @@ class GatewayRunner:
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the intelligent model router (model_router.py) to select the
+        best model for the task.  Falls back to the session's primary model
+        if routing is disabled or fails.  If `/fast` is enabled and the
+        model supports Priority Processing / Anthropic fast mode, attach
+        `request_overrides`.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # ── Intelligent routing (model_router.py) ───────────────────
+        try:
+            from agent.model_router import resolve_turn_route as _router_route
+
+            primary_config = {
+                "model": model,
+                "api_key": runtime_kwargs.get("api_key"),
+                "base_url": runtime_kwargs.get("base_url"),
+                "provider": runtime_kwargs.get("provider"),
+                "api_mode": runtime_kwargs.get("api_mode"),
+                "credential_pool": runtime_kwargs.get("credential_pool"),
+            }
+            route = _router_route(user_message, None, primary_config)
+            if route and route.get("runtime", {}).get("api_key"):
+                service_tier = getattr(self, "_service_tier", None)
+                if service_tier:
+                    try:
+                        route["request_overrides"] = resolve_fast_mode_overrides(route["model"])
+                    except Exception:
+                        route["request_overrides"] = None
+                else:
+                    route["request_overrides"] = {}
+                return route
+        except Exception:
+            pass
+
+        # ── Fallback: primary model (no routing) ─────────────────────
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),

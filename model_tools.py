@@ -79,7 +79,7 @@ def _get_worker_loop():
     return loop
 
 
-def _run_async(coro):
+def _run_async(coro) -> Any:
     """Run an async coroutine from a sync context.
 
     If the current thread already has a running event loop (e.g., inside
@@ -575,7 +575,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return args
 
 
-def _coerce_value(value: str, expected_type, schema: dict | None = None):
+def _coerce_value(value: str, expected_type, schema: dict | None = None) -> Any:
     """Attempt to coerce a string *value* to *expected_type*.
 
     Returns the original string when coercion is not applicable or fails.
@@ -628,7 +628,7 @@ def _schema_allows_null(schema: dict | None) -> bool:
     return False
 
 
-def _coerce_json(value: str, expected_python_type: type):
+def _coerce_json(value: str, expected_python_type: type) -> Any:
     """Parse *value* as JSON when the schema expects an array or object.
 
     Handles model output drift where a complex oneOf/discriminated-union schema
@@ -649,7 +649,7 @@ def _coerce_json(value: str, expected_python_type: type):
     return value
 
 
-def _coerce_number(value: str, integer_only: bool = False):
+def _coerce_number(value: str, integer_only: bool = False) -> int | float:
     """Try to parse *value* as a number.  Returns original string on failure."""
     try:
         f = float(value)
@@ -667,7 +667,7 @@ def _coerce_number(value: str, integer_only: bool = False):
     return f
 
 
-def _coerce_boolean(value: str):
+def _coerce_boolean(value: str) -> bool:
     """Try to parse *value* as a boolean.  Returns original string on failure."""
     low = value.strip().lower()
     if low == "true":

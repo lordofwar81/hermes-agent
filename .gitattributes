@@ -1,2 +1,14 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+
+# ─── FORK-SPECIFIC ROUTING FILES — never let upstream clobber these ───
+# These files were deleted by upstream (424e9f36b) and independently by our
+# fork (a8c361f23).  A subsequent merge (718e37490) resurrected the upstream
+# versions, breaking our model_router.py integration.  Marking them as
+# "ours" ensures git merge always keeps our deletion.
+agent/smart_model_routing.py merge=ours
+agent/model_selector.py merge=ours
+agent/budget_enforcer.py merge=ours
+agent/priority_router.py merge=ours
+agent/priority_routing_integration.py merge=ours
+agent/trivial_task_classifier.py merge=ours

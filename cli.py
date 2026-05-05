@@ -3698,13 +3698,42 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Uses the intelligent model router (model_router.py) to select the
+        best model for the task.  Falls back to the session's primary model
+        if routing is disabled or fails.  If `/fast` is toggled on and the
+        model supports Priority Processing / Anthropic fast mode, attach
+        `request_overrides`.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
+        # ── Intelligent routing (model_router.py) ───────────────────
+        try:
+            from agent.model_router import resolve_turn_route as _router_route
+
+            primary_config = {
+                "model": self.model,
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+                "provider": self.provider,
+                "api_mode": self.api_mode,
+                "credential_pool": getattr(self, "_credential_pool", None),
+            }
+            route = _router_route(user_message, None, primary_config)
+            if route and route.get("runtime", {}).get("api_key"):
+                # Fast-mode overrides still apply
+                service_tier = getattr(self, "service_tier", None)
+                if service_tier:
+                    try:
+                        route["request_overrides"] = resolve_fast_mode_overrides(route["model"])
+                    except Exception:
+                        route["request_overrides"] = None
+                else:
+                    route["request_overrides"] = None
+                return route
+        except Exception:
+            pass
+
+        # ── Fallback: primary model (no routing) ─────────────────────
         runtime = {
             "api_key": self.api_key,
             "base_url": self.base_url,

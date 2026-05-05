@@ -279,7 +279,6 @@ class SessionDB:
             pass  # Best effort — never fatal.
 
     def close(self) -> None:
-        """Close the database connection.
 
         Attempts a PASSIVE WAL checkpoint first so that exiting processes
         help keep the WAL file from growing unbounded.

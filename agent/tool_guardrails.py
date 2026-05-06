@@ -17,7 +17,7 @@ from typing import Any, Mapping
 from utils import safe_json_loads
 
 _HALLUCINATED_TOOL_PATTERN = re.compile(
-    r"\[Calling tool:\s*(\w+)\s*\(",
+    r"\[Calling tool:\s*(\w+)",
     re.IGNORECASE,
 )
 

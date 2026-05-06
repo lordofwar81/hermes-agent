@@ -277,6 +277,7 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+        """
 
     def close(self) -> None:
 
@@ -296,7 +297,7 @@ class SessionDB:
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
 
-        Uses an in-memory SQLite database to parse the SQL — SQLite itself
+        Uses an in-memory SQLite database to parse the SQL - SQLite itself
         handles all syntax (DEFAULT expressions with commas, inline
         REFERENCES, CHECK constraints, etc.) so there are zero regex
         edge cases.  The in-memory DB is opened, the schema DDL is

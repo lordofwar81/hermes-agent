@@ -9505,6 +9505,16 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # Coerce string arguments to their schema-declared types (e.g. JSON
+        # string → list for array params).  This was only done inside
+        # handle_function_call (model_tools), but _invoke_tool bypasses that
+        # path — models sometimes emit array/object params as JSON strings.
+        try:
+            from model_tools import coerce_tool_args
+            function_args = coerce_tool_args(function_name, function_args)
+        except Exception:
+            logger.debug("coerce_tool_args failed for %s — using raw args", function_name)
+
         # Check plugin hooks for a block directive before executing anything.
         block_message: Optional[str] = None
         if not pre_tool_block_checked:
@@ -13927,17 +13937,88 @@ class AIAgent:
                             assistant_message, finish_reason
                         )
                         messages.append(halluc_msg)
-                        messages.append({
-                            "role": "user",
-                            "content": (
+                        # Progressive nudges — stronger on each retry
+                        _attempt = self._hallucinated_tool_retries
+                        if _attempt <= 1:
+                            _nudge = (
                                 "⚠️ SYSTEM: You wrote '[Calling tool: ...]' as "
                                 "plain text, but that does NOT actually execute "
                                 "the tool. You MUST use the structured tool_calls "
-                                "mechanism to invoke tools. Please retry your "
-                                "previous tool call properly."
-                            ),
+                                "mechanism to invoke tools. Respond with your "
+                                "tool call using the standard function-calling "
+                                "format — do NOT write tool syntax in your text."
+                            )
+                        else:
+                            # Later retries: tell model to respond WITHOUT tools
+                            # to break the hallucination loop.
+                            _nudge = (
+                                "⚠️ SYSTEM: You keep writing '[Calling tool: ...]' "
+                                "as plain text. This is broken — tools are NOT "
+                                "executing. STOP trying to call tools. Instead, "
+                                "respond to the user's message directly in plain "
+                                "text with NO tool calls. If you need tool results "
+                                "to answer, explain what you need and ask the user "
+                                "to retry."
+                            )
+                        messages.append({
+                            "role": "user",
+                            "content": _nudge,
                         })
                         continue
+                    elif _halluc_decision and not (
+                        getattr(self, "_hallucinated_tool_retries", 0)
+                        < self._tool_guardrails.config.hallucinated_tool_max_retries
+                    ):
+                        # Retries exhausted but model still hallucinating.
+                        # Try fallback model if available, otherwise strip and warn.
+                        self._hallucinated_tool_retries = 0
+                        if self._fallback_chain and self._fallback_index < len(self._fallback_chain):
+                            logger.warning(
+                                "Hallucinated tool call retries exhausted on %s — "
+                                "switching to fallback model",
+                                self.model,
+                            )
+                            self._emit_status(
+                                f"⚠️ Model stuck hallucinating tool calls — "
+                                f"switching to fallback..."
+                            )
+                            # Strip the broken hallucinated message so the
+                            # fallback model starts from a clean state.
+                            # Remove the last assistant message (the broken one)
+                            # and any preceding nudge messages.
+                            while messages:
+                                last = messages[-1]
+                                if last.get("role") == "assistant":
+                                    messages.pop()
+                                elif last.get("role") == "user" and "SYSTEM:" in (last.get("content") or ""):
+                                    messages.pop()
+                                else:
+                                    break
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                            # Fallback activation failed — fall through to return
+                            # the cleaned-up response below.
+                        # No fallback available — strip hallucinated tool-call text
+                        # from the response so the user doesn't see garbage.
+                        import re as _re
+                        _clean = _re.sub(
+                            r'\[Calling tool:\s*\w+(?:\([^)]*\))?\s*\]',
+                            '',
+                            final_response,
+                        ).strip()
+                        if _clean:
+                            final_response = _clean + (
+                                "\n\n⚠️ Note: The model failed to execute tool calls "
+                                "properly. Please retry your request."
+                            )
+                        else:
+                            final_response = (
+                                "⚠️ The model repeatedly failed to execute tool calls "
+                                "properly. Please retry your request."
+                            )
                     elif not _halluc_decision:
                         self._hallucinated_tool_retries = 0
 

@@ -310,9 +310,9 @@ class ProviderRegistry:
         # ZAI providers (from config.yaml)
         zai_cfg = cfg.get("z-ai", {}) or cfg.get("providers", {}).get("z-ai", {})
         zai_key = self._resolve_api_key(zai_cfg.get("api_key"), "ZAI_API_KEY")
-        zai_base = zai_cfg.get(
+        zai_base = self._resolve_env_template(zai_cfg.get(
             "base_url", "https://api.z.ai/api/coding/paas/v4"
-        )
+        ))
 
         if zai_key:
             self._providers["zai-glm-5.1"] = ProviderCredential(
@@ -359,7 +359,7 @@ class ProviderRegistry:
             self._providers["mac-studio-qwen36"] = ProviderCredential(
                 provider="mac_studio",
                 model=mac_cfg.get(
-                    "model", "qwen3.6-35b-a3b-abliterated-heretic-mlx"
+                    "model", "/Users/lordofwarnew/.lmstudio/models/Youssofal/Qwen3.6-35B-A3B-Abliterated-Heretic-MLX-4bit"
                 ),
                 base_url=mac_cfg.get(
                     "base_url", "http://192.168.1.149:8001/v1"
@@ -409,6 +409,19 @@ class ProviderRegistry:
             )
         else:
             logger.warning("Venice API key not found — Venice providers unavailable")
+
+    @staticmethod
+    def _resolve_env_template(value: Optional[str]) -> Optional[str]:
+        """Resolve ${VAR_NAME} patterns in config values from environment."""
+        if not value or not isinstance(value, str):
+            return value
+        if value.startswith("${") and value.endswith("}"):
+            env_var = value[2:-1]
+            resolved = os.getenv(env_var, "")
+            if resolved:
+                return resolved
+            return value
+        return value
 
     @staticmethod
     def _resolve_api_key(

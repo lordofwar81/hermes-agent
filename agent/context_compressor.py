@@ -144,6 +144,30 @@ def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int =
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
 
 
+def _estimate_tokens(content) -> int:
+    """Estimate token count with content-aware ratio.
+
+    Accepts str, dict, or list. Non-string content is serialized to str first.
+    Code-heavy content (high brace/paren density) uses 3.0 chars/token.
+    Mixed content uses 3.5. Plain text uses 4.0.
+    """
+    if not content:
+        return 0
+    if not isinstance(content, str):
+        content = str(content)
+    length = len(content)
+    if length == 0:
+        return 0
+    # Count code indicators: braces, brackets, parens, angle brackets
+    code_chars = sum(1 for c in content if c in '{}[]()<>')
+    code_ratio = code_chars / length
+    if code_ratio > 0.03:  # >3% code characters
+        return int(length / 3.0)
+    elif code_ratio > 0.01:
+        return int(length / 3.5)
+    return int(length / 4.0)
+
+
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
 
@@ -646,6 +670,7 @@ class ContextCompressor(ContextEngine):
                 provider or "none", base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error
+        self._context_probe_persistable: bool = False  # Whether probe result should persist
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
@@ -806,11 +831,11 @@ class ContextCompressor(ContextEngine):
                 msg = result[i]
                 raw_content = msg.get("content") or ""
                 content_len = _content_length_for_budget(raw_content)
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
+                msg_tokens = _estimate_tokens(raw_content) + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                        msg_tokens += _estimate_tokens(args)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -1387,9 +1412,24 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "api_mode": self.api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": int(summary_budget * 1.3),
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
+            # Compute max_tokens with cap at model's output limit to prevent
+            # silent truncation for models with low max output (e.g. Claude 3.5 Haiku = 8192)
+            _max_tokens = int(summary_budget * 1.3)
+            try:
+                from agent.model_metadata import get_model_max_output_tokens
+                # Use the summary model if set, otherwise the main model
+                _lookup_model = self.summary_model or self.model
+                _output_limit = get_model_max_output_tokens(
+                    _lookup_model,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                )
+                if _output_limit and _max_tokens > _output_limit:
+                    _max_tokens = _output_limit
+            except (ImportError, Exception):
+                pass  # fall back to uncapped if metadata unavailable
+            call_kwargs["max_tokens"] = _max_tokens
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
@@ -1775,12 +1815,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             msg = messages[i]
             raw_content = msg.get("content") or ""
             content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            msg_tokens = _estimate_tokens(raw_content) + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+                    msg_tokens += _estimate_tokens(args)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break

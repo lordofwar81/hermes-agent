@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import shlex
 import sys
 import shlex
 from pathlib import Path

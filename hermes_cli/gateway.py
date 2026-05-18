@@ -2153,14 +2153,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
-    # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
-    # there's budget left for post-interrupt cleanup (tool subprocess kill,
-    # adapter disconnect, session DB close) before systemd escalates to
-    # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
-    # by a force-interrupted agent get reaped by systemd instead of us
-    # (#8202). 30s of headroom covers the worst case we've observed.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout) + 30
+    # The gateway's shutdown now completes in bounded time (70s internal
+    # budget).  TimeoutStopSec provides the outer ceiling — 90s gives 20s
+    # of margin for Python process teardown after the gateway's _stop_impl()
+    # returns.  KillMode=control-group sends SIGTERM to ALL cgroup members
+    # (not just the main PID), providing defense-in-depth for any tool
+    # subprocesses the gateway's immediate-kill phase missed.
+    restart_timeout = 90
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2200,7 +2199,7 @@ RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=control-group
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}
@@ -2235,7 +2234,7 @@ RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
-KillMode=mixed
+KillMode=control-group
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
 TimeoutStopSec={restart_timeout}

@@ -392,17 +392,16 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
         return None
 
     timeout_stop_sec = timeout_us / 1_000_000.0
-    # systemd needs headroom for: post-interrupt kill, adapter disconnect,
-    # SessionDB close, file unlinks, etc.  30s matches the unit-template
-    # constant in hermes_cli/gateway.py.
-    headroom = 30.0
-    expected = drain_timeout + headroom
+    # The gateway's internal shutdown budget is 70s, and the systemd unit
+    # template sets TimeoutStopSec=90 (20s margin).  A stale unit file
+    # with a shorter TimeoutStopSec would cause SIGKILL mid-shutdown.
+    expected_min_timeout = 90.0
     return {
         "unit": unit_name,
         "timeout_stop_sec": timeout_stop_sec,
         "drain_timeout": drain_timeout,
-        "expected_min": expected,
-        "mismatch": timeout_stop_sec < expected,
+        "expected_min": expected_min_timeout,
+        "mismatch": timeout_stop_sec < expected_min_timeout,
     }
 
 

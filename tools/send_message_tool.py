@@ -8,6 +8,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import ssl
@@ -1151,15 +1152,22 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
 
                         # Buffer file bytes up front — aiohttp's FormData can
                         # read lazily and we don't want handles closing under
-                        # it on retry.
+                        # it on retry.  Also detect MIME type so Discord can
+                        # properly identify uploaded files.
                         try:
                             for idx, media_path in enumerate(valid_media):
-                                with open(media_path, "rb") as fh:
-                                    form.add_field(
-                                        f"files[{idx}]",
-                                        fh.read(),
-                                        filename=os.path.basename(media_path),
-                                    )
+                                file_bytes = open(media_path, "rb").read()
+                                try:
+                                    from gateway.platforms.base import resolve_mime_type
+                                    content_type = resolve_mime_type(media_path)
+                                except Exception:
+                                    content_type = mimetypes.guess_type(media_path)[0] or "application/octet-stream"
+                                form.add_field(
+                                    f"files[{idx}]",
+                                    file_bytes,
+                                    filename=os.path.basename(media_path),
+                                    content_type=content_type,
+                                )
                             async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
                                 if resp.status not in {200, 201}:
                                     body = await resp.text()
@@ -1216,6 +1224,23 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                     warnings.append(warning)
                     continue
                 try:
+                    # Detect MIME type — magic bytes first (handles cached files
+                    # with generated names like doc_abc123_report.pdf), fall back
+                    # to extension-based detection.  This prevents Discord from
+                    # receiving application/octet-stream for files whose MIME is
+                    # determinable from content.
+                    try:
+                        from gateway.platforms.base import resolve_mime_type
+                        content_type = resolve_mime_type(media_path)
+                    except Exception:
+                        content_type = mimetypes.guess_type(media_path)[0] or "application/octet-stream"
+
+                    # Read file into memory — passing a live file handle to
+                    # FormData.add_field() causes lazy-read races where the handle
+                    # may close before aiohttp finishes reading.  This mirrors what
+                    # the discord.py adapter does with io.BytesIO().
+                    file_bytes = open(media_path, "rb").read()
+
                     form = aiohttp.FormData()
                     filename = os.path.basename(media_path)
                     with open(media_path, "rb") as f:

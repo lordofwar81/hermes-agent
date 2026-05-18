@@ -806,6 +806,148 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Magic byte file type detection (for MIME sniffing when extension is unreliable)
+# ---------------------------------------------------------------------------
+
+# Magic byte signatures: (prefix_bytes, mime_type)
+_MAGIC_SIGNATURES = [
+    # Images
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    # WAV is handled specially below (RIFF at offset 0, WAVE at offset 8)
+    (b"BM", "image/bmp"),
+    # Documents
+    (b"%PDF", "application/pdf"),
+    (b"PK\x03\x04", "application/zip"),  # ZIP / DOCX / XLSX / PPTX
+    (b"%!PS", "application/postscript"),
+    # Audio / Video
+    (b"OggS", "audio/ogg"),
+    (b"fLaC", "audio/flac"),
+    # MP3: ID3 tag or raw MPEG frame — handled in special cases below
+    (b"\x00\x00\x01\xb3", "video/mp4"),  # MPEG-2 TS
+    (b"\x00\x00\x01\xb7", "video/mp4"),  # MPEG-2 PES
+    (b"\x1a\x45\xdf\xa3", "video/webm"),  # WebM/EBML
+    # Archives
+    (b"Rar!\x1a\x07", "application/x-rar-compressed"),
+    (b"7z\xbc\xaf'\x1c", "application/x-7z-compressed"),
+    # Text (ASCII-based)
+    (b"<?xml", "text/xml"),
+]
+
+
+def _detect_mime_from_bytes(data: bytes) -> str | None:
+    """Detect MIME type from file magic bytes.
+
+    Returns the detected MIME type string, or None if no signature matched.
+    Falls back to extension-based detection when magic bytes are inconclusive.
+
+    Args:
+        data: First 16+ bytes of the file (read in binary mode).
+
+    Returns:
+        MIME type string or None.
+    """
+    if not data or len(data) < 4:
+        return None
+
+    # Check simple prefix signatures
+    for prefix, mime in _MAGIC_SIGNATURES:
+        if isinstance(prefix, bytes) and data[:len(prefix)] == prefix:
+            return mime
+
+    # Special cases requiring offset checks
+    if data[:4] == b"RIFF":
+        # WAV: RIFF....WAVE — WAVE at offset 8
+        if len(data) >= 12 and data[8:12] == b"WAVE":
+            return "audio/wav"
+
+    if data[:4] == b"ftyp":
+        # MP4: check the brand after 'ftyp' + 8 bytes (skip size + type)
+        if len(data) >= 16:
+            brand = data[8:16]
+            if b"mp42" in brand or b"isom" in brand or b"iso2" in brand:
+                return "video/mp4"
+            if b"heic" in brand or b"heix" in brand:
+                return "image/heif"
+            if b"avif" in brand:
+                return "image/avif"
+
+    # MP3 detection (ID3 tag or raw MPEG frame)
+    if data[:3] == b"ID3":
+        return "audio/mpeg"
+    if len(data) >= 4 and data[0:2] == b"\xff\xfb":
+        return "audio/mpeg"
+
+    # SVG detection (text-based)
+    stripped = data[:512].lstrip()
+    if stripped.startswith(b"<svg") or stripped.startswith(b"<?xml"):
+        return "image/svg+xml"
+
+    # Plain text detection (no null bytes in first 512 bytes)
+    if b"\x00" not in data[:512]:
+        # Could be text — check if it looks like common text formats
+        try:
+            text = data[:512].decode("utf-8", errors="strict")
+            if text.isprintable() or any(c in text for c in "\n\r\t"):
+                return "text/plain"
+        except (UnicodeDecodeError, ValueError):
+            pass
+
+    return None
+
+
+def resolve_mime_type(file_path: str) -> str:
+    """Resolve the correct MIME type for a file.
+
+    Tries magic byte detection first, falls back to extension-based
+    detection via mimetypes.guess_type(). Returns 'application/octet-stream'
+    as last resort.
+
+    Args:
+        file_path: Path to the file on disk.
+
+    Returns:
+        MIME type string suitable for HTTP uploads.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            header = f.read(256)
+    except (OSError, IOError):
+        return "application/octet-stream"
+
+    # Try magic bytes first
+    detected = _detect_mime_from_bytes(header)
+    if detected:
+        return detected
+
+    # Fall back to extension-based detection
+    import mimetypes
+    ext_mime = mimetypes.guess_type(file_path)[0]
+    if ext_mime:
+        return ext_mime
+
+    # Last resort
+    return "application/octet-stream"
+
+
+def resolve_mime_type_from_bytes(data: bytes) -> str | None:
+    """Detect MIME type from raw file bytes (no file I/O needed).
+
+    Used when file data is already in memory (e.g., downloaded from URL)
+    and we need to determine the correct MIME type before uploading.
+
+    Args:
+        data: Raw file bytes (first 256+ bytes recommended).
+
+    Returns:
+        MIME type string or None (caller should fall back to extension-based detection).
+    """
+    return _detect_mime_from_bytes(data)
+
+
+# ---------------------------------------------------------------------------
 # Document cache utilities
 #
 # Same pattern as image/audio cache -- documents from platforms are downloaded
@@ -2166,8 +2308,11 @@ class BasePlatformAdapter(ABC):
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            expanded = os.path.expanduser(path)
+            # Only accept paths that actually exist as files — prevents
+            # the regex's greedy path-matching from capturing garbage text.
+            if path and os.path.isfile(expanded):
+                media.append((expanded, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

@@ -92,3 +92,4 @@ venv_test/
 report.md
 results.tsv
 tests/test_data/
+plugins/memory/holographic/holographic.db

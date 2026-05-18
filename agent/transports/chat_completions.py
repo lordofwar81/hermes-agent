@@ -448,6 +448,10 @@ class ChatCompletionsTransport(ProviderTransport):
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        _user = params.get("user")
+        if _user:
+            api_kwargs["user"] = _user
+
         # Request overrides last (service_tier etc.)
         overrides = params.get("request_overrides")
         if overrides:

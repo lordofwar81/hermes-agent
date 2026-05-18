@@ -165,6 +165,14 @@ class ProviderConfig:
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
+    "mac_studio": ProviderConfig(
+        id="mac_studio",
+        name="Mac Studio Orchestrator",
+        auth_type="api_key",
+        inference_base_url="http://192.168.1.149:1234/v1",
+        api_key_env_vars=("MAC_STUDIO_KEY",),
+        base_url_env_var="MAC_STUDIO_BASE_URL",
+    ),
     "nous": ProviderConfig(
         id="nous",
         name="Nous Portal",

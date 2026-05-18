@@ -6,9 +6,12 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -26,24 +29,42 @@ class FactRetriever:
         self,
         store: MemoryStore,
         temporal_decay_half_life: int = 0,  # days, 0 = disabled
-        fts_weight: float = 0.4,
-        jaccard_weight: float = 0.3,
-        hrr_weight: float = 0.3,
+        fts_weight: float = 0.3,
+        jaccard_weight: float = 0.2,
+        hrr_weight: float = 0.2,
+        neural_weight: float = 0.3,
         hrr_dim: int = 1024,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
         self.hrr_dim = hrr_dim
 
-        # Auto-redistribute weights if numpy unavailable
+        # Auto-redistribute weights if components unavailable
+        total_assigned = fts_weight + jaccard_weight + hrr_weight + neural_weight
+        if total_assigned <= 0:
+            fts_weight = 1.0
+
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
-            fts_weight = 0.6
-            jaccard_weight = 0.4
+            # Redistribute HRR weight to FTS5 + neural
+            fts_weight += hrr_weight * 0.5
+            neural_weight += hrr_weight * 0.5
             hrr_weight = 0.0
+
+        # Check neural embed availability
+        neural_available = (
+            hasattr(store, "_embed")
+            and store._embed is not None
+            and store._embed.alive
+        )
+        if not neural_available and neural_weight > 0:
+            fts_weight += neural_weight * 0.6
+            jaccard_weight += neural_weight * 0.4
+            neural_weight = 0.0
 
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.neural_weight = neural_weight
 
     def search(
         self,
@@ -65,10 +86,26 @@ class FactRetriever:
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
 
+        # Fallback: if FTS5 returns nothing but neural embeds are available,
+        # scan all facts with neural_embed and score by cosine similarity.
+        if not candidates and self.neural_weight > 0:
+            return self._neural_search(query, category, min_trust, limit)
+
         if not candidates:
             return []
 
-        # Stage 2: Rerank with Jaccard + trust + optional decay
+        # Stage 2: Compute query neural embedding once (if available)
+        query_neural = None
+        if self.neural_weight > 0:
+            try:
+                query_neural = self.store._embed.embed(query)
+                if query_neural is not None:
+                    import numpy as np
+                    query_neural = np.asarray(query_neural, dtype=np.float32)
+            except Exception:
+                query_neural = None
+
+        # Stage 3: Rerank with Jaccard + HRR + Neural + trust + optional decay
         query_tokens = self._tokenize(query)
         scored = []
 
@@ -88,10 +125,26 @@ class FactRetriever:
             else:
                 hrr_sim = 0.5  # neutral
 
-            # Combine FTS5 + Jaccard + HRR
+            # Neural embedding similarity (cosine)
+            neural_sim = 0.5  # neutral default
+            if query_neural is not None and fact.get("neural_embed"):
+                try:
+                    import numpy as np
+                    fact_embed = np.frombuffer(fact["neural_embed"], dtype=np.float32)
+                    # Cosine similarity
+                    dot = float(np.dot(query_neural, fact_embed))
+                    norm_q = float(np.linalg.norm(query_neural))
+                    norm_f = float(np.linalg.norm(fact_embed))
+                    if norm_q > 0 and norm_f > 0:
+                        neural_sim = max(0.0, dot / (norm_q * norm_f))  # clamp to [0,1]
+                except Exception:
+                    neural_sim = 0.5
+
+            # Combine FTS5 + Jaccard + HRR + Neural
             relevance = (self.fts_weight * fts_score
                         + self.jaccard_weight * jaccard
-                        + self.hrr_weight * hrr_sim)
+                        + self.hrr_weight * hrr_sim
+                        + self.neural_weight * neural_sim)
 
             # Trust weighting
             score = relevance * fact["trust_score"]
@@ -106,9 +159,22 @@ class FactRetriever:
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
         results = scored[:limit]
-        # Strip raw HRR bytes — callers expect JSON-serializable dicts
+        # Strip raw vectors — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+            fact.pop("neural_embed", None)
+
+        # Increment retrieval_count for all returned facts
+        if results:
+            fact_ids = [f["fact_id"] for f in results]
+            placeholders = ",".join("?" * len(fact_ids))
+            self.store._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self.store._conn.commit()
+
+        self._boost_retrieved_facts(results)
         return results
 
     def probe(
@@ -187,7 +253,20 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+
+        # Increment retrieval_count for all returned facts
+        if results:
+            fact_ids = [f["fact_id"] for f in results]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+
+        self._boost_retrieved_facts(results)
+        return results
 
     def related(
         self,
@@ -255,7 +334,20 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+
+        # Increment retrieval_count for all returned facts
+        if results:
+            fact_ids = [f["fact_id"] for f in results]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+
+        self._boost_retrieved_facts(results)
+        return results
 
     def reason(
         self,
@@ -333,7 +425,20 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+
+        # Increment retrieval_count for all returned facts
+        if results:
+            fact_ids = [f["fact_id"] for f in results]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+
+        self._boost_retrieved_facts(results)
+        return results
 
     def contradict(
         self,
@@ -439,7 +544,21 @@ class FactRetriever:
                     })
 
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
-        return contradictions[:limit]
+        results = contradictions[:limit]
+        # Boost trust for all facts involved in contradiction pairs
+        try:
+            unique_facts = []
+            seen_ids: set[int] = set()
+            for c in results:
+                for key in ("fact_a", "fact_b"):
+                    fid = c.get(key, {}).get("fact_id")
+                    if fid is not None and fid not in seen_ids:
+                        unique_facts.append({"fact_id": fid})
+                        seen_ids.add(fid)
+            self._boost_retrieved_facts(unique_facts)
+        except Exception:
+            logger.debug("Failed to boost contradiction facts", exc_info=True)
+        return results
 
     def _score_facts_by_vector(
         self,
@@ -476,7 +595,83 @@ class FactRetriever:
             scored.append(fact)
 
         scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        results = scored[:limit]
+        self._boost_retrieved_facts(results)
+        return results
+
+    def _neural_search(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """Pure neural cosine similarity search — fallback when FTS5 has no candidates.
+
+        Used when the query doesn't contain exact tokens from any fact but
+        semantic similarity should still find relevant results.
+        """
+        try:
+            import numpy as np
+            query_vec = self.store._embed.embed(query)
+            if query_vec is None:
+                return []
+            query_vec = np.asarray(query_vec, dtype=np.float32)
+            norm_q = float(np.linalg.norm(query_vec))
+            if norm_q == 0:
+                return []
+        except Exception:
+            return []
+
+        conn = self.store._conn
+        where = "WHERE neural_embed IS NOT NULL AND trust_score >= ?"
+        params: list = [min_trust]
+        if category:
+            where += " AND category = ?"
+            params.append(category)
+
+        rows = conn.execute(
+            f"""
+            SELECT fact_id, content, category, tags, trust_score,
+                   retrieval_count, helpful_count, created_at, updated_at,
+                   neural_embed
+            FROM facts
+            {where}
+            """,
+            params,
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        scored = []
+        for row in rows:
+            fact = dict(row)
+            fact.pop("neural_embed", None)
+            fact_embed = np.frombuffer(row["neural_embed"], dtype=np.float32)
+            norm_f = float(np.linalg.norm(fact_embed))
+            if norm_f == 0:
+                continue
+            cosine = float(np.dot(query_vec, fact_embed)) / (norm_q * norm_f)
+            cosine = max(0.0, cosine)  # clamp
+            fact["score"] = cosine * fact["trust_score"]
+            scored.append(fact)
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        results = scored[:limit]
+
+        # Increment retrieval_count for all returned facts
+        if results:
+            fact_ids = [f["fact_id"] for f in results]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+
+        self._boost_retrieved_facts(results)
+        return results
 
     def _fts_candidates(
         self,
@@ -591,3 +786,49 @@ class FactRetriever:
             return math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0
+
+    # ------------------------------------------------------------------
+    # Trust boost on retrieval
+    # ------------------------------------------------------------------
+
+    def _boost_trust(self, fact_id: int) -> None:
+        """Boost a single fact's trust_score by +0.02, capped at 1.0."""
+        try:
+            conn = self.store._conn
+            conn.execute(
+                "UPDATE facts SET trust_score = MIN(trust_score + 0.02, 1.0) "
+                "WHERE fact_id = ?",
+                (fact_id,),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug(
+                "Failed to boost trust for fact_id=%s", fact_id, exc_info=True
+            )
+
+    def _boost_retrieved_facts(self, facts: list[dict]) -> None:
+        """Batch boost trust scores for retrieved facts (+0.02 each, capped at 1.0).
+
+        Uses ``executemany`` with a single commit for efficiency.
+        Silently ignores any error so retrieval never fails.
+        """
+        try:
+            if not facts:
+                return
+            conn = self.store._conn
+            fact_ids = [
+                (f["fact_id"],) for f in facts if "fact_id" in f
+            ]
+            if not fact_ids:
+                return
+            conn.executemany(
+                "UPDATE facts SET trust_score = MIN(trust_score + 0.02, 1.0) "
+                "WHERE fact_id = ?",
+                fact_ids,
+            )
+            conn.commit()
+            logger.debug("Boosted trust for %d retrieved facts", len(fact_ids))
+        except Exception:
+            logger.debug(
+                "Failed to batch-boost trust for retrieved facts", exc_info=True
+            )

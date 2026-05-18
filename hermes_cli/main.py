@@ -5931,6 +5931,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_health(args):
+    """Show system health overview with grade."""
+    from hermes_cli.health import cmd_health as _cmd_health
+
+    _cmd_health(args)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -11556,6 +11563,16 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # health command
+    # =========================================================================
+    health_parser = subparsers.add_parser(
+        "health",
+        help="Show system health overview with grade",
+        description="Display gateway, VRAM, thermal, and database health with an overall grade",
+    )
+    health_parser.set_defaults(func=cmd_health)
 
     # =========================================================================
     # dump command

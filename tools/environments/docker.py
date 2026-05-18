@@ -31,6 +31,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CONTAINER_ID_RE = re.compile(r"^[a-f0-9]+$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -629,22 +630,41 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
+            if not CONTAINER_ID_RE.fullmatch(self._container_id):
+                logger.warning("Invalid container ID format, skipping cleanup: %s", self._container_id)
+                self._container_id = None
+                return
             try:
                 # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                # Use docker stop -t 60 for a 60s graceful shutdown timeout,
+                # then fall back to rm -f if stop fails.
+                subprocess.Popen(
+                    [self._docker_exe, "stop", "-t", "60", self._container_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
                 )
-                subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
+                # Fallback: force-remove if stop failed outright
+                try:
+                    subprocess.Popen(
+                        [self._docker_exe, "rm", "-f", self._container_id],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                except Exception:
+                    pass
 
             if not self._persistent:
                 # Also schedule removal (stop only leaves it as stopped)
                 try:
                     subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+                        [self._docker_exe, "rm", "-f", self._container_id],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
                     )
                 except Exception:
                     pass

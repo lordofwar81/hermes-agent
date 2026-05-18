@@ -170,6 +170,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("search", "browse", "inspect", "install", "audit")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
+    CommandDef("optimize", "Optimize/rewrite a prompt before sending it (rewrite for clarity/structure)",
+               "Tools & Skills", args_hint="<prompt>"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -980,9 +982,9 @@ def discord_skill_commands_by_category(
                 continue
             _names_used[discord_name] = cmd_key
 
-            desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            desc = info.get("description", "") or f"Run {discord_name}"
+            if len(desc) > 50:
+                desc = desc[:47] + "..."
 
             # Determine category from the relative path within the matched
             # scan root. e.g. creative/ascii-art/SKILL.md → ("creative", ...)

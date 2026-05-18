@@ -144,6 +144,17 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+    # Enforce restrictive permissions on .env (matches auth.json pattern)
+    try:
+        import stat
+        current = path.stat().st_mode
+        if current & 0o077:  # group or world readable
+            path.chmod(0o600)
+            import logging as _logging
+            _logging.getLogger(__name__).info("Fixed .env permissions to 600 (was group/world readable)")
+    except OSError:
+        pass
+
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:

@@ -25,6 +25,27 @@ def _reject_mutation(sql: str) -> None:
         raise ValueError("Only SELECT queries are allowed")
 
 
+def _sanitize_sql(sql: str) -> str:
+    """Strip comments and block dangerous keywords in subqueries."""
+    # Remove line comments
+    cleaned = re.sub(r"--[^\n]*", "", sql)
+    # Remove block comments
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = cleaned.strip()
+    # No semicolons allowed (would allow statement chaining)
+    if ";" in cleaned:
+        raise ValueError("Semicolons are not allowed in queries")
+    # Block dangerous keywords that could appear in subqueries
+    dangerous = re.findall(
+        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA)\b",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if dangerous:
+        raise ValueError(f"Blocked keyword(s): {', '.join(set(dangerous))}")
+    return cleaned
+
+
 def _validate_table_name(table_name: str) -> str:
     if not TABLE_NAME_RE.fullmatch(table_name):
         raise ValueError("Invalid table name")
@@ -63,9 +84,10 @@ def describe_table(table_name: str) -> list[dict[str, Any]]:
 @mcp.tool
 def query(sql: str, limit: int = 50) -> dict[str, Any]:
     """Run a read-only SELECT query and return rows plus column names."""
-    _reject_mutation(sql)
+    cleaned = _sanitize_sql(sql)
+    _reject_mutation(cleaned)
     safe_limit = max(0, min(limit, MAX_ROWS))
-    wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"
+    wrapped_sql = f"SELECT * FROM ({cleaned.strip().rstrip(';')}) LIMIT {safe_limit}"
     with _connect() as conn:
         cursor = conn.execute(wrapped_sql)
         columns = [column[0] for column in cursor.description or []]

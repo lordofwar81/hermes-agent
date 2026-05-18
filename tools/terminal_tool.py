@@ -157,6 +157,8 @@ def _check_disk_usage_warning():
 # session's cached sudo password inside the same long-lived process.
 _sudo_password_cache: dict[str, str] = {}
 _sudo_password_cache_lock = threading.Lock()
+_SUDO_PASSWORD_TTL = 300  # seconds (5 minutes) — auto-clear cached password after this duration
+_sudo_password_timestamp = 0.0  # monotonic time of last cache population
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -231,10 +233,12 @@ def _get_cached_sudo_password() -> str:
 
 def _set_cached_sudo_password(password: str) -> None:
     """Persist a sudo password for the current scope."""
+    global _sudo_password_timestamp
     scope = _get_sudo_password_cache_scope()
     with _sudo_password_cache_lock:
         if password:
             _sudo_password_cache[scope] = password
+            _sudo_password_timestamp = time.monotonic()
         else:
             _sudo_password_cache.pop(scope, None)
 
@@ -244,8 +248,10 @@ def _reset_cached_sudo_passwords() -> None:
 
     Internal helper for tests and process teardown paths.
     """
+    global _sudo_password_timestamp
     with _sudo_password_cache_lock:
         _sudo_password_cache.clear()
+        _sudo_password_timestamp = 0.0
 
 # =============================================================================
 # Dangerous Command Approval System
@@ -789,6 +795,10 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_real_sudo:
         return command, None
 
+    # TTL check: auto-clear cached password after 5 minutes
+    if _get_cached_sudo_password() and (time.monotonic() - _sudo_password_timestamp > _SUDO_PASSWORD_TTL):
+        _reset_cached_sudo_passwords()
+
     has_configured_password = "SUDO_PASSWORD" in os.environ
     sudo_password = (
         os.environ.get("SUDO_PASSWORD", "")
@@ -1033,7 +1043,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
-    default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
+    default_image = "nikolaik/python-nodejs@sha256:8f958bdc1b4a422bfafd97cab4f69836401f616ae985d4b57a53d254f5bcb038"
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}

@@ -479,9 +479,11 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
 def write_pid_file() -> None:
     """Write the current process PID and metadata to the gateway PID file.
 
-    Uses atomic O_CREAT | O_EXCL creation so that concurrent --replace
-    invocations race: exactly one process wins and the rest get
-    FileExistsError.
+    Verifies the existing PID file belongs to a dead process before
+    overwriting.  Uses O_CREAT | O_EXCL when no stale file exists
+    (preserves the concurrent-race semantics for live gateways).
+    Falls back to O_TRUNC when the recorded PID is dead (systemd
+    restart-loop safety).
     """
     path = _get_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -489,7 +491,21 @@ def write_pid_file() -> None:
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        raise  # Let caller decide: another gateway is racing us
+        # Check whether the existing PID file is from a dead process.
+        try:
+            existing = _read_pid_record(path)
+            pid = _pid_from_record(existing)
+            if pid is not None:
+                os.kill(pid, 0)  # process still alive → real conflict
+                raise
+        except ProcessLookupError:
+            pass  # dead process → safe to overwrite
+        except PermissionError:
+            pass  # can't check → overwrite to unblock systemd
+        except OSError:
+            pass  # invalid pid → overwrite
+        # Stale PID file from a dead gateway — overwrite it.
+        fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(record)

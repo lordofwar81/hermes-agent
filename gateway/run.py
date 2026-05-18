@@ -950,6 +950,18 @@ if _config_path.exists():
                         os.environ[_env_var] = str(_val)
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
+        # Generic config['env'] list: load all env vars into os.environ.
+        _cfg_env = _cfg.get("env", [])
+        if _cfg_env and isinstance(_cfg_env, list):
+            for _entry in _cfg_env:
+                if isinstance(_entry, dict) and "name" in _entry and "value" in _entry:
+                    _env_name = _entry["name"]
+                    _env_val = _entry["value"]
+                    if _env_name not in os.environ:
+                        if isinstance(_env_val, (list, dict)):
+                            os.environ[_env_name] = json.dumps(_env_val)
+                        else:
+                            os.environ[_env_name] = str(_env_val)
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,
         # approval, plus any plugin-registered auxiliary tasks).
         # Each task has provider/model/base_url/api_key; bridge non-default
@@ -6410,13 +6422,60 @@ class GatewayRunner:
             )
             _stop_started_at = time.monotonic()
 
+            _shutdown_budget = 70.0  # Must finish well before systemd TimeoutStopSec
+
             def _phase_elapsed() -> float:
                 return time.monotonic() - _stop_started_at
+
+            def _budget_exhausted(phase: str) -> bool:
+                if _phase_elapsed() >= _shutdown_budget:
+                    logger.warning(
+                        "Shutdown budget exhausted at %s (+%.2fs); "
+                        "skipping to final cleanup",
+                        phase, _phase_elapsed(),
+                    )
+                    return True
+                return False
 
             self._running = False
             self._draining = True
 
-            # Notify all chats with active agents BEFORE draining.
+            # ── PHASE 0: Kill all tool subprocesses IMMEDIATELY ──────────
+            # These are bash/python/sleep children that systemd won't signal
+            # (KillMode=mixed only signals the main PID).  Killing them now
+            # reclaims resources and prevents systemd SIGKILL escalation.
+            _kill_tool_subprocesses("immediate")
+            logger.info(
+                "Shutdown phase: immediate tool kill done at +%.2fs",
+                _phase_elapsed(),
+            )
+
+            # Kill untracked children (e.g. llama-server spawned by agent
+            # tool calls) that process_registry doesn't know about.
+            try:
+                import psutil as _psutil
+                _me = _psutil.Process(os.getpid())
+                for _child in _me.children(recursive=False):
+                    try:
+                        _cmd = " ".join(_child.cmdline()).lower()
+                    except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                        continue
+                    if "llama" in _cmd:
+                        _child.terminate()
+                        logger.info(
+                            "Shutdown: terminated llama-server child "
+                            "(pid=%d)", _child.pid,
+                        )
+            except ImportError:
+                pass
+            except Exception as _e:
+                logger.debug("Untracked child cleanup: %s", _e)
+            logger.info(
+                "Shutdown phase: untracked child cleanup done at +%.2fs",
+                _phase_elapsed(),
+            )
+
+            # ── PHASE 1: Notify active sessions ──────────────────────────
             # Adapters are still connected here, so messages can be sent.
             await self._notify_active_sessions_of_shutdown()
             logger.info(
@@ -6424,27 +6483,38 @@ class GatewayRunner:
                 _phase_elapsed(),
             )
 
-            timeout = self._restart_drain_timeout
+            # ── PHASE 2: Preemptive resume_pending ───────────────────────
+            # Mark ALL active sessions as resume_pending BEFORE draining so
+            # they can be auto-resumed even if the process gets SIGKILL'd
+            # mid-drain.  Sessions that finish cleanly during the drain
+            # window will have resume_pending cleared on their next turn.
+            if not _budget_exhausted("preemptive_resume"):
+                _pre_reason = (
+                    "restart_pre" if self._restart_requested else "shutdown_pre"
+                )
+                for _sk, _agent in list(self._running_agents.items()):
+                    if _agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    try:
+                        self.session_store.mark_resume_pending(_sk, _pre_reason)
+                    except Exception as _e:
+                        logger.debug(
+                            "preemptive mark_resume_pending for %s: %s",
+                            _sk, _e,
+                        )
 
-            # Pre-mark sessions as resume_pending BEFORE the drain wait.
-            # If the process is killed by the service manager during the
-            # drain, the durable marker is already written so the next
-            # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    self.session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
-
+            # ── PHASE 3: Drain agents (capped) ──────────────────────────
+            # The configured restart_drain_timeout (180s) is only for
+            # voluntary /restart.  For SIGTERM from systemd, cap to 30s.
             _drain_started_at = time.monotonic()
-            active_agents, timed_out = await self._drain_active_agents(timeout)
+            _drain_timeout_used = 0.0
+            if _budget_exhausted("drain"):
+                timed_out = bool(self._running_agents)
+                active_agents = {}
+            else:
+                _drain_cap = 30.0
+                _drain_timeout_used = min(self._restart_drain_timeout, _drain_cap)
+                active_agents, timed_out = await self._drain_active_agents(_drain_timeout_used)
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
                 "timed_out=%s, active_at_start=%d, active_now=%d)",
@@ -6456,23 +6526,22 @@ class GatewayRunner:
             )
 
             if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
+                # Drain completed gracefully — clear any pre-drain
+                # resume_pending markers so finished sessions don't carry
+                # a stale flag.
+                for _sk in list(self._running_agents):
+                    try:
+                        self.session_store.clear_resume_pending(_sk)
+                    except Exception as _e:
+                        logger.debug(
+                            "clear_resume_pending after drain for %s: %s",
+                            _sk, _e,
+                        )
 
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
-                    timeout,
+                    _drain_timeout_used,
                     self._running_agent_count(),
                 )
                 # Mark forcibly-interrupted sessions as resume_pending BEFORE
@@ -6512,7 +6581,7 @@ class GatewayRunner:
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
-                interrupt_deadline = asyncio.get_running_loop().time() + 5.0
+                interrupt_deadline = asyncio.get_running_loop().time() + 2.0
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
@@ -6556,26 +6625,38 @@ class GatewayRunner:
                     )
                     self._cleanup_agent_resources(_agent)
 
-            for platform, adapter in list(self.adapters.items()):
-                _adapter_started_at = time.monotonic()
-                try:
-                    await adapter.cancel_background_tasks()
-                except Exception as e:
-                    logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
-                try:
-                    await adapter.disconnect()
-                    logger.info(
-                        "✓ %s disconnected (%.2fs)",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "✗ %s disconnect error after %.2fs: %s",
-                        platform.value,
-                        time.monotonic() - _adapter_started_at,
-                        e,
-                    )
+            # ── PHASE 5: Disconnect adapters (with per-adapter timeout) ──
+            if not _budget_exhausted("adapter_disconnect"):
+                _adapter_timeout = self._adapter_disconnect_timeout_secs()
+                for platform, adapter in list(self.adapters.items()):
+                    _adapter_started_at = time.monotonic()
+                    try:
+                        await adapter.cancel_background_tasks()
+                    except Exception as e:
+                        logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
+                    try:
+                        if _adapter_timeout > 0:
+                            await asyncio.wait_for(adapter.disconnect(), timeout=_adapter_timeout)
+                        else:
+                            await adapter.disconnect()
+                        logger.info(
+                            "✓ %s disconnected (%.2fs)",
+                            platform.value,
+                            time.monotonic() - _adapter_started_at,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Timed out after %.1fs disconnecting %s; "
+                            "continuing shutdown",
+                            _adapter_timeout, platform.value,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "✗ %s disconnect error after %.2fs: %s",
+                            platform.value,
+                            time.monotonic() - _adapter_started_at,
+                            e,
+                        )
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
                 _phase_elapsed(),
@@ -6627,14 +6708,22 @@ class GatewayRunner:
             # old gateway's connection holding the WAL lock until Python
             # actually exits — causing 'database is locked' errors when
             # the new gateway tries to open the same file.
-            for _db_holder in (self, getattr(self, "session_store", None)):
-                _db = getattr(_db_holder, "_db", None) if _db_holder else None
-                if _db is None or not hasattr(_db, "close"):
-                    continue
-                try:
-                    _db.close()
-                except Exception as _e:
-                    logger.debug("SessionDB close error: %s", _e)
+            if not _budget_exhausted("sessiondb_close"):
+                for _db_holder in (self, getattr(self, "session_store", None)):
+                    _db = getattr(_db_holder, "_db", None) if _db_holder else None
+                    if _db is None or not hasattr(_db, "close"):
+                        continue
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.get_running_loop().run_in_executor(None, _db.close),
+                            timeout=5.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "SessionDB close timed out after 5s; continuing",
+                        )
+                    except Exception as _e:
+                        logger.debug("SessionDB close error: %s", _e)
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
                 _phase_elapsed(),
@@ -7646,7 +7735,7 @@ class GatewayRunner:
                 await self._interrupt_and_clear_session(
                     _quick_key,
                     source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    interrupt_reason="stop",
                     invalidation_reason="stop_command",
                 )
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
@@ -7794,6 +7883,34 @@ class GatewayRunner:
             # boundary. No race with the running turn.
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
+            # /optimize <prompt> — rewrite the user's prompt using the
+            # prompt-optimizer skill, then execute it.  Delegates to the
+            # skill-invocation system for prompt-optimizer.
+            if _cmd_def_inner and _cmd_def_inner.name == "optimize":
+                optimize_text = event.get_command_args().strip()
+                if not optimize_text:
+                    return "Usage: /optimize <prompt>"
+                try:
+                    from agent.skill_commands import (
+                        get_skill_commands,
+                        build_skill_invocation_message,
+                        resolve_skill_command_key,
+                    )
+                    skill_cmds = get_skill_commands()
+                    cmd_key = resolve_skill_command_key("prompt-optimizer")
+                    if cmd_key is None:
+                        return "The prompt-optimizer skill is not installed."
+                    msg = build_skill_invocation_message(
+                        cmd_key, optimize_text, task_id=_quick_key
+                    )
+                    if msg:
+                        event.text = msg
+                        _cmd_def_inner = None  # Prevent catch-all rejection below
+                    else:
+                        return "Failed to load the prompt-optimizer skill."
+                except Exception as exc:
+                    logger.warning("Optimize handler failed for session %s: %s", _quick_key, exc)
+                    return f"⚠️ Optimize failed: {exc}"
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
@@ -8210,6 +8327,32 @@ class GatewayRunner:
             # Do NOT return — fall through to _handle_message_with_agent
             # at the end of this function so the rewritten text is sent
             # to the agent as a regular user turn.
+
+        if canonical == "optimize":
+            # /optimize <prompt> — rewrite using prompt-optimizer skill,
+            # then fall through to agent as a normal user message.
+            optimize_text = event.get_command_args().strip()
+            if not optimize_text:
+                return "Usage: /optimize <prompt>"
+            try:
+                from agent.skill_commands import (
+                    get_skill_commands,
+                    build_skill_invocation_message,
+                    resolve_skill_command_key,
+                )
+                cmd_key = resolve_skill_command_key("prompt-optimizer")
+                if cmd_key is None:
+                    return "The prompt-optimizer skill is not installed."
+                msg = build_skill_invocation_message(
+                    cmd_key, optimize_text, task_id=_quick_key
+                )
+                if msg:
+                    event.text = msg
+                    # Do NOT return — fall through to agent processing
+                else:
+                    return "Failed to load the prompt-optimizer skill."
+            except Exception as exc:
+                return f"⚠️ Optimize failed: {exc}"
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
@@ -8794,11 +8937,6 @@ class GatewayRunner:
                     ):
                         bound_session_id = canonical_session_id
                 if bound_session_id and bound_session_id != session_entry.session_id:
-                    # Route the override through SessionStore so the session_key
-                    # → session_id mapping is persisted to disk and the previous
-                    # lane session is ended cleanly. Mutating session_entry in
-                    # place here created a split-brain state where the JSON
-                    # index pointed at one id but code downstream used another.
                     switched = self.session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
@@ -9023,14 +9161,25 @@ class GatewayRunner:
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
 
-                    # Read compression settings — only use enabled flag.
-                    # The threshold is intentionally separate from the agent's
-                    # compression.threshold (hygiene runs higher).
+                    # Read compression settings — enabled flag, hygiene
+                    # threshold, and hard message limit.
+                    # The hygiene threshold defaults to 0.85 (higher than
+                    # the agent's own compression.threshold) because hygiene
+                    # uses rough token estimates and fires pre-agent as a
+                    # safety net.  Override via compression.hygiene_threshold.
                     _comp_cfg = _hyg_data.get("compression", {})
                     if isinstance(_comp_cfg, dict):
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in {"true", "1", "yes"}
+                        _raw_hyg_threshold = _comp_cfg.get("hygiene_threshold")
+                        if _raw_hyg_threshold is not None:
+                            try:
+                                _parsed = float(_raw_hyg_threshold)
+                                if 0.1 <= _parsed <= 0.99:
+                                    _hyg_threshold_pct = _parsed
+                            except (TypeError, ValueError):
+                                pass
                         _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
                         if _raw_hard_limit is not None:
                             try:
@@ -9143,12 +9292,32 @@ class GatewayRunner:
 
                     try:
                         from run_agent import AIAgent
+                        import asyncio  # defensive: ensure available in this scope
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
                         )
+                        # Compression needs a model with large context (200K+).
+                        # Local models (Mac Studio Qwen3.6, MiniMax) fail on
+                        # long conversations.  Fall back to canonical provider.
+                        if _hyg_runtime.get("provider") in ("mac_studio", "minimax"):
+                            try:
+                                _primary_runtime = _resolve_runtime_agent_kwargs()
+                                if _primary_runtime.get("api_key"):
+                                    _hyg_model = _resolve_gateway_model(_hyg_data)
+                                    _hyg_runtime = {
+                                        "api_key": _primary_runtime["api_key"],
+                                        "base_url": _primary_runtime["base_url"],
+                                        "provider": _primary_runtime["provider"],
+                                        "api_mode": _primary_runtime.get("api_mode"),
+                                        "command": _primary_runtime.get("command"),
+                                        "args": _primary_runtime.get("args", []),
+                                        "credential_pool": _primary_runtime.get("credential_pool"),
+                                    }
+                            except Exception:
+                                pass
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}
@@ -9279,7 +9448,8 @@ class GatewayRunner:
 
                     except Exception as e:
                         logger.warning(
-                            "Session hygiene auto-compress failed: %s", e
+                            "Session hygiene auto-compress failed: %s", e,
+                            exc_info=True,
                         )
 
         # First-message onboarding -- only on the very first interaction ever
@@ -9379,6 +9549,24 @@ class GatewayRunner:
                 channel_prompt=event.channel_prompt,
             )
 
+            # Wire circuit breaker: record success/failure for provider routing
+            try:
+                from agent.model_router import record_routing_failure, record_routing_success
+                _route_provider = agent_result.get("provider") or getattr(self, "_last_route_provider", None)
+                if _route_provider:
+                    if agent_result.get("failed"):
+                        record_routing_failure(_route_provider)
+                        logger.debug(
+                            "Circuit breaker: recorded failure for provider '%s'", _route_provider,
+                        )
+                    else:
+                        record_routing_success(_route_provider)
+            except Exception:
+                pass
+
+            # Extract conversation messages for transcript persistence
+            agent_messages = agent_result.get("messages", [])
+
             # Stop persistent typing indicator now that the agent is done
             try:
                 _typing_adapter = self.adapters.get(source.platform)
@@ -9388,12 +9576,48 @@ class GatewayRunner:
                 pass
 
             if not self._is_session_run_current(_quick_key, run_generation):
-                logger.info(
-                    "Discarding stale agent result for %s — generation %d is no longer current",
-                    _quick_key or "?",
-                    run_generation,
-                )
+                # Preserve completed work instead of silently discarding.
+                # If the agent produced a substantive response, save it as a
+                # stale-result artifact and notify the user rather than dropping
+                # hours of compute into the void.
+                _stale_response = agent_result.get("final_response") or ""
+                _stale_tool_calls = agent_result.get("tool_call_count", 0) or 0
                 _stale_adapter = self.adapters.get(source.platform)
+
+                if _stale_response and _stale_response != "(empty)":
+                    _truncated = _stale_response[:4000] + ("..." if len(_stale_response) > 4000 else "")
+                    _summary_msg = (
+                        f"📋 **Stale result preserved** (gen {run_generation} superseded).\n"
+                        f"The agent completed {_stale_tool_calls} tool calls before this "
+                        f"result was superseded by a newer message.\n\n"
+                        f"**Completed work:**\n{_truncated}\n\n"
+                        f"*This result was saved because it contained substantive work.*"
+                    )
+                    logger.info(
+                        "Preserving stale agent result for %s — generation %d superseded, "
+                        "response had %d chars, %d tool calls",
+                        _quick_key or "?",
+                        run_generation,
+                        len(_stale_response),
+                        _stale_tool_calls,
+                    )
+                    # Deliver the preserved result to the user
+                    try:
+                        if _stale_adapter and hasattr(_stale_adapter, "send_message"):
+                            import asyncio
+                            asyncio.ensure_future(
+                                _stale_adapter.send_message(source.chat_id, _summary_msg)
+                            )
+                    except Exception:
+                        pass
+                else:
+                    logger.info(
+                        "Discarding stale agent result for %s — generation %d is no longer current "
+                        "(empty response, no work to preserve)",
+                        _quick_key or "?",
+                        run_generation,
+                    )
+
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,
@@ -10522,7 +10746,7 @@ class GatewayRunner:
             await self._interrupt_and_clear_session(
                 session_key,
                 source,
-                interrupt_reason=_INTERRUPT_REASON_STOP,
+                interrupt_reason="stop",
                 invalidation_reason="stop_command_pending",
             )
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
@@ -16265,7 +16489,7 @@ class GatewayRunner:
 
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
-        if not session_key:
+        if not session_key or generation is None:
             return True
         generations = self.__dict__.get("_session_run_generation") or {}
         return int(generations.get(session_key, 0)) == int(generation)
@@ -16502,6 +16726,21 @@ class GatewayRunner:
         if url:
             return url.rstrip("/")
         return None
+
+    def _evict_cached_agent(self, session_key: str) -> None:
+        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        _lock = getattr(self, "_agent_cache_lock", None)
+        if _lock:
+            with _lock:
+                self._agent_cache.pop(session_key, None)
+
+    @staticmethod
+    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
+        """Reset per-turn state on a cached agent before a new turn starts."""
+        if interrupt_depth == 0:
+            agent._last_activity_ts = time.time()
+            agent._last_activity_desc = "starting new turn (cached)"
+        agent._api_call_count = 0
 
     async def _run_agent_via_proxy(
         self,
@@ -16755,19 +16994,36 @@ class GatewayRunner:
 
         _elapsed = time.time() - _start
         if not _run_still_current():
-            logger.info(
-                "Discarding stale proxy result for %s — generation %d is no longer current",
-                session_key or "?",
-                run_generation or 0,
-            )
+            # Preserve partial proxy response instead of discarding
+            if full_response:
+                logger.info(
+                    "Preserving stale proxy result for %s — generation %d superseded, "
+                    "partial response had %d chars after %.1fs",
+                    session_key or "?",
+                    run_generation or 0,
+                    len(full_response),
+                    _elapsed,
+                )
+                # Return the partial response so the caller can deliver it
+            else:
+                logger.info(
+                    "Discarding stale proxy result for %s — generation %d is no longer current "
+                    "(empty response)",
+                    session_key or "?",
+                    run_generation or 0,
+                )
             return {
-                "final_response": "",
-                "messages": [],
-                "api_calls": 0,
+                "final_response": full_response or "",
+                "messages": [
+                    {"role": "user", "content": message},
+                    {"role": "assistant", "content": full_response},
+                ] if full_response else [],
+                "api_calls": 1,
                 "tools": [],
                 "history_offset": len(history),
                 "session_id": session_id,
                 "response_previewed": False,
+                "_stale_preserved": bool(full_response),
             }
         logger.info(
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
@@ -16804,16 +17060,18 @@ class GatewayRunner:
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
-        
+
         Returns the full result dict from run_conversation, including:
           - "final_response": str (the text to send back)
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
-        
+
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        if run_generation is None:
+            run_generation = self._begin_session_run_generation(session_key) if session_key else None
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -17389,6 +17647,15 @@ class GatewayRunner:
                             await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:
                             pass
+                    # Stop typing indicator — the progress streamer re-triggers
+                    # send_typing() after each edit (line 14647), so a new loop
+                    # may have been spawned after the main stop_typing at line 7533
+                    # cancelled the previous one.  Without this cleanup the
+                    # typing indicator persists indefinitely.
+                    try:
+                        await adapter.stop_typing(source.chat_id)
+                    except Exception:
+                        pass
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -17644,6 +17911,10 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+
+            # Wire circuit breaker: track provider for failure/success callbacks
+            _route_provider = turn_route.get("runtime", {}).get("provider")
+            self._last_route_provider = _route_provider
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -18172,6 +18443,8 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "provider": _route_provider,
+
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -18692,6 +18965,7 @@ class GatewayRunner:
                     "tools": tools_holder[0] or [],
                     "history_offset": 0,
                     "failed": True,
+                    "provider": _route_provider,
                 }
 
             # Track fallback model state: if the agent switched to a
@@ -19308,6 +19582,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         terminate_pid,
     )
     existing_pid = get_running_pid()
+    # Stale PID file from a dead gateway — clean it up regardless of --replace.
+    # Without this, write_pid_file() O_EXCL fails and the gateway crashes
+    # on every systemd restart until the file is manually removed.
+    if existing_pid is None:
+        try:
+            remove_pid_file()
+        except OSError:
+            pass
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
             existing_start_time = get_process_start_time(existing_pid)

@@ -8024,6 +8024,9 @@ def _(rid, params: dict) -> dict:
             )
     except ImportError:
         pass
+    # Trust boundary: TUI gateway runs on localhost only; commands originate
+    # from the local user's TUI session. detect_dangerous_command() above is
+    # the primary guard against injection via network-sourced payloads.
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

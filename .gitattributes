@@ -1,2 +1,11 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+
+# Deleted routing modules — prevent resurrection from upstream merges
+agent/smart_model_routing.py merge=ours
+agent/model_selector.py merge=ours
+agent/budget_enforcer.py merge=ours
+agent/priority_router.py merge=ours
+agent/priority_routing_integration.py merge=ours
+agent/trivial_task_classifier.py merge=ours
+agent/model_router.py merge=ours

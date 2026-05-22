@@ -4,6 +4,7 @@ Single-user Hermes memory store plugin.
 """
 
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -168,7 +169,7 @@ _log = logging.getLogger(__name__)
 # Default embed server — local llama.cpp with mxbai-embed-large-v1
 _DEFAULT_EMBED_URL = "http://localhost:11434/v1/embeddings"
 _DEFAULT_EMBED_MODEL = "mxbai-embed-large-v1-f16.gguf"
-_DEFAULT_EMBED_KEY = "notempty"
+_DEFAULT_EMBED_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 _EMBED_TIMEOUT = 5  # seconds — fail fast, don't block memory writes
 
 

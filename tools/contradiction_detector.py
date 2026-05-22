@@ -26,6 +26,7 @@ Usage:
 
 import json
 import logging
+import os
 import re
 import sys
 from typing import Dict, List, Any, Optional, Tuple
@@ -61,6 +62,7 @@ except ImportError:
 # Embedding endpoint (same as adaptive_context_manager.py)
 EMBED_ENDPOINT = "http://localhost:11434/v1"
 EMBED_MODEL = "mxbai-embed-large-v1"
+EMBED_API_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 
 # LLM endpoint for contradiction detection (use smallest local model)
 LLM_ENDPOINT = "http://localhost:8100/v1"
@@ -91,7 +93,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
     try:
         response = requests.post(
             f"{EMBED_ENDPOINT}/embeddings",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {EMBED_API_KEY}"},
             json={"model": EMBED_MODEL, "input": text},
             timeout=30,
         )

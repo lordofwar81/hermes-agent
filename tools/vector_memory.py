@@ -31,6 +31,7 @@ Usage:
 
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -50,6 +51,7 @@ DEFAULT_VECTOR_MEMORY_PATH = Path.home() / ".hermes" / "vector_memory"
 # Embedding endpoint (same as adaptive_context_manager.py)
 EMBED_ENDPOINT = "http://localhost:11434/v1"
 EMBED_MODEL = "mxbai-embed-large-v1"
+EMBED_API_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 
 # Default epistemic status values
 EPISTEMIC_STATUSES = ["stated", "inferred", "verified", "contradicted", "retracted"]
@@ -110,7 +112,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
     try:
         response = requests.post(
             f"{EMBED_ENDPOINT}/embeddings",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {EMBED_API_KEY}"},
             json={"model": EMBED_MODEL, "input": text},
             timeout=30,
         )

@@ -61,7 +61,7 @@ def agent():
         patch(
             "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
@@ -83,7 +83,7 @@ def agent_with_memory_tool():
             "run_agent.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "memory"),
         ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
@@ -3746,6 +3746,66 @@ class TestRunConversation:
         assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
         failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
         assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
+
+    def test_context_pressure_compresses_tool_results_before_nudge(self, agent):
+        """When tool results exceed 15K total chars before an empty-response
+        nudge, older large tool results should be compressed in-place."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        tc = SimpleNamespace(
+            id="tc1", type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
+        )
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        ok_resp = _mock_response(content="Done after compression", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp,   # triggers tool execution
+            tool_resp,   # triggers tool execution again (to add a 2nd tool result)
+            empty_resp,  # triggers empty-response nudge + compression
+            ok_resp,     # nudge retry succeeds
+        ]
+
+        large_result = "x" * 20_000  # 20K chars — well above the per-result threshold
+
+        status_messages = []
+
+        def _capture(msg):
+            status_messages.append(msg)
+
+        with (
+            patch("run_agent.handle_function_call", return_value=large_result),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=_capture),
+        ):
+            result = agent.run_conversation("search for something")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Done after compression"
+
+        # Should have emitted the compression status message
+        compress_msgs = [m for m in status_messages if "compressed" in m.lower()]
+        assert len(compress_msgs) >= 1, (
+            f"Expected compression status message, got: {status_messages}"
+        )
+
+        # Tool results in messages should be truncated (contain "[truncated]" marker)
+        tool_contents = [
+            m.get("content", "")
+            for m in result.get("messages", [])
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        truncated = [c for c in tool_contents if "truncated" in c]
+        assert len(truncated) >= 1, (
+            "Expected at least 1 truncated tool result after compression, "
+            f"got {len(tool_contents)} tool results, none truncated"
+        )
 
     def test_partial_stream_recovery_uses_streamed_content(self, agent):
         """When streaming fails after partial delivery, recovered partial content becomes final response."""

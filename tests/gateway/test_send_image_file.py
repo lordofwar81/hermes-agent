@@ -28,7 +28,16 @@ def _run(coro):
 
 
 class TestExtractMediaImages:
-    """Test that MEDIA: tags with image extensions are correctly extracted."""
+    """Test that MEDIA: tags with image extensions are correctly extracted.
+
+    NOTE: extract_media requires os.path.isfile to return True for paths.
+    Mocked via autouse fixture.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_isfile(self):
+        with patch("os.path.isfile", return_value=True):
+            yield
 
     def test_png_image_extracted(self):
         content = "Here is the screenshot:\nMEDIA:/home/user/.hermes/browser_screenshots/shot.png"

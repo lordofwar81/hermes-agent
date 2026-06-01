@@ -67,7 +67,8 @@ class TestTelegramModelPicker:
         )
 
         assert result.success is True
-        assert "MARKDOWN_V2" in repr(sent["parse_mode"])
+        pm = sent["parse_mode"]
+        assert pm == "MarkdownV2" or getattr(pm, "value", None) == "MarkdownV2" or "MARKDOWN_V2" in repr(pm)
         assert "provider\\_one" in sent["text"]
         assert "`model_1`" in sent["text"]
 
@@ -98,7 +99,8 @@ class TestTelegramModelPicker:
         await adapter._handle_model_picker_callback(query, "mb", "12345")
 
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
+        pm = edit_kwargs["parse_mode"]
+        assert pm == "MarkdownV2" or getattr(pm, "value", None) == "MarkdownV2" or "MARKDOWN_V2" in repr(pm)
         assert "provider\\_one" in edit_kwargs["text"]
         assert "`model_1`" in edit_kwargs["text"]
 
@@ -139,7 +141,8 @@ class TestTelegramModelPicker:
         # regression we're guarding).
         query.edit_message_text.assert_awaited()
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
+        pm = edit_kwargs["parse_mode"]
+        assert pm == "MarkdownV2" or getattr(pm, "value", None) == "MarkdownV2" or "MARKDOWN_V2" in repr(pm)
         # The dynamic result text was routed through format_message
         # (backtick code blocks survive escaping).
         assert "`gpt-5`" in edit_kwargs["text"]

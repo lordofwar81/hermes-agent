@@ -502,7 +502,9 @@ def write_pid_file() -> None:
             pass  # dead process → safe to overwrite
         except PermissionError:
             pass  # can't check → overwrite to unblock systemd
-        except OSError:
+        except OSError as exc:
+            if isinstance(exc, FileExistsError):
+                raise  # re-raised from the live-PID check above
             pass  # invalid pid → overwrite
         # Stale PID file from a dead gateway — overwrite it.
         fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY)

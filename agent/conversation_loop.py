@@ -4153,6 +4153,48 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    # ── Context pressure relief ────────────────────────
+                    # Before nudging, check if tool results are bloating
+                    # the context.  If so, compress older/large results so
+                    # the nudge (and any subsequent retry) has room.
+                    # Keep the most recent 2 tool results intact — they're
+                    # the ones the model just produced and needs to see.
+                    if _prior_was_tool:
+                        _tool_msg_indices = [
+                            i for i, m in enumerate(messages)
+                            if isinstance(m, dict) and m.get("role") == "tool"
+                        ]
+                        _tool_total_chars = sum(
+                            len(messages[i].get("content", "") or "")
+                            for i in _tool_msg_indices
+                        )
+                        if _tool_total_chars > 15000 and len(_tool_msg_indices) >= 2:
+                            _compress_count = 0
+                            # Keep at least the most recent 1 intact; if 3+
+                            # tool results, keep 2 most recent.
+                            _keep = 2 if len(_tool_msg_indices) >= 3 else 1
+                            for _idx in _tool_msg_indices[:-_keep] if _keep else []:
+                                _content = messages[_idx].get("content", "") or ""
+                                if len(_content) > 500:
+                                    messages[_idx]["content"] = (
+                                        _content[:200]
+                                        + "\n…[truncated: "
+                                        + str(len(_content))
+                                        + " chars]…\n"
+                                        + _content[-200:]
+                                    )
+                                    _compress_count += 1
+                            if _compress_count:
+                                logger.info(
+                                    "Compressed %d tool results (was %d total chars) "
+                                    "before nudge to free context",
+                                    _compress_count, _tool_total_chars,
+                                )
+                                agent._emit_status(
+                                    f"↻ Compressed {_compress_count} tool results "
+                                    f"({_tool_total_chars} chars) to free context"
+                                )
+
                     if (
                         _prior_was_tool
                         and not getattr(agent, "_post_tool_empty_retried", False)
@@ -4337,6 +4379,15 @@ def run_conversation(
                 # Successful content reached — drop any buffered retry
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
+
+                # Record circuit-breaker success when a fallback provider
+                # produces valid content, so its failure count resets.
+                if getattr(agent, "_fallback_activated", False):
+                    try:
+                        from agent.routing import record_routing_success
+                        record_routing_success(agent.provider)
+                    except ImportError:
+                        pass
 
                 if (
                     agent.api_mode == "codex_responses"

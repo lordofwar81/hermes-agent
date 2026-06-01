@@ -735,7 +735,15 @@ class TestSignalSendVideo:
 # ---------------------------------------------------------------------------
 
 class TestSignalMediaExtraction:
-    """Verify the full pipeline: MEDIA: tag → extract → send_image_file/send_voice."""
+    """Verify the full pipeline: MEDIA: tag → extract → send_image_file/send_voice.
+
+    NOTE: extract_media requires os.path.isfile to return True for paths.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_isfile(self):
+        with patch("os.path.isfile", return_value=True):
+            yield
 
     def test_extract_media_finds_image_tag(self):
         """BasePlatformAdapter.extract_media should find MEDIA: image paths."""

@@ -20,6 +20,7 @@ import inspect
 import textwrap
 
 from gateway import run as gateway_run
+from gateway.mixins import message_mixin
 
 
 def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, bool]]:
@@ -85,9 +86,19 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
     return results
 
 
+def _scan_module(mod) -> list[tuple[int, bool, str]]:
+    """Scan a module for ``session_entry.session_id = ...`` assignments
+    followed by ``_save()``. Returns ``[(lineno, saved, label)]``."""
+    source = inspect.getsource(mod)
+    results = _session_id_assignments_followed_by_save(source)
+    label = getattr(mod, "__file__", str(mod))
+    return [(lineno, saved, label) for lineno, saved in results]
+
+
 def test_every_post_compression_session_id_assignment_persists():
-    """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a ``session_store._save()`` call within the same block.
+    """Every ``session_entry.session_id = ...`` in gateway/run.py (or its
+    message mixin) must be followed by a ``session_store._save()`` call
+    within the same block.
 
     Regression for #29335 — the assignment at the end of
     ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
@@ -95,15 +106,17 @@ def test_every_post_compression_session_id_assignment_persists():
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
     """
-    source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    assignments = []
+    assignments.extend(_scan_module(gateway_run))
+    assignments.extend(_scan_module(message_mixin))
     assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
+        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py "
+        "or gateway/mixins/message_mixin.py — "
         "either the structure changed or the AST walker is broken."
     )
-    missing = [lineno for lineno, saved in assignments if not saved]
+    missing = [(lineno, label) for lineno, saved, label in assignments if not saved]
     assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
+        f"{len(missing)} ``session_entry.session_id = ...`` site(s) "
         f"are not followed by ``session_store._save()`` within the same block "
         f"(lines: {missing}). Every post-compression session_id update must persist "
         f"or the next turn loads the pre-compression transcript and triggers an "

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+[DEPRECATED 2026-05-31] Replaced by agent/routing.py (Router v1).
+Do not import in production code. Retained for historical reference only.
+Moved to _deprecated prefix; tests moved to tests/_deprecated/.
+
 agent.model_router — Deterministic, single-source routing for Hermes.
 
 Canonical implementation (replaces: smart_model_routing.py, model_selector.py,

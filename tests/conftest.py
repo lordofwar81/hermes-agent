@@ -26,6 +26,12 @@ from pathlib import Path
 
 import pytest
 
+# Force anyio to use asyncio only — trio parametrization is not needed and
+# causes failures in tests that use asyncio-specific APIs.
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -102,6 +108,7 @@ _CREDENTIAL_NAMES = frozenset({
     "BROWSERBASE_API_KEY",
     "FIRECRAWL_API_KEY",
     "PARALLEL_API_KEY",
+    "API_SERVER_KEY",
     "EXA_API_KEY",
     "TAVILY_API_KEY",
     "WANDB_API_KEY",
@@ -321,6 +328,19 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WHATSAPP_REQUIRE_MENTION",
     "DINGTALK_REQUIRE_MENTION",
     "MATRIX_REQUIRE_MENTION",
+    # API Server / Webhook gating — loaded from .env by gateway.run at import
+    # time, leaks into tests that import gateway.run and then call
+    # load_gateway_config().  _apply_env_overrides() uses these to force
+    # platform enabled=True regardless of YAML config.
+    "API_SERVER_ENABLED",
+    "API_SERVER_KEY",
+    "API_SERVER_PORT",
+    "API_SERVER_HOST",
+    "API_SERVER_MODEL_NAME",
+    "API_SERVER_CORS_ORIGINS",
+    "WEBHOOK_ENABLED",
+    "WEBHOOK_PORT",
+    "WEBHOOK_SECRET",
 })
 
 

@@ -26,21 +26,15 @@ import pytest
 @pytest.fixture(autouse=True)
 def _fast_retry_backoff(monkeypatch):
     """Short-circuit retry backoff for all tests in this directory."""
-    try:
-        import run_agent
-    except ImportError:
-        return
-
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
-    # The conversation loop was extracted out of run_agent.py into
-    # ``agent.conversation_loop``, which imports ``jittered_backoff``
-    # directly (``from agent.retry_utils import jittered_backoff``).
-    # Patching ``run_agent.jittered_backoff`` alone misses every retry
-    # path under the new module — tests that exercise rate-limit /
-    # invalid-response / server-error retries burn real wall-clock
-    # seconds per retry. Patch both for full coverage.
-    try:
-        from agent import conversation_loop as _conv_loop
-        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0)
-    except ImportError:
-        pass
+    # Patch jittered_backoff wherever it's imported. The function lived in
+    # run_agent.py initially, was extracted to agent.retry_utils, and is
+    # imported by agent.conversation_loop and agent.chat_completion_helpers.
+    _noop_backoff = lambda *a, **k: 0.0
+    for _mod_path in ("run_agent", "agent.conversation_loop", "agent.chat_completion_helpers"):
+        try:
+            import importlib
+            _mod = importlib.import_module(_mod_path)
+            if hasattr(_mod, "jittered_backoff"):
+                monkeypatch.setattr(_mod, "jittered_backoff", _noop_backoff)
+        except (ImportError, ModuleNotFoundError):
+            pass

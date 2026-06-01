@@ -1029,7 +1029,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
-    fb_model = (fb.get("model") or "").strip()
+    fb_model = (fb.get("model") or "").strip().lower()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
@@ -1038,7 +1038,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # base_url too so two distinct custom_providers entries pointing at the
     # same shim/proxy URL also dedup. See issue #22548.
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    current_model = (getattr(agent, "model", "") or "").strip()
+    current_model = (getattr(agent, "model", "") or "").strip().lower()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
     if fb_provider == current_provider and fb_model == current_model:
@@ -1058,6 +1058,24 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_base_url_for_dedup,
         )
         return agent._try_activate_fallback()
+
+    # ── Circuit breaker check ────────────────────────────────────────
+    # Before constructing a fallback client, consult the routing system's
+    # circuit breaker.  If the provider has failed 3+ consecutive times
+    # in the last 180s it is blocked — skip it rather than retrying the
+    # same failing backend.  Graceful degradation: if the router hasn't
+    # been initialised (no gateway context) the check returns False.
+    try:
+        from agent.routing import is_provider_blocked
+        if is_provider_blocked(fb_provider):
+            logger.warning(
+                "Fallback skip: %s is circuit-broken (180s cooldown) — "
+                "trying next in chain",
+                fb_provider,
+            )
+            return agent._try_activate_fallback()
+    except ImportError:
+        pass  # routing module not available — degrade gracefully
 
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()

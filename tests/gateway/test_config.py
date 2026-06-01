@@ -408,6 +408,8 @@ class TestLoadGatewayConfig:
         )
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
 
         config = load_gateway_config()
 

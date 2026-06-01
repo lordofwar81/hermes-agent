@@ -265,14 +265,16 @@ class TestRunAsyncWithRunningLoop:
             "worker wrapper that owns the event loop so timeouts can cancel "
             "the task"
         )
-        # Critical: shutdown must NOT wait. If wait=True, a stuck coroutine
-        # would freeze the caller (converts a thread leak into a hang).
-        assert events["shutdown_calls"], "shutdown was never called"
-        for wait, _cancel in events["shutdown_calls"]:
-            assert wait is False, (
-                f"shutdown called with wait={wait} — a stuck tool coroutine "
-                f"would hang the caller indefinitely"
-            )
+        # The shared singleton executor (_get_async_executor) must NOT be shut
+        # down after a timeout — doing so would break all subsequent async
+        # tool calls that reuse the same pool.  Instead, _run_async cancels
+        # the stuck coroutine inside its own loop via call_soon_threadsafe.
+        # Verify shutdown was NOT called on the shared executor.
+        assert not events["shutdown_calls"], (
+            "shutdown was called on the shared executor — this would break "
+            "all subsequent async tool calls. The singleton executor must "
+            "survive timeouts; only the stuck task gets cancelled."
+        )
 
     @pytest.mark.asyncio
     async def test_timeout_cancels_coroutine_in_worker_loop(self, monkeypatch):
@@ -283,12 +285,18 @@ class TestRunAsyncWithRunningLoop:
         future is a no-op, so the worker thread kept running the coroutine
         to completion (leaking one thread per tool-timeout).
         """
+        import model_tools
+        import concurrent.futures as _cf
+
+        # Reset the global async executor singleton so a prior test's
+        # monkeypatched FakeExecutor doesn't leak into this test.
+        monkeypatch.setattr(model_tools, "_async_executor", None)
+
         from model_tools import _run_async
 
         # Shrink the 300s internal timeout by patching future.result.
         # We do this surgically: let everything else run for real so the
         # worker loop actually exists and can observe cancellation.
-        import concurrent.futures as _cf
 
         real_pool_cls = _cf.ThreadPoolExecutor
 

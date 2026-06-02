@@ -118,8 +118,9 @@ class TaskClassifier:
     })
 
     _EXPERT_PHRASES = [
-        "design a system", "design an architecture", "implement a complete",
-        "end-to-end", "full system", "architect a", "architect the",
+        "design a system", "design a complete system", "design an architecture",
+        "implement a complete", "end-to-end", "full system",
+        "architect a", "architect the",
         "build a complete", "build an entire", "comprehensive system",
         "from scratch", "production-ready", "multi-region",
         "system design", "system architecture",
@@ -134,26 +135,30 @@ class TaskClassifier:
         if "```" in text or "`" in text:
             return Category.CODE
 
-        # Greeting: short message with greeting keyword
+        # Greeting: short message with greeting keyword, but NOT if it contains
+        # code or expert intent (e.g., "ok, deploy it" is CODE, not GREETING).
         if len(text) <= 25:
-            for g in cls._GREETING_KW:
-                if len(g.split()) == 1:
-                    if re.search(r'\b' + re.escape(g) + r'\b', text_lower):
+            if not any(kw in text_lower for kw in cls._CODE_KW):
+                for g in cls._GREETING_KW:
+                    if len(g.split()) == 1:
+                        if re.search(r'\b' + re.escape(g) + r'\b', text_lower):
+                            return Category.GREETING
+                    elif g in text_lower:
                         return Category.GREETING
-                elif g in text_lower:
-                    return Category.GREETING
 
         # Expert: system design phrases (before code — expert tasks contain "implement")
         if any(phrase in text_lower for phrase in cls._EXPERT_PHRASES):
             return Category.EXPERT
 
+        # Reasoning: explanation/design questions (BEFORE code — multi-word
+        # reasoning phrases like "explain why" should override single-word
+        # code vocabulary like "test" or "deploy" in explanation-seeking queries).
+        if any(kw in text_lower for kw in cls._REASONING_KW):
+            return Category.REASONING
+
         # Code: code keywords
         if any(kw in text_lower for kw in cls._CODE_KW):
             return Category.CODE
-
-        # Reasoning: explanation/design questions (before analysis)
-        if any(kw in text_lower for kw in cls._REASONING_KW):
-            return Category.REASONING
 
         # Analysis: comparison/evaluation
         if any(kw in text_lower for kw in cls._ANALYSIS_KW):

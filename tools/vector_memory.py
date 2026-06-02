@@ -3,7 +3,7 @@
 Vector Memory Store - LanceDB-based vector memory with embeddings.
 
 Features:
-- LanceDB table with 1024-dim embeddings
+- LanceDB table with embeddings (Qwen3-Embedding-8B 4096-dim via localhost:11434)
 - Semantic search via vector similarity
 - Epistemic status tracking (stated, inferred, verified, contradicted, retracted)
 - Entity and keyword indexing
@@ -50,7 +50,7 @@ DEFAULT_VECTOR_MEMORY_PATH = Path.home() / ".hermes" / "vector_memory"
 
 # Embedding endpoint (same as adaptive_context_manager.py)
 EMBED_ENDPOINT = "http://localhost:11434/v1"
-EMBED_MODEL = "mxbai-embed-large-v1"
+EMBED_MODEL = "qwen3-embedding-8b"
 EMBED_API_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 
 # Default epistemic status values
@@ -167,9 +167,28 @@ class VectorMemoryStore:
                 self.table = self.db.open_table("memory_vectors")
                 logger.debug(f"Opened existing table 'memory_vectors'")
             else:
-                # Table doesn't exist - we'll skip vector operations
-                logger.warning(f"Table 'memory_vectors' not found in {self.db_path}")
-                self.table = None
+                # Create table with a dummy row — LanceDB infers schema from first write.
+                # We use a zero vector; the real dimension comes from get_embedding().
+                logger.info(f"Creating table 'memory_vectors' in {self.db_path}")
+                import pyarrow as pa
+                schema = pa.schema([
+                    pa.field("id", pa.string()),
+                    pa.field("vector", pa.list_(pa.float32(), 4096)),
+                    pa.field("text", pa.string()),
+                    pa.field("source", pa.string()),
+                    pa.field("memory_type", pa.string()),
+                    pa.field("session_id", pa.string()),
+                    pa.field("created_at", pa.float64()),
+                    pa.field("access_count", pa.int64()),
+                    pa.field("epistemic_status", pa.string()),
+                    pa.field("confidence", pa.float64()),
+                    pa.field("entities", pa.list_(pa.string())),
+                    pa.field("keywords", pa.list_(pa.string())),
+                    pa.field("related_ids", pa.list_(pa.string())),
+                    pa.field("version", pa.int64()),
+                ])
+                self.table = self.db.create_table("memory_vectors", schema=schema)
+                logger.info("Created table 'memory_vectors' with 4096-dim vector schema")
 
         except ImportError:
             logger.error("lancedb module not available")

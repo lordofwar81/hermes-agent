@@ -1520,6 +1520,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         _cfg = {}
+        _cron_cfg = None
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")

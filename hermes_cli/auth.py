@@ -169,7 +169,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="mac_studio",
         name="Mac Studio vLLM-MLX",
         auth_type="api_key",
-        inference_base_url="http://10.5.0.2:8000/v1",
+        inference_base_url="http://192.168.1.149:8000/v1",
         api_key_env_vars=("MAC_STUDIO_KEY",),
         base_url_env_var="MAC_STUDIO_BASE_URL",
     ),

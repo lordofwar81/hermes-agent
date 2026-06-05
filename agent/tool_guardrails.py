@@ -377,7 +377,18 @@ class ToolCallGuardrailController:
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
-        return tool_name in self.config.idempotent_tools
+        if tool_name in self.config.idempotent_tools:
+            return True
+
+        # Dynamic MCP tool detection: tools starting with 'mcp_' that contain
+        # read-only verbs in their name are treated as idempotent.
+        if tool_name.startswith("mcp_"):
+            _READONLY_PATTERNS = ("read", "get", "list", "search", "find", "query", "fetch", "describe", "show", "check", "inspect")
+            tool_lower = tool_name.lower()
+            if any(p in tool_lower for p in _READONLY_PATTERNS):
+                return True
+
+        return False
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

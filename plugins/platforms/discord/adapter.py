@@ -11,6 +11,7 @@ Uses discord.py library for:
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
@@ -700,6 +701,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 or bool(self._allowed_role_ids)  # Need members intent for role lookup
             )
             intents.voice_states = True
+            # Attachments intent: required to read file attachments from messages.
+            # Without this, message.attachments is populated but att.read() and
+            # att.url are empty/None — Discord returns "file cannot be consumed".
+            if hasattr(intents, "attachments"):
+                intents.attachments = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
             from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
@@ -1105,7 +1111,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=60)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
@@ -1171,7 +1177,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "bulk") or "").strip().lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
             return raw
         if raw:
@@ -1677,15 +1683,24 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
         filename = file_name or os.path.basename(file_path)
+        # Read file into memory to avoid file handle closure issues with async Discord send
         with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
-            if self._is_forum_parent(channel):
-                return await self._forum_post_file(
-                    channel,
-                    content=(caption or "").strip(),
-                    file=file,
-                )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            file_data = fh.read()
+        # Resolve MIME type via magic bytes (handles cached files with generated names)
+        try:
+            from gateway.platforms.base import resolve_mime_type
+            content_type = resolve_mime_type(file_path)
+        except Exception:
+            import mimetypes
+            content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        file = discord.File(io.BytesIO(file_data), filename=filename, content_type=content_type)
+        if self._is_forum_parent(channel):
+            return await self._forum_post_file(
+                channel,
+                content=(caption or "").strip(),
+                file=file,
+            )
+        msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -1866,7 +1881,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # too.  Create a thread post with the audio as the starter
             # attachment instead.
             if self._is_forum_parent(channel):
-                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
+                try:
+                    from gateway.platforms.base import resolve_mime_type
+                    audio_ct = resolve_mime_type(audio_path)
+                except Exception:
+                    import mimetypes
+                    audio_ct = mimetypes.guess_type(audio_path)[0] or "audio/ogg"
+                forum_file = discord.File(io.BytesIO(file_data), filename=filename, content_type=audio_ct)
                 return await self._forum_post_file(
                     channel,
                     content=(caption or "").strip(),
@@ -1914,7 +1935,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 return SendResult(success=True, message_id=str(msg_data["id"]))
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
-                file = discord.File(io.BytesIO(file_data), filename=filename)
+                try:
+                    from gateway.platforms.base import resolve_mime_type
+                    voice_ct = resolve_mime_type(audio_path)
+                except Exception:
+                    import mimetypes
+                    voice_ct = mimetypes.guess_type(audio_path)[0] or "audio/ogg"
+                file = discord.File(io.BytesIO(file_data), filename=filename, content_type=voice_ct)
                 msg = await channel.send(file=file)
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2602,7 +2629,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         ext = "webp"
 
                     import io
-                    file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
+                    # Use magic bytes to detect actual MIME type (URL content-type may be wrong)
+                    try:
+                        from gateway.platforms.base import resolve_mime_type_from_bytes
+                        img_ct = resolve_mime_type_from_bytes(image_data) or content_type
+                    except Exception:
+                        img_ct = content_type
+                    file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}", content_type=img_ct)
 
                     if self._is_forum_parent(channel):
                         return await self._forum_post_file(
@@ -2671,7 +2704,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     animation_data = await resp.read()
 
                     import io
-                    file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+                    # Use magic bytes to detect actual MIME type (URL content-type may be wrong)
+                    try:
+                        from gateway.platforms.base import resolve_mime_type_from_bytes
+                        anim_ct = resolve_mime_type_from_bytes(animation_data) or "image/gif"
+                    except Exception:
+                        anim_ct = "image/gif"
+                    file = discord.File(io.BytesIO(animation_data), filename="animation.gif", content_type=anim_ct)
 
                     if self._is_forum_parent(channel):
                         return await self._forum_post_file(

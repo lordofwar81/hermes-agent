@@ -259,6 +259,18 @@ class TestExtractImages:
 
 
 class TestExtractMedia:
+    """Tests for BasePlatformAdapter.extract_media().
+
+    NOTE: extract_media only returns paths for files that exist on disk
+    (os.path.isfile check). Tests mock os.path.isfile to avoid requiring
+    real files.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _mock_isfile(self):
+        with patch("os.path.isfile", return_value=True):
+            yield
+
     def test_no_media(self):
         media, cleaned = BasePlatformAdapter.extract_media("Just text.")
         assert media == []

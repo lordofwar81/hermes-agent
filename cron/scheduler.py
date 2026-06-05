@@ -1519,7 +1519,6 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
-        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         try:
             import yaml
@@ -1528,12 +1527,17 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
+                _cron_cfg = _cfg.get("cron", {})
                 _model_cfg = _cfg.get("model", {})
                 if not job.get("model"):
-                    if isinstance(_model_cfg, str):
-                        model = _model_cfg
-                    elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                    _cron_model = _cron_cfg.get("default_model")
+                    if _cron_model:
+                        model = _cron_model
+                    else:
+                        if isinstance(_model_cfg, str):
+                            model = _model_cfg
+                        elif isinstance(_model_cfg, dict):
+                            model = _model_cfg.get("default", model)
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -1582,14 +1586,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
-            # no explicit provider is requested. Passing the env var here short-
+            # no explicit provider is requested.  Passing the env var here short-
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
+            _cron_provider = _cron_cfg.get("default_provider") if _cron_cfg else None
+            _cron_base_url = _cron_cfg.get("default_base_url") if _cron_cfg else None
+            _cron_api_key = _cron_cfg.get("default_api_key") if _cron_cfg else None
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": job.get("provider") or _cron_provider,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            elif _cron_base_url:
+                runtime_kwargs["explicit_base_url"] = _cron_base_url
+            if _cron_api_key and not job.get("api_key"):
+                runtime_kwargs["explicit_api_key"] = _cron_api_key
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

@@ -271,6 +271,44 @@ plugins = [
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true
+# Ignore missing stubs for third-party packages without type annotations
+ignore_missing_imports = true
+# Exclude generated, vendor, and non-Python directories
+exclude = [
+    "venv",
+    "venv_test",
+    "__pycache__",
+    ".eggs",
+    "build",
+    "dist",
+    "node_modules",
+    "mini-swe-agent",
+    "environments/benchmarks",
+    "skills",
+    "optional-skills",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "tools/registry.py",
+    "tools/model_tools.py",
+    "agent/error_classifier.py",
+    "agent/memory_manager.py",
+    "gateway/platforms/base.py",
+]
+disallow_untyped_defs = true
+check_untyped_defs = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
@@ -293,21 +331,23 @@ redundant-cast = "ignore"
 
 [tool.ruff]
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+line-length = 120
 
 [tool.ruff.lint]
-# All other lints are intentionally disabled (see comment history on this
-# file) while we wrangle typechecks — but PLW1514 is too load-bearing to
-# keep off.  Bare open()/read_text()/write_text() in text mode defaults to
-# the system locale encoding on Windows (cp1252 on US-locale installs),
-# which silently corrupts any non-ASCII file content.  We had three
-# separate Windows sandbox regressions in one debug session before
-# adding the explicit encoding.  This rule keeps new code honest.
-select = ["PLW1514"]
+# Tier 1 — enforced, blocks commits (low-violation, high-signal rules)
+select = ["PLW1514", "F401", "E722"]
+# F401 (unused imports): catches dead code from refactoring
+# E722 (bare except): silently swallows KeyboardInterrupt/SystemExit
+
+# Tier 2 — warn-only, not enforced (massive existing violation counts)
+# Enable gradually: fix 50-100 per week, promote to select when clean.
+# To activate: move from extend-ignores to select, then ruff check --fix
+# F841 (unused variables): 6.4K violations
+# W293 (trailing whitespace): 46K violations
+# I001 (import sorting): 62K violations
 
 [tool.ruff.lint.per-file-ignores]
-# Tests can intentionally exercise locale-encoding edge cases.
-"tests/**" = ["PLW1514"]
-# Skills and plugins are partially user-authored — their own conventions.
-"skills/**" = ["PLW1514"]
-"optional-skills/**" = ["PLW1514"]
-"plugins/**" = ["PLW1514"]
+"tests/**" = ["PLW1514", "F401"]
+"skills/**" = ["PLW1514", "F401"]
+"optional-skills/**" = ["PLW1514", "F401"]
+"plugins/**" = ["PLW1514", "F401"]

@@ -81,6 +81,19 @@ def _get_worker_loop():
     return loop
 
 
+
+_async_executor = None
+_async_executor_lock = threading.Lock()
+
+def _get_async_executor():
+    global _async_executor
+    if _async_executor is None:
+        with _async_executor_lock:
+            if _async_executor is None:
+                from concurrent.futures import ThreadPoolExecutor
+                _async_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hermes_async")
+    return _async_executor
+
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
@@ -139,8 +152,8 @@ def _run_async(coro):
                     pass
                 worker_loop.close()
 
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_run_in_worker)
+        executor = _get_async_executor()
+        future = executor.submit(_run_in_worker)
         try:
             return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
@@ -154,11 +167,7 @@ def _run_async(coro):
                     # Loop already closed — nothing to cancel.
                     pass
             raise
-        finally:
-            # wait=False: don't block the caller on a stuck coroutine. We've
-            # already requested cancellation above; the worker will exit
-            # once the coroutine observes it (usually at the next await).
-            pool.shutdown(wait=False)
+
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -298,7 +307,19 @@ def get_tool_definitions(
             from hermes_cli.config import get_config_path
             cfg_path = get_config_path()
             cfg_stat = cfg_path.stat()
-            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+            # Lightweight content hash: first 512 bytes capture most structural
+            # changes and are cheap to read even on large configs.  Belt and
+            # suspenders with mtime — mtime catches writes, hash catches
+            # content-only changes on coarse-grained filesystems (NFS, FUSE,
+            # VM-shared folders).
+            try:
+                import hashlib
+                with open(cfg_path, "rb") as f:
+                    _header = f.read(512)
+                _content_hash = hashlib.md5(_header).hexdigest()[:12]
+            except Exception:
+                _content_hash = ""
+            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size, _content_hash)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
         cache_key = (

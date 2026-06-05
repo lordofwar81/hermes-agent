@@ -8635,6 +8635,33 @@ class HermesCLI:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_optimize_command(self, cmd: str):
+        """Handle /optimize <prompt> — invoke the prompt-optimizer skill."""
+        try:
+            from agent.skill_commands import (
+                get_skill_commands,
+                build_skill_invocation_message,
+                resolve_skill_command_key,
+            )
+            skill_cmds = get_skill_commands()
+            cmd_key = resolve_skill_command_key("prompt-optimizer")
+            if cmd_key is None:
+                print("  The prompt-optimizer skill is not installed.")
+                print("  Install it or invoke directly as /prompt-optimizer")
+                return
+            user_text = cmd.replace("/optimize", "", 1).strip()
+            if not user_text:
+                print("  Usage: /optimize <prompt>")
+                return
+            msg = build_skill_invocation_message(cmd_key, user_text, task_id=None)
+            if msg:
+                # Feed the optimized prompt directly into the agent
+                self._pending_input.put(msg)
+            else:
+                print("  Failed to load the prompt-optimizer skill.")
+        except Exception as exc:
+            print(f"  ⚠️ Optimize failed: {exc}")
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8947,6 +8974,9 @@ class HermesCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "optimize":
+            with self._busy_command("Optimizing prompt..."):
+                self._handle_optimize_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":
@@ -9086,8 +9116,18 @@ class HermesCLI:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
                     import subprocess
+                    from tools.approval import detect_dangerous_command
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Security: quick_commands run shell commands from config — treat as trusted
+                        # but validate against dangerous patterns as defense-in-depth
+                        try:
+                            is_dangerous, _, desc = detect_dangerous_command(exec_cmd)
+                            if is_dangerous:
+                                self._console_print(f"[bold red]Quick command blocked: {desc}[/]")
+                                return
+                        except ImportError:
+                            pass
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.

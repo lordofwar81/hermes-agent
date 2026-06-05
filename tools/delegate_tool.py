@@ -40,6 +40,10 @@ from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
+# Module-level fallback lock for thread-safe child registration when
+# the parent agent lacks its own _active_children_lock.
+_fallback_children_lock = threading.Lock()
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
@@ -1161,7 +1165,8 @@ def _build_child_agent(
             with lock:
                 parent_agent._active_children.append(child)
         else:
-            parent_agent._active_children.append(child)
+            with _fallback_children_lock:
+                parent_agent._active_children.append(child)
 
     # Announce the spawn immediately — the child may sit in a queue
     # for seconds if max_concurrent_children is saturated, so the TUI
@@ -2822,4 +2827,129 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+)
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestration: sequential multi-stage delegation
+# ---------------------------------------------------------------------------
+
+DELEGATE_PIPELINE_SCHEMA = {
+    "name": "delegate_pipeline",
+    "description": (
+        "Execute tasks in a sequential pipeline, piping each stage's output "
+        "to the next stage's context. Stages run one at a time in order."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "stages": {
+                "type": "array",
+                "description": "Ordered list of tasks. Each task is a dict with 'goal' (required) "
+                               "and optional 'toolsets', 'max_iterations'.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "description": "What this stage should accomplish"},
+                        "toolsets": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Toolsets available to this stage",
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "description": "Max iterations for this stage (default 30)",
+                        },
+                    },
+                    "required": ["goal"],
+                },
+                "minItems": 2,
+                "maxItems": 10,
+            },
+            "context": {
+                "type": "string",
+                "description": "Initial context passed to the first stage",
+            },
+        },
+        "required": ["stages"],
+    },
+}
+
+
+def delegate_pipeline(
+    stages: list,
+    context: str = "",
+    *,
+    parent_agent=None,
+) -> str:
+    """Execute stages sequentially, piping outputs between them."""
+    if not stages or len(stages) < 2:
+        return json.dumps({"success": False, "error": "Pipeline requires at least 2 stages"})
+
+    results = []
+    current_context = context or ""
+    overall_success = True
+
+    for i, stage in enumerate(stages):
+        goal = stage.get("goal", "")
+        stage_toolsets = stage.get("toolsets")
+        stage_max_iter = stage.get("max_iterations", 30)
+
+        # Inject previous stage output into context
+        stage_context = current_context
+        if i > 0 and results:
+            prev = results[-1]
+            stage_context = (
+                f"Previous stage output:\n{prev.get('summary', prev.get('result', ''))}\n\n"
+                f"Additional context:\n{current_context}"
+            ) if current_context else f"Previous stage output:\n{prev.get('summary', prev.get('result', ''))}"
+
+        stage_result = delegate_task(
+            goal=goal,
+            context=stage_context,
+            toolsets=stage_toolsets,
+            max_iterations=stage_max_iter,
+            parent_agent=parent_agent,
+        )
+
+        # Parse result
+        try:
+            parsed = json.loads(stage_result) if isinstance(stage_result, str) else stage_result
+        except (json.JSONDecodeError, TypeError):
+            parsed = {"summary": str(stage_result)[:500], "success": True}
+
+        stage_summary = {
+            "stage": i + 1,
+            "goal": goal,
+            "success": parsed.get("success", True),
+            "summary": parsed.get("summary", str(parsed)[:500]),
+        }
+        results.append(stage_summary)
+
+        if not parsed.get("success", True):
+            overall_success = False
+            # Continue pipeline despite failure — downstream stages may handle it
+
+        # Pipe output to next stage
+        current_context = parsed.get("summary", str(parsed)[:2000])
+
+    return json.dumps({
+        "success": overall_success,
+        "stages_completed": len(results),
+        "stages": results,
+        "final_output": current_context,
+    })
+
+
+registry.register(
+    name="delegate_pipeline",
+    toolset="delegation",
+    schema=DELEGATE_PIPELINE_SCHEMA,
+    handler=lambda args, **kw: delegate_pipeline(
+        stages=args.get("stages", []),
+        context=args.get("context", ""),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🔗",
 )

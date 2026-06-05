@@ -1855,6 +1855,99 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     return len(str(shadow))
 
 
+def get_model_max_output_tokens(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+) -> Optional[int]:
+    """Return the known max output (completion) token limit for a model.
+
+    Resolution order:
+    1. Endpoint-specific metadata cache (custom / local endpoints)
+    2. OpenRouter global metadata cache
+    3. Hardcoded fallback for well-known model families
+
+    Returns None when the limit cannot be determined.
+    """
+    if not model:
+        return None
+
+    bare_model = _strip_provider_prefix(model)
+
+    # 1. Endpoint-specific cache (covers local models and custom providers)
+    if base_url:
+        normalized = _normalize_base_url(base_url)
+        ep_cache = _endpoint_model_metadata_cache.get(normalized)
+        if isinstance(ep_cache, dict):
+            entry = ep_cache.get(bare_model) or ep_cache.get(model)
+            if isinstance(entry, dict):
+                val = entry.get("max_completion_tokens")
+                if isinstance(val, int) and val > 0:
+                    return val
+
+    # 2. OpenRouter global cache (populated by fetch_model_metadata)
+    or_cache = _model_metadata_cache
+    if or_cache:
+        entry = or_cache.get(bare_model) or or_cache.get(model)
+        if isinstance(entry, dict):
+            val = entry.get("max_completion_tokens")
+            if isinstance(val, int) and val > 0:
+                return val
+
+    # 3. Hardcoded fallback for well-known model families
+    #    Keys are checked via substring match (longest-first) against the
+    #    normalised model name, mirroring the context-length pattern above.
+    _KNOWN_OUTPUT_LIMITS = [
+        # Anthropic — Claude 4.6 / Opus / Sonnet
+        ("claude-opus-4-7", 32768),
+        ("claude-opus-4.7", 32768),
+        ("claude-opus-4-6", 32768),
+        ("claude-sonnet-4-6", 64000),
+        ("claude-opus-4.6", 32768),
+        ("claude-sonnet-4.6", 64000),
+        # Anthropic — Claude 3.5 / 4 family
+        ("claude-3-5-haiku", 8192),
+        ("claude-3.5-haiku", 8192),
+        ("claude-3-5-sonnet", 8192),
+        ("claude-3.5-sonnet", 8192),
+        ("claude-3-haiku", 4096),
+        ("claude-3-sonnet", 4096),
+        ("claude-3-opus", 4096),
+        ("claude-4-haiku", 8192),
+        ("claude-4-sonnet", 16384),
+        ("claude-4-opus", 32768),
+        # OpenAI — GPT-5.x
+        ("gpt-5.5", 32768),
+        ("gpt-5.4", 32768),
+        ("gpt-5.3", 32768),
+        ("gpt-5", 32768),
+        # OpenAI — GPT-4.x
+        ("gpt-4.1", 32768),
+        ("gpt-4o-mini", 16384),
+        ("gpt-4o", 16384),
+        ("gpt-4-turbo", 4096),
+        ("gpt-4", 8192),
+        # Google Gemini
+        ("gemini", 8192),
+        # DeepSeek
+        ("deepseek", 8192),
+        # Meta Llama
+        ("llama", 4096),
+        # Qwen
+        ("qwen", 8192),
+        # Generic Claude catch-all (must be last)
+        ("claude", 8192),
+    ]
+    name_lower = bare_model.lower()
+    best_match: Optional[int] = None
+    best_match_len = 0
+    for prefix, limit in _KNOWN_OUTPUT_LIMITS:
+        if prefix in name_lower and len(prefix) > best_match_len:
+            best_match = limit
+            best_match_len = len(prefix)
+    return best_match
+
+
 def estimate_request_tokens_rough(
     messages: List[Dict[str, Any]],
     *,

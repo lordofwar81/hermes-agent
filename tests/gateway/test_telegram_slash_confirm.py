@@ -71,7 +71,8 @@ class TestSendSlashConfirm:
         )
 
         assert result.success is True
-        assert "MARKDOWN_V2" in repr(sent["parse_mode"])
+        pm = sent["parse_mode"]
+        assert pm == "MarkdownV2" or getattr(pm, "value", None) == "MarkdownV2" or "MARKDOWN_V2" in repr(pm)
         # Underscores and dots must be escaped by format_message
         assert "script\\_name" in sent["text"]
         assert "\\." in sent["text"]

@@ -881,6 +881,7 @@ def build_environment_hints() -> str:
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+_CONTEXT_FILES_TOTAL_MAX_CHARS = 60_000  # ~15K tokens at 4 chars/token
 
 
 # =========================================================================
@@ -1510,4 +1511,17 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     if not sections:
         return ""
+
+    # Enforce total character budget across all loaded context files.
+    total_chars = sum(len(s) for s in sections)
+    budget = _CONTEXT_FILES_TOTAL_MAX_CHARS
+    if total_chars > budget:
+        logging.info(
+            "Context files total %d chars exceeds budget %d, proportionally truncated",
+            total_chars, budget,
+        )
+        # Proportionally truncate each section from the end (first files are most important).
+        scale = budget / total_chars
+        sections = [s[: max(1, int(len(s) * scale))] for s in sections]
+
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)

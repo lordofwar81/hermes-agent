@@ -14,7 +14,7 @@ def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
@@ -290,6 +290,35 @@ class TestFallbackChainDedup:
             f"expected base_url-aware dedup, got call order: {called}"
         )
 
+    def test_skips_entry_with_case_insensitive_model_match(self):
+        """Model name differing only in case should still dedup.
+        e.g. current_model='Z-AI/GLM-5' vs fallback provider model 'z-ai/glm-5'
+        — regression guard for case-insensitive comparison. #24787"""
+        fbs = [
+            # Same model as current, but differently cased. Should be skipped.
+            {"provider": "openrouter", "model": "Z-AI/GLM-4.7"},
+            # Real fallback.
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent.provider = "openrouter"
+        agent.model = "z-ai/glm-4.7"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        called = []
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model))
+            return _mock_client(), model
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        # The first entry (mixed-case) was skipped — only the second reached resolve.
+        assert called == [("zai", "glm-4.7")], (
+            f"expected case-insensitive dedup to skip first entry, got call order: {called}"
+        )
+
     def test_returns_false_when_only_self_matching_entries(self):
         """A chain with only self-matching entries exhausts to False."""
         fbs = [
@@ -305,3 +334,76 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+# ── Fallback ↔ circuit breaker bridge ──────────────────────────────────
+
+
+class TestFallbackCircuitBreaker:
+    """The fallback chain must consult the routing system's circuit breaker
+    before activating a fallback provider. A circuit-broken provider
+    (3 consecutive failures, 180s cooldown) must be skipped."""
+
+    def test_skips_circuit_broken_provider(self):
+        """If the first fallback provider is circuit-broken, skip to next."""
+        fbs = [
+            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch("agent.routing.is_provider_blocked",
+                  side_effect=lambda p: p == "openrouter"),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(_mock_client(), "glm-4.7")) as mock_resolve,
+            patch("hermes_cli.model_normalize.normalize_model_for_provider",
+                  side_effect=lambda m, p: m),
+        ):
+            ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert agent.provider == "zai"
+        assert agent._fallback_index == 2
+
+    def test_uses_non_blocked_provider(self):
+        """If the fallback provider is not blocked, use it normally."""
+        fbs = [
+            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch("agent.routing.is_provider_blocked",
+                  return_value=False),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(_mock_client(), "z-ai/glm-4.7")),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider",
+                  side_effect=lambda m, p: m),
+        ):
+            ok = agent._try_activate_fallback()
+
+        assert ok is True
+        assert agent.provider == "openrouter"
+
+    def test_all_providers_blocked_returns_false(self):
+        """When every fallback provider is circuit-broken, chain is exhausted."""
+        fbs = [
+            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch("agent.routing.is_provider_blocked",
+                  return_value=True),
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
+        ):
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        mock_resolve.assert_not_called()
+
+    def test_is_provider_blocked_function_exists(self):
+        """The is_provider_blocked module-level function is importable."""
+        from agent.routing import is_provider_blocked
+        assert callable(is_provider_blocked)
+        # Verify it returns False when router not initialized (graceful degradation)
+        assert is_provider_blocked("any") is False

@@ -13515,6 +13515,106 @@ class HermesCLI:
                 logger.warning("process_loop unhandled error (msg may be lost): %s", e)
 
     # Start processing thread
+    def _handle_tui_ctrl_c(self, event):
+        """Handle Ctrl+C - interrupt agent or exit CLI."""
+
+        now = time.time()
+
+        # Cancel active voice recording.
+        # Run cancel() in a background thread to prevent blocking the
+        # event loop if AudioRecorder._lock or CoreAudio takes time.
+        _should_cancel_voice = False
+        _recorder_ref = None
+        with cli_ref._voice_lock:
+            if cli_ref._voice_recording and cli_ref._voice_recorder:
+                _recorder_ref = cli_ref._voice_recorder
+                cli_ref._voice_recording = False
+                cli_ref._voice_continuous = False
+                _should_cancel_voice = True
+        if _should_cancel_voice:
+            _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
+            threading.Thread(
+                target=_recorder_ref.cancel, daemon=True
+            ).start()
+            event.app.invalidate()
+            return
+
+        # Cancel sudo prompt
+        if self._sudo_state:
+            self._sudo_state["response_queue"].put("")
+            self._sudo_state = None
+            event.app.invalidate()
+            return
+
+        # Cancel secret prompt
+        if self._secret_state:
+            self._cancel_secret_capture()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # Cancel approval prompt (deny)
+        if self._approval_state:
+            self._approval_state["response_queue"].put("deny")
+            self._approval_state = None
+            event.app.invalidate()
+            return
+
+        # Cancel slash confirmation prompt
+        if self._slash_confirm_state:
+            self._submit_slash_confirm_response("cancel")
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # Cancel /model picker
+        if self._model_picker_state:
+            self._close_model_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # Cancel clarify prompt
+        if self._clarify_state:
+            self._clarify_state["response_queue"].put(
+                "The user cancelled. Use your best judgement to proceed."
+            )
+            self._clarify_state = None
+            self._clarify_freetext = False
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        if self._agent_running and self.agent:
+            if now - self._last_ctrl_c_time < 2.0:
+                print("\n⚡ Force exiting...")
+                self._should_exit = True
+                event.app.exit()
+                return
+
+            self._last_ctrl_c_time = now
+            print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+            self.agent.interrupt()
+        # If there's text or images, clear them (like bash).
+        # If everything is already empty, exit.
+        elif event.app.current_buffer.text or self._attached_images:
+            event.app.current_buffer.reset()
+            self._attached_images.clear()
+            event.app.invalidate()
+        else:
+            self._should_exit = True
+            event.app.exit()
+
+    # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
+    # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
+    # the keystroke reaches the application's stdin — prompt_toolkit never
+    # sees it, and prompt_toolkit's key spec parser doesn't even recognise
+    # 'c-S-c' anyway (the Shift modifier is meaningless on control-sequence
+    # keys). #19884 added a handler for this; #19895 patched the resulting
+    # startup crash with try/except. Both were based on a misreading of how
+    # terminal key events propagate. Deleting the dead handler outright.
+
+
     def _build_tui_app(self):
         """Build the prompt_toolkit Application with all keybindings and widgets.
 
@@ -13773,111 +13873,7 @@ class HermesCLI:
             """
             self._force_full_redraw()
 
-        @kb.add('c-c')
-        def handle_ctrl_c(event):
-            """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
-            
-            Priority:
-            0. Cancel active voice recording
-            1. Cancel active sudo/approval/clarify prompt
-            2. Interrupt the running agent (first press)
-            3. Force exit (second press within 2s, or when idle)
-            """
-            now = time.time()
-
-            # Cancel active voice recording.
-            # Run cancel() in a background thread to prevent blocking the
-            # event loop if AudioRecorder._lock or CoreAudio takes time.
-            _should_cancel_voice = False
-            _recorder_ref = None
-            with cli_ref._voice_lock:
-                if cli_ref._voice_recording and cli_ref._voice_recorder:
-                    _recorder_ref = cli_ref._voice_recorder
-                    cli_ref._voice_recording = False
-                    cli_ref._voice_continuous = False
-                    _should_cancel_voice = True
-            if _should_cancel_voice:
-                _cprint(f"\n{_DIM}Recording cancelled.{_RST}")
-                threading.Thread(
-                    target=_recorder_ref.cancel, daemon=True
-                ).start()
-                event.app.invalidate()
-                return
-
-            # Cancel sudo prompt
-            if self._sudo_state:
-                self._sudo_state["response_queue"].put("")
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel secret prompt
-            if self._secret_state:
-                self._cancel_secret_capture()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel approval prompt (deny)
-            if self._approval_state:
-                self._approval_state["response_queue"].put("deny")
-                self._approval_state = None
-                event.app.invalidate()
-                return
-
-            # Cancel slash confirmation prompt
-            if self._slash_confirm_state:
-                self._submit_slash_confirm_response("cancel")
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel /model picker
-            if self._model_picker_state:
-                self._close_model_picker()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # Cancel clarify prompt
-            if self._clarify_state:
-                self._clarify_state["response_queue"].put(
-                    "The user cancelled. Use your best judgement to proceed."
-                )
-                self._clarify_state = None
-                self._clarify_freetext = False
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            if self._agent_running and self.agent:
-                if now - self._last_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
-                    self._should_exit = True
-                    event.app.exit()
-                    return
-                
-                self._last_ctrl_c_time = now
-                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
-                self.agent.interrupt()
-            # If there's text or images, clear them (like bash).
-            # If everything is already empty, exit.
-            elif event.app.current_buffer.text or self._attached_images:
-                event.app.current_buffer.reset()
-                self._attached_images.clear()
-                event.app.invalidate()
-            else:
-                self._should_exit = True
-                event.app.exit()
-
-        # Ctrl+Shift+C: no binding needed. Terminal emulators (GNOME Terminal,
-        # iTerm2, kitty, Windows Terminal, etc.) intercept Ctrl+Shift+C before
-        # the keystroke reaches the application's stdin — prompt_toolkit never
-        # sees it, and prompt_toolkit's key spec parser doesn't even recognise
-        # 'c-S-c' anyway (the Shift modifier is meaningless on control-sequence
-        # keys). #19884 added a handler for this; #19895 patched the resulting
-        # startup crash with try/except. Both were based on a misreading of how
-        # terminal key events propagate. Deleting the dead handler outright.
+        kb.add('c-c')(self._handle_tui_ctrl_c)
 
         @kb.add('c-q')  # Ctrl+Q
         def handle_ctrl_q(event):

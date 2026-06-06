@@ -13693,6 +13693,230 @@ class HermesCLI:
             event.app.exit()
 
 
+    def _panel_box_width(self, title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
+        """Choose a stable panel width wide enough for the title and content."""
+        term_cols = shutil.get_terminal_size((100, 20)).columns
+        longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+        inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
+        return inner + 2
+
+    def _wrap_panel_text(self, text: str, width: int, subsequent_indent: str = "") -> list[str]:
+        wrapped = textwrap.wrap(
+            text,
+            width=max(8, width),
+            break_long_words=False,
+            break_on_hyphens=False,
+            subsequent_indent=subsequent_indent,
+        )
+        return wrapped or [""]
+
+    def _append_panel_line(self, lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
+        inner_width = max(0, box_width - 2)
+        lines.append((border_style, "│ "))
+        lines.append((content_style, text.ljust(inner_width)))
+        lines.append((border_style, " │\n"))
+
+    def _append_blank_panel_line(self, lines, border_style: str, box_width: int) -> None:
+        lines.append((border_style, "│" + (" " * box_width) + "│\n"))
+
+    def _get_clarify_display(self):
+        """Build styled text for the clarify question/choices panel.
+
+        Layout priority: choices + Other option must always render even if
+        the question is very long. The question is budgeted to leave enough
+        rows for the choices and trailing chrome; anything over the budget
+        is truncated with a marker.
+        """
+        state = self._clarify_state
+        if not state:
+            return []
+
+        question = state["question"]
+        choices = state.get("choices") or []
+        selected = state.get("selected", 0)
+        preview_lines = self._wrap_panel_text(question, 60)
+        for i, choice in enumerate(choices):
+            if i < 9:
+                num_prefix = str(i + 1)
+            elif i == 9:
+                num_prefix = '0'
+            else:
+                num_prefix = ' '
+            if i == selected and not self._clarify_freetext:
+                prefix = f"❯ {num_prefix}. "
+            else:
+                prefix = f"  {num_prefix}. "
+            preview_lines.extend(self._wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="    "))
+        other_num = len(choices) + 1
+        if other_num < 10:
+            other_num_prefix = str(other_num)
+        elif other_num == 10:
+            other_num_prefix = '0'
+        else:
+            other_num_prefix = ' '
+        other_label = (
+            f"❯ {other_num_prefix}. Other (type below)" if self._clarify_freetext
+            else f"❯ {other_num_prefix}. Other (type your answer)" if selected == len(choices)
+            else f"  {other_num_prefix}. Other (type your answer)"
+        )
+        preview_lines.extend(self._wrap_panel_text(other_label, 60, subsequent_indent="    "))
+        box_width = self._panel_box_width("Hermes needs your input", preview_lines)
+        inner_text_width = max(8, box_width - 2)
+
+        choice_wrapped: list[tuple[int, str]] = []
+        if choices:
+            for i, choice in enumerate(choices):
+                if i < 9:
+                    num_prefix = str(i + 1)
+                elif i == 9:
+                    num_prefix = '0'
+                else:
+                    num_prefix = ' '
+                if i == selected and not self._clarify_freetext:
+                    prefix = f'❯ {num_prefix}. '
+                else:
+                    prefix = f'  {num_prefix}. '
+                for wrapped in self._wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="    "):
+                    choice_wrapped.append((i, wrapped))
+            other_idx = len(choices)
+            other_num = other_idx + 1
+            if other_num < 10:
+                other_num_prefix = str(other_num)
+            elif other_num == 10:
+                other_num_prefix = '0'
+            else:
+                other_num_prefix = ' '
+            if selected == other_idx and not self._clarify_freetext:
+                other_label_mand = f'❯ {other_num_prefix}. Other (type your answer)'
+            elif self._clarify_freetext:
+                other_label_mand = f'❯ {other_num_prefix}. Other (type below)'
+            else:
+                other_label_mand = f'  {other_num_prefix}. Other (type your answer)'
+            other_wrapped = self._wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="    ")
+        elif self._clarify_freetext:
+            other_wrapped = self._wrap_panel_text(
+                "Type your answer in the prompt below, then press Enter.",
+                inner_text_width,
+            )
+        else:
+            other_wrapped = []
+
+        term_rows = shutil.get_terminal_size((100, 24)).lines
+        chrome_full = 5
+        chrome_tight = 2
+        reserved_below = 6
+
+        available = max(0, term_rows - reserved_below)
+        mandatory_full = chrome_full + 1 + len(choice_wrapped) + len(other_wrapped)
+
+        use_compact_chrome = mandatory_full > available
+        chrome_rows = chrome_tight if use_compact_chrome else chrome_full
+
+        max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
+        max_question_rows = min(max_question_rows, 12)
+
+        choices_overflow = chrome_rows + len(choice_wrapped) + len(other_wrapped) >= available
+        if choices_overflow:
+            max_question_rows = 0
+
+        question_wrapped = self._wrap_panel_text(question, inner_text_width)
+        if max_question_rows <= 0:
+            question_wrapped = []
+        elif len(question_wrapped) > max_question_rows:
+            keep = max(0, max_question_rows - 1)
+            question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
+
+        lines = []
+        lines.append(('class:clarify-border', '╭─ '))
+        lines.append(('class:clarify-title', 'Hermes needs your input'))
+        lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
+        if not use_compact_chrome:
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+        for wrapped in question_wrapped:
+            self._append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
+        if not use_compact_chrome:
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+        if self._clarify_freetext and not choices:
+            for wrapped in other_wrapped:
+                self._append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
+            if not use_compact_chrome:
+                self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+        if choices:
+            for i, wrapped in choice_wrapped:
+                style = 'class:clarify-selected' if i == selected and not self._clarify_freetext else 'class:clarify-choice'
+                self._append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+
+            other_idx = len(choices)
+            other_num = other_idx + 1
+            if other_num < 10:
+                other_num_prefix = str(other_num)
+            elif other_num == 10:
+                other_num_prefix = '0'
+            else:
+                other_num_prefix = ' '
+
+            if selected == other_idx and not self._clarify_freetext:
+                other_style = 'class:clarify-selected'
+            elif self._clarify_freetext:
+                other_style = 'class:clarify-active-other'
+            else:
+                other_style = 'class:clarify-choice'
+            for wrapped in other_wrapped:
+                self._append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
+
+        if not use_compact_chrome:
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
+        lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+        return lines
+
+    def _get_sudo_display(self):
+        state = self._sudo_state
+        if not state:
+            return []
+        title = '🔐 Sudo Password Required'
+        body = 'Enter password below (hidden), or press Enter to skip'
+        box_width = self._panel_box_width(title, [body])
+        lines = []
+        lines.append(('class:sudo-border', '╭─ '))
+        lines.append(('class:sudo-title', title))
+        lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+        self._append_blank_panel_line(lines, 'class:sudo-border', box_width)
+        self._append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+        self._append_blank_panel_line(lines, 'class:sudo-border', box_width)
+        lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
+        return lines
+
+    def _get_secret_display(self):
+        state = self._secret_state
+        if not state:
+            return []
+
+        title = '🔑 Skill Setup Required'
+        prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
+        metadata = state.get("metadata") or {}
+        help_text = metadata.get("help")
+        body = 'Enter secret below (hidden), ESC or Ctrl+C to skip'
+        content_lines = [prompt, body]
+        if help_text:
+            content_lines.insert(1, str(help_text))
+        box_width = self._panel_box_width(title, content_lines)
+        lines = []
+        lines.append(('class:sudo-border', '╭─ '))
+        lines.append(('class:sudo-title', title))
+        lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+        self._append_blank_panel_line(lines, 'class:sudo-border', box_width)
+        self._append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
+        if help_text:
+            self._append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', str(help_text), box_width)
+        self._append_blank_panel_line(lines, 'class:sudo-border', box_width)
+        self._append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
+        self._append_blank_panel_line(lines, 'class:sudo-border', box_width)
+        lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
+        return lines
+
     def _build_tui_app(self):
         """Build the prompt_toolkit Application with all keybindings and widgets.
 
@@ -14475,311 +14699,50 @@ class HermesCLI:
 
         # --- Clarify tool: dynamic display widget for questions + choices ---
 
-        def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
-            """Choose a stable panel width wide enough for the title and content."""
-            term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
-            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
-            return inner + 2  # account for the single leading/trailing spaces inside borders
-
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                break_long_words=False,
-                break_on_hyphens=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
-
-        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-            inner_width = max(0, box_width - 2)
-            lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
-            lines.append((border_style, " │\n"))
-
-        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
-            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
-
-        def _get_clarify_display():
-            """Build styled text for the clarify question/choices panel.
-
-            Layout priority: choices + Other option must always render even if
-            the question is very long. The question is budgeted to leave enough
-            rows for the choices and trailing chrome; anything over the budget
-            is truncated with a marker.
-            """
-            state = cli_ref._clarify_state
-            if not state:
-                return []
-
-            question = state["question"]
-            choices = state.get("choices") or []
-            selected = state.get("selected", 0)
-            preview_lines = _wrap_panel_text(question, 60)
-            for i, choice in enumerate(choices):
-                # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
-                if i < 9:
-                    num_prefix = str(i + 1)
-                elif i == 9:
-                    num_prefix = '0'
-                else:
-                    num_prefix = ' '
-                if i == selected and not cli_ref._clarify_freetext:
-                    prefix = f"❯ {num_prefix}. "
-                else:
-                    prefix = f"  {num_prefix}. "
-                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="    "))
-            # "Other" option in preview
-            other_num = len(choices) + 1
-            if other_num < 10:
-                other_num_prefix = str(other_num)
-            elif other_num == 10:
-                other_num_prefix = '0'
-            else:
-                other_num_prefix = ' '
-            other_label = (
-                f"❯ {other_num_prefix}. Other (type below)" if cli_ref._clarify_freetext
-                else f"❯ {other_num_prefix}. Other (type your answer)" if selected == len(choices)
-                else f"  {other_num_prefix}. Other (type your answer)"
-            )
-            preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="    "))
-            box_width = _panel_box_width("Hermes needs your input", preview_lines)
-            inner_text_width = max(8, box_width - 2)
-
-            # Pre-wrap choices + Other option — these are mandatory.
-            choice_wrapped: list[tuple[int, str]] = []
-            if choices:
-                for i, choice in enumerate(choices):
-                    # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
-                    if i < 9:
-                        num_prefix = str(i + 1)
-                    elif i == 9:
-                        num_prefix = '0'
-                    else:
-                        num_prefix = ' '
-                    if i == selected and not cli_ref._clarify_freetext:
-                        prefix = f'❯ {num_prefix}. '
-                    else:
-                        prefix = f'  {num_prefix}. '
-                    for wrapped in _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="    "):
-                        choice_wrapped.append((i, wrapped))
-                # Trailing Other row(s)
-                other_idx = len(choices)
-                other_num = other_idx + 1
-                if other_num < 10:
-                    other_num_prefix = str(other_num)
-                elif other_num == 10:
-                    other_num_prefix = '0'
-                else:
-                    other_num_prefix = ' '
-                if selected == other_idx and not cli_ref._clarify_freetext:
-                    other_label_mand = f'❯ {other_num_prefix}. Other (type your answer)'
-                elif cli_ref._clarify_freetext:
-                    other_label_mand = f'❯ {other_num_prefix}. Other (type below)'
-                else:
-                    other_label_mand = f'  {other_num_prefix}. Other (type your answer)'
-                other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="    ")
-            elif cli_ref._clarify_freetext:
-                # Freetext-only mode: the guidance line takes the place of choices.
-                other_wrapped = _wrap_panel_text(
-                    "Type your answer in the prompt below, then press Enter.",
-                    inner_text_width,
-                )
-            else:
-                other_wrapped = []
-
-            # Budget the question so mandatory rows always render.
-            # Chrome layouts:
-            #   full : top border + blank_after_title + blank_after_question
-            #          + blank_before_bottom + bottom border = 5 rows
-            #   tight: top border + bottom border = 2 rows (drop all blanks)
-            #
-            # reserved_below matches the approval-panel budget (~6 rows for
-            # spinner/tool-progress + status + input + separators + prompt).
-            term_rows = shutil.get_terminal_size((100, 24)).lines
-            chrome_full = 5
-            chrome_tight = 2
-            reserved_below = 6
-
-            available = max(0, term_rows - reserved_below)
-            # The compact decision must reserve room for at least one question
-            # row on top of the choices, otherwise full chrome (3 blank
-            # separators) gets kept when there is no room for it and the panel
-            # overflows the viewport — HSplit then clips the panel's tail,
-            # silently dropping the choices (the reported bug).
-            mandatory_full = chrome_full + 1 + len(choice_wrapped) + len(other_wrapped)
-
-            use_compact_chrome = mandatory_full > available
-            chrome_rows = chrome_tight if use_compact_chrome else chrome_full
-
-            max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
-            max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
-
-            # When the choices alone (plus compact chrome) already exceed the
-            # viewport, drop the question entirely — the choices are the only
-            # thing the user must see to make a selection. Without this the
-            # question would still claim its 1-row floor above and push the
-            # tail of the choices off-screen (HSplit clips the overflow).
-            choices_overflow = chrome_rows + len(choice_wrapped) + len(other_wrapped) >= available
-            if choices_overflow:
-                max_question_rows = 0
-
-            question_wrapped = _wrap_panel_text(question, inner_text_width)
-            if max_question_rows <= 0:
-                question_wrapped = []
-            elif len(question_wrapped) > max_question_rows:
-                # The truncation marker is itself a row, so it must count
-                # against the budget. With a 1-row budget there is no room for
-                # both a question line and the marker — show the marker alone
-                # so the rendered question never exceeds max_question_rows.
-                keep = max(0, max_question_rows - 1)
-                question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
-
-            lines = []
-            # Box top border
-            lines.append(('class:clarify-border', '╭─ '))
-            lines.append(('class:clarify-title', 'Hermes needs your input'))
-            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Hermes needs your input") - 3)) + '╮\n'))
-            if not use_compact_chrome:
-                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-
-            # Question text (bounded)
-            for wrapped in question_wrapped:
-                _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
-            if not use_compact_chrome:
-                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-
-            if cli_ref._clarify_freetext and not choices:
-                for wrapped in other_wrapped:
-                    _append_panel_line(lines, 'class:clarify-border', 'class:clarify-choice', wrapped, box_width)
-                if not use_compact_chrome:
-                    _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-
-            if choices:
-                # Multiple-choice mode: show selectable options
-                for i, wrapped in choice_wrapped:
-                    style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
-                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
-
-                # "Other" option (trailing row(s), only shown when choices exist)
-                other_idx = len(choices)
-                # Calculate number prefix for "Other" option
-                other_num = other_idx + 1
-                if other_num < 10:
-                    other_num_prefix = str(other_num)
-                elif other_num == 10:
-                    other_num_prefix = '0'
-                else:
-                    other_num_prefix = ' '
-                
-                if selected == other_idx and not cli_ref._clarify_freetext:
-                    other_style = 'class:clarify-selected'
-                elif cli_ref._clarify_freetext:
-                    other_style = 'class:clarify-active-other'
-                else:
-                    other_style = 'class:clarify-choice'
-                for wrapped in other_wrapped:
-                    _append_panel_line(lines, 'class:clarify-border', other_style, wrapped, box_width)
-
-            if not use_compact_chrome:
-                _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
-            return lines
-
         clarify_widget = ConditionalContainer(
             Window(
-                FormattedTextControl(_get_clarify_display),
+                FormattedTextControl(self._get_clarify_display),
                 wrap_lines=True,
             ),
-            filter=Condition(lambda: cli_ref._clarify_state is not None),
+            filter=Condition(lambda: self._clarify_state is not None),
         )
 
         # --- Sudo password: display widget ---
 
-        def _get_sudo_display():
-            state = cli_ref._sudo_state
-            if not state:
-                return []
-            title = '🔐 Sudo Password Required'
-            body = 'Enter password below (hidden), or press Enter to skip'
-            box_width = _panel_box_width(title, [body])
-            lines = []
-            lines.append(('class:sudo-border', '╭─ '))
-            lines.append(('class:sudo-title', title))
-            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
-            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
-            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
-            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
-            return lines
-
         sudo_widget = ConditionalContainer(
             Window(
-                FormattedTextControl(_get_sudo_display),
+                FormattedTextControl(self._get_sudo_display),
                 wrap_lines=True,
             ),
-            filter=Condition(lambda: cli_ref._sudo_state is not None),
+            filter=Condition(lambda: self._sudo_state is not None),
         )
 
-        def _get_secret_display():
-            state = cli_ref._secret_state
-            if not state:
-                return []
-
-            title = '🔑 Skill Setup Required'
-            prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
-            metadata = state.get("metadata") or {}
-            help_text = metadata.get("help")
-            body = 'Enter secret below (hidden), ESC or Ctrl+C to skip'
-            content_lines = [prompt, body]
-            if help_text:
-                content_lines.insert(1, str(help_text))
-            box_width = _panel_box_width(title, content_lines)
-            lines = []
-            lines.append(('class:sudo-border', '╭─ '))
-            lines.append(('class:sudo-title', title))
-            lines.append(('class:sudo-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
-            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', prompt, box_width)
-            if help_text:
-                _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', str(help_text), box_width)
-            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
-            _append_panel_line(lines, 'class:sudo-border', 'class:sudo-text', body, box_width)
-            _append_blank_panel_line(lines, 'class:sudo-border', box_width)
-            lines.append(('class:sudo-border', '╰' + ('─' * box_width) + '╯\n'))
-            return lines
+        # --- Secret capture: display widget ---
 
         secret_widget = ConditionalContainer(
             Window(
-                FormattedTextControl(_get_secret_display),
+                FormattedTextControl(self._get_secret_display),
                 wrap_lines=True,
             ),
-            filter=Condition(lambda: cli_ref._secret_state is not None),
+            filter=Condition(lambda: self._secret_state is not None),
         )
 
         # --- Dangerous command approval: display widget ---
 
-        def _get_approval_display():
-            return cli_ref._get_approval_display_fragments()
-
         approval_widget = ConditionalContainer(
             Window(
-                FormattedTextControl(_get_approval_display),
+                FormattedTextControl(self._get_approval_display_fragments),
                 wrap_lines=True,
             ),
-            filter=Condition(lambda: cli_ref._approval_state is not None),
+            filter=Condition(lambda: self._approval_state is not None),
         )
-
-        def _get_slash_confirm_display():
-            return cli_ref._get_slash_confirm_display_fragments()
 
         slash_confirm_widget = ConditionalContainer(
             Window(
-                FormattedTextControl(_get_slash_confirm_display),
+                FormattedTextControl(self._get_slash_confirm_display_fragments),
                 wrap_lines=True,
             ),
-            filter=Condition(lambda: cli_ref._slash_confirm_state is not None),
+            filter=Condition(lambda: self._slash_confirm_state is not None),
         )
 
         # --- /model picker: display widget ---
@@ -14810,7 +14773,7 @@ class HermesCLI:
                 else:
                     hint = "No models listed for this provider. Use Back or Cancel."
 
-            box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
+            box_width = self._panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
             inner_text_width = max(8, box_width - 6)
             selected = state.get("selected", 0)
 
@@ -14832,16 +14795,16 @@ class HermesCLI:
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', title))
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
-            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            self._append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
             for idx in range(scroll_offset, scroll_offset + visible):
                 choice = choices[idx]
                 style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
                 prefix = '❯ ' if idx == selected else '  '
-                for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
-                    _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
-            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+                for wrapped in self._wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                    self._append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            self._append_blank_panel_line(lines, 'class:clarify-border', box_width)
             lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
             return lines
 

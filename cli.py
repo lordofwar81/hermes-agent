@@ -13179,6 +13179,17 @@ class HermesCLI:
             self._ensure_tirith_security()
         
         # Key bindings for the input area
+    def _build_tui_app(self):
+        """Build the prompt_toolkit Application with all keybindings and widgets.
+
+        Extracted from run() to reduce method size. Creates keybindings,
+        input widgets, layout, style, and the Application instance.
+
+        Returns:
+            app: The prompt_toolkit Application
+            input_area: The TextArea widget for user input
+            kb: The KeyBindings registry
+        """
         kb = KeyBindings()
 
         from prompt_toolkit.keys import Keys as _IgnoreKeys
@@ -14863,6 +14874,11 @@ class HermesCLI:
         )
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
+
+        return app, input_area, kb
+
+        app, input_area, kb = self._build_tui_app()
+
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff

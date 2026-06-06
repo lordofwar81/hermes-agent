@@ -7703,48 +7703,23 @@ class HermesCLI:
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
 
-        def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 56, max_width: int = 86) -> int:
-            term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
-            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
-            return inner + 2
-
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
-
-        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-            inner_width = max(0, box_width - 2)
-            lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
-            lines.append((border_style, " │\n"))
-
-        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
-            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
-
         preview_lines = []
         for line in detail.splitlines():
-            preview_lines.extend(_wrap_panel_text(line, 72))
+            preview_lines.extend(self._wrap_panel_text(line, 72))
         for idx, (_value, label, desc) in enumerate(choices):
             marker = "❯" if idx == selected else " "
-            preview_lines.extend(_wrap_panel_text(f"{marker} [{idx + 1}] {label} — {desc}", 72, subsequent_indent="    "))
+            preview_lines.extend(self._wrap_panel_text(f"{marker} [{idx + 1}] {label} — {desc}", 72, subsequent_indent="    "))
         preview_lines.append("Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.")
 
-        box_width = _panel_box_width(title, preview_lines)
+        box_width = self._panel_box_width(title, preview_lines, min_width=56, max_width=86)
         inner_text_width = max(8, box_width - 2)
         detail_wrapped = []
         for line in detail.splitlines():
-            detail_wrapped.extend(_wrap_panel_text(line, inner_text_width))
+            detail_wrapped.extend(self._wrap_panel_text(line, inner_text_width))
         choice_wrapped: list[tuple[int, str]] = []
         for idx, (_value, label, desc) in enumerate(choices):
             marker = "❯" if idx == selected else " "
-            for wrapped in _wrap_panel_text(f"{marker} [{idx + 1}] {label} — {desc}", inner_text_width, subsequent_indent="    "):
+            for wrapped in self._wrap_panel_text(f"{marker} [{idx + 1}] {label} — {desc}", inner_text_width, subsequent_indent="    "):
                 choice_wrapped.append((idx, wrapped))
 
         term_rows = shutil.get_terminal_size((100, 24)).lines
@@ -7759,16 +7734,16 @@ class HermesCLI:
 
         lines = []
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
-        _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+        self._append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
+        self._append_blank_panel_line(lines, 'class:approval-border', box_width)
         for wrapped in detail_wrapped:
-            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            self._append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+        self._append_blank_panel_line(lines, 'class:approval-border', box_width)
         for idx, wrapped in choice_wrapped:
             style = 'class:approval-selected' if idx == selected else 'class:approval-choice'
-            _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
-        _append_blank_panel_line(lines, 'class:approval-border', box_width)
-        _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', 'Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.', box_width)
+            self._append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+        self._append_blank_panel_line(lines, 'class:approval-border', box_width)
+        self._append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', 'Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.', box_width)
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
@@ -11882,30 +11857,9 @@ class HermesCLI:
         if not state:
             return []
 
-        def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
-            term_cols = shutil.get_terminal_size((100, 20)).columns
-            longest = max([len(title_text)] + [len(line) for line in content_lines] + [min_width - 4])
-            inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
-            return inner + 2
 
-        def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
-            wrapped = textwrap.wrap(
-                text,
-                width=max(8, width),
-                replace_whitespace=False,
-                drop_whitespace=False,
-                subsequent_indent=subsequent_indent,
-            )
-            return wrapped or [""]
 
-        def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-            inner_width = max(0, box_width - 2)
-            lines.append((border_style, "│ "))
-            lines.append((content_style, text.ljust(inner_width)))
-            lines.append((border_style, " │\n"))
 
-        def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
-            lines.append((border_style, "│" + (" " * box_width) + "│\n"))
 
         command = state["command"]
         description = state["description"]
@@ -11923,38 +11877,35 @@ class HermesCLI:
             "view": "Show full command",
         }
 
-        preview_lines = _wrap_panel_text(description, 60)
-        preview_lines.extend(_wrap_panel_text(cmd_display, 60))
+        preview_lines = self._wrap_panel_text(description, 60)
+        preview_lines.extend(self._wrap_panel_text(cmd_display, 60))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
-            preview_lines.extend(_wrap_panel_text(
+            preview_lines.extend(self._wrap_panel_text(
                 f"{prefix}{choice_labels.get(choice, choice)}",
                 60,
                 subsequent_indent="  ",
             ))
 
-        box_width = _panel_box_width(title, preview_lines)
+        box_width = self._panel_box_width(title, preview_lines, min_width=46, max_width=76)
         inner_text_width = max(8, box_width - 2)
 
-        # Pre-wrap the mandatory content — command + choices must always render.
-        cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+        cmd_wrapped = self._wrap_panel_text(cmd_display, inner_text_width)
 
-        # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []
         for i, choice in enumerate(choices):
             label = choice_labels.get(choice, choice)
-            # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
             if i < 9:
                 num_prefix = str(i + 1)
             elif i == 9:
                 num_prefix = '0'
             else:
-                num_prefix = ' '  # No number for items beyond 10th
+                num_prefix = ' '
             if i == selected:
                 prefix = f'❯ {num_prefix}. '
             else:
                 prefix = f'  {num_prefix}. '
-            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="    "):
+            for wrapped in self._wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="    "):
                 choice_wrapped.append((i, wrapped))
 
         # Budget vertical space so HSplit never clips the command or choices.
@@ -11997,7 +11948,7 @@ class HermesCLI:
         # Even on huge terminals, cap description height so the panel stays compact.
         available_for_desc = max(0, min(available_for_desc, 10))
 
-        desc_wrapped = _wrap_panel_text(description, inner_text_width) if description else []
+        desc_wrapped = self._wrap_panel_text(description, inner_text_width) if description else []
         if available_for_desc < 1 or not desc_wrapped:
             desc_wrapped = []
         elif len(desc_wrapped) > available_for_desc:
@@ -12010,24 +11961,24 @@ class HermesCLI:
         # blank separators) when the terminal is tight.
         lines = []
         lines.append(('class:approval-border', '╭' + ('─' * box_width) + '╮\n'))
-        _append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
+        self._append_panel_line(lines, 'class:approval-border', 'class:approval-title', title, box_width)
         if not use_compact_chrome:
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            self._append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for wrapped in cmd_wrapped:
-            _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
+            self._append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
         if not use_compact_chrome:
-            _append_blank_panel_line(lines, 'class:approval-border', box_width)
+            self._append_blank_panel_line(lines, 'class:approval-border', box_width)
 
         for i, wrapped in choice_wrapped:
             style = 'class:approval-selected' if i == selected else 'class:approval-choice'
-            _append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
+            self._append_panel_line(lines, 'class:approval-border', style, wrapped, box_width)
 
         if desc_wrapped:
             if not use_compact_chrome:
-                _append_blank_panel_line(lines, 'class:approval-border', box_width)
+                self._append_blank_panel_line(lines, 'class:approval-border', box_width)
             for wrapped in desc_wrapped:
-                _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
+                self._append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
 
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines

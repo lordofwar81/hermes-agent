@@ -313,8 +313,25 @@ class MessageMixin:
                 if _denied is not None:
                     return _denied
 
-            if _cmd_def_inner and _cmd_def_inner.name == "restart":
-                return await self._handle_restart_command(event)
+            # ---- Registry-based command dispatch (agent-running fast-path) ----
+            _ACTIVE_CMD_REGISTRY: dict[str, str] = {
+                "restart":   "_handle_restart_command",
+                "agents":    "_handle_agents_command",
+                "background":"_handle_background_command",
+                "kanban":    "_handle_kanban_command",
+                "subgoal":   "_handle_subgoal_command",
+                "yolo":      "_handle_yolo_command",
+                "verbose":   "_handle_verbose_command",
+                "footer":    "_handle_footer_command",
+                "help":      "_handle_help_command",
+                "commands":  "_handle_commands_command",
+                "profile":   "_handle_profile_command",
+                "update":    "_handle_update_command",
+            }
+
+            if _cmd_def_inner and _cmd_def_inner.name in _ACTIVE_CMD_REGISTRY:
+                handler = getattr(self, _ACTIVE_CMD_REGISTRY[_cmd_def_inner.name])
+                return await handler(event)
 
             if _cmd_def_inner and _cmd_def_inner.name == "stop":
                 await self._interrupt_and_clear_session(
@@ -448,24 +465,6 @@ class MessageMixin:
                 except Exception as exc:
                     logger.warning("Optimize handler failed for session %s: %s", _quick_key, exc)
                     return f"⚠️ Optimize failed: {exc}"
-
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
-                if _cmd_def_inner.name == "yolo":
-                    return await self._handle_yolo_command(event)
-                if _cmd_def_inner.name == "verbose":
-                    return await self._handle_verbose_command(event)
-                if _cmd_def_inner.name == "footer":
-                    return await self._handle_footer_command(event)
-
-            if _cmd_def_inner and _cmd_def_inner.name in _DEDICATED_HANDLERS:
-                if _cmd_def_inner.name == "help":
-                    return await self._handle_help_command(event)
-                if _cmd_def_inner.name == "commands":
-                    return await self._handle_commands_command(event)
-                if _cmd_def_inner.name == "profile":
-                    return await self._handle_profile_command(event)
-                if _cmd_def_inner.name == "update":
-                    return await self._handle_update_command(event)
 
             if _cmd_def_inner:
                 return (

@@ -202,12 +202,11 @@ class _ProgressManager:
             return
         self._last_tool = tool_name
 
-        from agent.display import get_tool_emoji
+        from agent.display import get_tool_emoji, get_tool_preview_max_len
         emoji = get_tool_emoji(tool_name, default="⚙️")
 
         if self._progress_mode == "verbose":
             if args:
-                from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 args_str = json.dumps(args, ensure_ascii=False, default=str)
                 if _pl > 0 and len(args_str) > _pl:
@@ -221,7 +220,6 @@ class _ProgressManager:
             return
 
         if preview:
-            from agent.display import get_tool_preview_max_len
             _pl = get_tool_preview_max_len()
             _cap = _pl if _pl > 0 else 40
             if len(preview) > _cap:
@@ -251,7 +249,6 @@ class _ProgressManager:
         if not adapter:
             return
 
-        from gateway.platforms.base import BasePlatformAdapter
         if type(adapter).edit_message is BasePlatformAdapter.edit_message:
             while not q.empty():
                 try:
@@ -604,7 +601,6 @@ class AgentRunnerMixin:
             )
 
         from run_agent import AIAgent
-        import queue
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -675,7 +671,7 @@ class AgentRunnerMixin:
         )
 
         # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if tool_progress_enabled else None
+        progress_queue = _queue_mod.Queue() if tool_progress_enabled else None
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via

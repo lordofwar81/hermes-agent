@@ -13179,6 +13179,187 @@ class HermesCLI:
             self._ensure_tirith_security()
         
         # Key bindings for the input area
+    def _handle_tui_enter(self, event):
+        """Handle Enter key - submit input or route to active UI state.
+
+        Promoted from handle_enter closure in _build_tui_app.
+        """
+        if self._sudo_state:
+            text = event.app.current_buffer.text
+            self._sudo_state["response_queue"].put(text)
+            self._sudo_state = None
+            event.app.invalidate()
+            return
+
+        # --- Secret prompt: submit the typed secret ---
+        if self._secret_state:
+            text = event.app.current_buffer.text
+            self._submit_secret_response(text)
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # --- Approval selection: confirm the highlighted choice ---
+        if self._approval_state:
+            self._handle_approval_selection()
+            event.app.invalidate()
+            return
+
+        # --- Slash-command confirmation: submit typed or highlighted choice ---
+        if self._slash_confirm_state:
+            text = event.app.current_buffer.text.strip()
+            choices = self._slash_confirm_state.get("choices") or []
+            choice = self._normalize_slash_confirm_choice(text, choices) if text else None
+            if choice is None:
+                selected = self._slash_confirm_state.get("selected", 0)
+                if 0 <= selected < len(choices):
+                    choice = choices[selected][0]
+            self._submit_slash_confirm_response(choice or "cancel")
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # --- /model picker modal ---
+        if self._model_picker_state:
+            try:
+                self._handle_model_picker_selection()
+            except Exception as _exc:
+                _cprint(f"  ✗ Model selection failed: {_exc}")
+                self._close_model_picker()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+            return
+
+        # --- Clarify freetext mode: user typed their own answer ---
+        if self._clarify_freetext and self._clarify_state:
+            text = event.app.current_buffer.text.strip()
+            if text:
+                self._clarify_state["response_queue"].put(text)
+                self._clarify_state = None
+                self._clarify_freetext = False
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+            return
+
+        # --- Clarify choice mode: confirm the highlighted selection ---
+        if self._clarify_state and not self._clarify_freetext:
+            state = self._clarify_state
+            selected = state["selected"]
+            choices = state.get("choices") or []
+            if selected < len(choices):
+                state["response_queue"].put(choices[selected])
+                self._clarify_state = None
+                event.app.invalidate()
+            else:
+                # "Other" selected → switch to freetext
+                self._clarify_freetext = True
+                event.app.invalidate()
+            return
+
+        # --- Normal input routing ---
+        text = event.app.current_buffer.text.strip()
+        has_images = bool(self._attached_images)
+        if text or has_images:
+            # Handle /model directly on the UI thread so interactive pickers
+            # can safely use prompt_toolkit terminal handoff helpers.
+            if self._should_handle_model_command_inline(text, has_images=has_images):
+                if not self.process_command(text):
+                    self._should_exit = True
+                    if event.app.is_running:
+                        event.app.exit()
+                event.app.current_buffer.reset(append_to_history=True)
+                # Force a repaint: process_command() prints through
+                # patch_stdout (scrolls output above the prompt) and never
+                # invalidates the app, so the just-cleared input area can
+                # keep showing the submitted text until some unrelated
+                # redraw fires. Every other early-return branch in this
+                # handler invalidates after reset — match them.
+                event.app.invalidate()
+                return
+
+            # Handle /steer while the agent is running immediately on the
+            # UI thread.  Queuing through _pending_input would deadlock the
+            # steer until after the agent loop finishes (process_loop is
+            # blocked inside self.chat()), which turns /steer into a
+            # post-run next-turn message — defeating mid-run injection.
+            # agent.steer() is thread-safe (holds _pending_steer_lock).
+            if self._should_handle_steer_command_inline(text, has_images=has_images):
+                self.process_command(text)
+                event.app.current_buffer.reset(append_to_history=True)
+                # Force a repaint after clearing the buffer.  /steer is
+                # dispatched mid-run while the agent streams output through
+                # patch_stdout; process_command() never invalidates the
+                # app, so without this the submitted "/steer <text>" can
+                # linger in the input area (looking unsent) and invite an
+                # accidental re-submit. See issue #34569.
+                event.app.invalidate()
+                return
+
+            # Snapshot and clear attached images
+            images = list(self._attached_images)
+            self._attached_images.clear()
+            event.app.invalidate()
+            # Bundle text + images as a tuple when images are present
+            payload = (text, images) if images else text
+            if self._agent_running and not (text and _looks_like_slash_command(text)):
+                _effective_mode = self.busy_input_mode
+                if _effective_mode == "steer":
+                    # Route Enter through /steer — inject mid-run after the
+                    # next tool call.  Images can't ride along (steer only
+                    # appends text), so fall back to queue when images are
+                    # attached.  If the agent lacks steer() or rejects the
+                    # payload, also fall back to queue so nothing is lost.
+                    if images or not text:
+                        _effective_mode = "queue"
+                    else:
+                        accepted = False
+                        try:
+                            if self.agent is not None and hasattr(self.agent, "steer"):
+                                accepted = bool(self.agent.steer(text))
+                        except Exception as exc:
+                            _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+                            accepted = False
+                        if accepted:
+                            preview = text[:80] + ("..." if len(text) > 80 else "")
+                            _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+                        else:
+                            _effective_mode = "queue"
+                if _effective_mode == "queue":
+                    # Queue for the next turn instead of interrupting
+                    self._pending_input.put(payload)
+                    preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                    _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                elif _effective_mode == "interrupt":
+                    self._interrupt_queue.put(payload)
+                    # Debug: log to file when message enters interrupt queue
+                    try:
+                        _dbg = _hermes_home / "interrupt_debug.log"
+                        with open(_dbg, "a", encoding="utf-8") as _f:
+                            _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                     f"agent_running={self._agent_running}\n")
+                    except Exception:
+                        pass
+                # First-touch onboarding: on the very first busy-while-running
+                # event for this install, print a one-line tip explaining the
+                # /busy knob.  Flag persists to config.yaml and never fires
+                # again.  Guarded for exceptions so onboarding can't break
+                # the input loop.
+                try:
+                    from agent.onboarding import (
+                        BUSY_INPUT_FLAG,
+                        busy_input_hint_cli,
+                        is_seen,
+                        mark_seen,
+                    )
+                    if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
+                        _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
+                        mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                        CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
+                except Exception:
+                    pass
+            else:
+                self._pending_input.put(payload)
+            event.app.current_buffer.reset(append_to_history=True)
     def _build_tui_app(self):
         """Build the prompt_toolkit Application with all keybindings and widgets.
 
@@ -13206,196 +13387,7 @@ class HermesCLI:
             """
             return None
 
-        def handle_enter(event):
-            """Handle Enter key - submit input.
-            
-            Routes to the correct queue based on active UI state:
-            - Sudo password prompt: password goes to sudo response queue
-            - Approval selection: selected choice goes to approval response queue
-            - Clarify freetext mode: answer goes to the clarify response queue
-            - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running: goes to _interrupt_queue (chat() monitors this)
-            - Agent idle: goes to _pending_input (process_loop monitors this)
-            Commands (starting with /) always go to _pending_input so they're
-            handled as commands, not sent as interrupt text to the agent.
-            """
-            # --- Sudo password prompt: submit the typed password ---
-            if self._sudo_state:
-                text = event.app.current_buffer.text
-                self._sudo_state["response_queue"].put(text)
-                self._sudo_state = None
-                event.app.invalidate()
-                return
-
-            # --- Secret prompt: submit the typed secret ---
-            if self._secret_state:
-                text = event.app.current_buffer.text
-                self._submit_secret_response(text)
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # --- Approval selection: confirm the highlighted choice ---
-            if self._approval_state:
-                self._handle_approval_selection()
-                event.app.invalidate()
-                return
-
-            # --- Slash-command confirmation: submit typed or highlighted choice ---
-            if self._slash_confirm_state:
-                text = event.app.current_buffer.text.strip()
-                choices = self._slash_confirm_state.get("choices") or []
-                choice = self._normalize_slash_confirm_choice(text, choices) if text else None
-                if choice is None:
-                    selected = self._slash_confirm_state.get("selected", 0)
-                    if 0 <= selected < len(choices):
-                        choice = choices[selected][0]
-                self._submit_slash_confirm_response(choice or "cancel")
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # --- /model picker modal ---
-            if self._model_picker_state:
-                try:
-                    self._handle_model_picker_selection()
-                except Exception as _exc:
-                    _cprint(f"  ✗ Model selection failed: {_exc}")
-                    self._close_model_picker()
-                event.app.current_buffer.reset()
-                event.app.invalidate()
-                return
-
-            # --- Clarify freetext mode: user typed their own answer ---
-            if self._clarify_freetext and self._clarify_state:
-                text = event.app.current_buffer.text.strip()
-                if text:
-                    self._clarify_state["response_queue"].put(text)
-                    self._clarify_state = None
-                    self._clarify_freetext = False
-                    event.app.current_buffer.reset()
-                    event.app.invalidate()
-                return
-
-            # --- Clarify choice mode: confirm the highlighted selection ---
-            if self._clarify_state and not self._clarify_freetext:
-                state = self._clarify_state
-                selected = state["selected"]
-                choices = state.get("choices") or []
-                if selected < len(choices):
-                    state["response_queue"].put(choices[selected])
-                    self._clarify_state = None
-                    event.app.invalidate()
-                else:
-                    # "Other" selected → switch to freetext
-                    self._clarify_freetext = True
-                    event.app.invalidate()
-                return
-
-            # --- Normal input routing ---
-            text = event.app.current_buffer.text.strip()
-            has_images = bool(self._attached_images)
-            if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
-                    if not self.process_command(text):
-                        self._should_exit = True
-                        if event.app.is_running:
-                            event.app.exit()
-                    event.app.current_buffer.reset(append_to_history=True)
-                    # Force a repaint: process_command() prints through
-                    # patch_stdout (scrolls output above the prompt) and never
-                    # invalidates the app, so the just-cleared input area can
-                    # keep showing the submitted text until some unrelated
-                    # redraw fires. Every other early-return branch in this
-                    # handler invalidates after reset — match them.
-                    event.app.invalidate()
-                    return
-
-                # Handle /steer while the agent is running immediately on the
-                # UI thread.  Queuing through _pending_input would deadlock the
-                # steer until after the agent loop finishes (process_loop is
-                # blocked inside self.chat()), which turns /steer into a
-                # post-run next-turn message — defeating mid-run injection.
-                # agent.steer() is thread-safe (holds _pending_steer_lock).
-                if self._should_handle_steer_command_inline(text, has_images=has_images):
-                    self.process_command(text)
-                    event.app.current_buffer.reset(append_to_history=True)
-                    # Force a repaint after clearing the buffer.  /steer is
-                    # dispatched mid-run while the agent streams output through
-                    # patch_stdout; process_command() never invalidates the
-                    # app, so without this the submitted "/steer <text>" can
-                    # linger in the input area (looking unsent) and invite an
-                    # accidental re-submit. See issue #34569.
-                    event.app.invalidate()
-                    return
-
-                # Snapshot and clear attached images
-                images = list(self._attached_images)
-                self._attached_images.clear()
-                event.app.invalidate()
-                # Bundle text + images as a tuple when images are present
-                payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
-                    _effective_mode = self.busy_input_mode
-                    if _effective_mode == "steer":
-                        # Route Enter through /steer — inject mid-run after the
-                        # next tool call.  Images can't ride along (steer only
-                        # appends text), so fall back to queue when images are
-                        # attached.  If the agent lacks steer() or rejects the
-                        # payload, also fall back to queue so nothing is lost.
-                        if images or not text:
-                            _effective_mode = "queue"
-                        else:
-                            accepted = False
-                            try:
-                                if self.agent is not None and hasattr(self.agent, "steer"):
-                                    accepted = bool(self.agent.steer(text))
-                            except Exception as exc:
-                                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
-                                accepted = False
-                            if accepted:
-                                preview = text[:80] + ("..." if len(text) > 80 else "")
-                                _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
-                            else:
-                                _effective_mode = "queue"
-                    if _effective_mode == "queue":
-                        # Queue for the next turn instead of interrupting
-                        self._pending_input.put(payload)
-                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
-                    elif _effective_mode == "interrupt":
-                        self._interrupt_queue.put(payload)
-                        # Debug: log to file when message enters interrupt queue
-                        try:
-                            _dbg = _hermes_home / "interrupt_debug.log"
-                            with open(_dbg, "a", encoding="utf-8") as _f:
-                                _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                         f"agent_running={self._agent_running}\n")
-                        except Exception:
-                            pass
-                    # First-touch onboarding: on the very first busy-while-running
-                    # event for this install, print a one-line tip explaining the
-                    # /busy knob.  Flag persists to config.yaml and never fires
-                    # again.  Guarded for exceptions so onboarding can't break
-                    # the input loop.
-                    try:
-                        from agent.onboarding import (
-                            BUSY_INPUT_FLAG,
-                            busy_input_hint_cli,
-                            is_seen,
-                            mark_seen,
-                        )
-                        if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
-                            _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
-                            mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
-                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
-                    except Exception:
-                        pass
-                else:
-                    self._pending_input.put(payload)
-                event.app.current_buffer.reset(append_to_history=True)
+            handle_enter = self._handle_tui_enter
 
         _bind_prompt_submit_keys(kb, handle_enter)
         

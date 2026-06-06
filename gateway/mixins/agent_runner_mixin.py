@@ -9,10 +9,12 @@ import inspect
 import json
 import logging
 import os
+import queue as _queue_mod
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.i18n import t  # noqa: F401 — required per mixin convention
 from gateway.platforms.base import BasePlatformAdapter  # noqa: F401 — used in type checks
@@ -20,6 +22,62 @@ from gateway.session import SessionSource  # noqa: F401 — used in type annotat
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class _RunContext:
+    """Shared state for a single _run_agent invocation.
+
+    Replaces the mutable list containers and closure captures that nested
+    functions previously closed over.  Created in _run_agent and passed to
+    _execute_agent_sync (the promoted run_sync body).
+
+    Phase A holds mutable agent-lifecycle containers, the progress queue,
+    the user message (mutated by prepend logic), closure references, and
+    read-only values from _run_agent's scope.  Future phases absorb more.
+    """
+
+    # Mutable containers (written inside _execute_agent_sync)
+    agent_holder: list = field(default_factory=list)
+    result_holder: list = field(default_factory=list)
+    tools_holder: list = field(default_factory=list)
+    stream_consumer_holder: list = field(default_factory=list)
+    progress_queue: Optional[_queue_mod.Queue] = None
+
+    # User message (mutated by prepend logic inside run_sync)
+    message: str = ""
+
+    # Read-only closures from _run_agent scope
+    run_still_current: Optional[Callable[[], bool]] = None
+    progress_callback: Optional[Callable] = None
+    step_callback: Optional[Callable] = None
+    status_callback: Optional[Callable] = None
+
+    # Read-only values from _run_agent scope
+    context_prompt: str = ""
+    history: list = field(default_factory=list)
+    source: Any = None
+    session_id: str = ""
+    session_key: Optional[str] = None
+    run_generation: Optional[int] = None
+    event_message_id: Optional[str] = None
+    channel_prompt: Optional[str] = None
+    user_config: dict = field(default_factory=dict)
+    platform_key: str = ""
+    enabled_toolsets: list = field(default_factory=list)
+    disabled_toolsets: Optional[list] = None
+    tool_progress_enabled: bool = True
+    progress_mode: str = "all"
+    interim_assistant_messages_enabled: bool = True
+    cleanup_progress: bool = False
+    cleanup_adapter: Any = None
+    progress_thread_id: Optional[str] = None
+    progress_metadata: Optional[dict] = None
+    progress_reply_to: Optional[str] = None
+    loop_for_step: Any = None
+    hooks_ref: Any = None
+    status_adapter: Any = None
+    status_chat_id: str = ""
+    status_thread_metadata: Optional[dict] = None
 
 class AgentRunnerMixin:
     """Mixin providing _run_agent for GatewayRunner.
@@ -743,14 +801,14 @@ class AgentRunnerMixin:
                         _cleanup_msg_ids.append(str(mid))
                 _fut.add_done_callback(_track_status_id)
 
-        def run_sync():
+        def _execute_agent_sync(ctx: '_RunContext') -> Dict[str, Any]:
+            """Execute the agent on a worker thread.
+
+            Promoted from the run_sync nested closure inside _run_agent.
+            All shared state is received via ctx — no closure capture.
+            """
             # The conditional re-assignment of `message` further below
             # (prepending model-switch notes) makes Python treat it as a
-            # local variable in the entire function.  `nonlocal` lets us
-            # read *and* reassign the outer `_run_agent` parameter without
-            # triggering an UnboundLocalError on the earlier read at
-            # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -871,21 +929,21 @@ class AgentRunnerMixin:
                             metadata=_status_thread_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
-                                if progress_queue is not None
+                                if ctx.progress_queue is not None
                                 else None
                             ),
                             initial_reply_to_id=event_message_id,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
-                                if _run_still_current():
+                                if ctx.run_still_current():
                                     _stream_consumer.on_delta(text)
-                        stream_consumer_holder[0] = _stream_consumer
+                        ctx.stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-                if not _run_still_current():
+                if not ctx.run_still_current():
                     return
                 if _stream_consumer is not None:
                     if already_streamed:
@@ -906,7 +964,7 @@ class AgentRunnerMixin:
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -977,11 +1035,11 @@ class AgentRunnerMixin:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
-            agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
+            agent.tool_progress_callback = ctx.progress_callback if tool_progress_enabled else None
+            agent.step_callback = ctx.step_callback if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = ctx.status_callback
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
@@ -991,12 +1049,12 @@ class AgentRunnerMixin:
             _bg_review_pending_lock = threading.Lock()
 
             def _deliver_bg_review_message(message: str) -> None:
-                if not _status_adapter or not _run_still_current():
+                if not _status_adapter or not ctx.run_still_current():
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
-                        message,
+                        ctx.message,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -1014,14 +1072,14 @@ class AgentRunnerMixin:
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:
-                if not _status_adapter or not _run_still_current():
+                if not _status_adapter or not ctx.run_still_current():
                     return
                 if not _bg_review_release.is_set():
                     with _bg_review_pending_lock:
                         if not _bg_review_release.is_set():
-                            _bg_review_pending.append(message)
+                            _bg_review_pending.append(ctx.message)
                             return
-                _deliver_bg_review_message(message)
+                _deliver_bg_review_message(ctx.message)
 
             agent.background_review_callback = _bg_review_send
             # Register the release hook on the adapter so base.py's finally
@@ -1114,9 +1172,9 @@ class AgentRunnerMixin:
             agent.clarify_callback = _clarify_callback_sync
 
             # Store agent reference for interrupt support
-            agent_holder[0] = agent
+            ctx.agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
-            tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
+            ctx.tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
 
             # Convert history to agent format.
             # Two cases:
@@ -1173,7 +1231,7 @@ class AgentRunnerMixin:
 
                 If the adapter supports interactive button-based approvals
                 (e.g. Discord's ``send_exec_approval``), use that for a richer
-                UX.  Otherwise fall back to a plain text message with
+                UX.  Otherwise fall back to a plain text ctx.message with
                 ``/approve`` instructions.
                 """
                 # Pause the typing indicator while the agent waits for
@@ -1248,7 +1306,7 @@ class AgentRunnerMixin:
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
-                message = _msn + "\n\n" + message
+                ctx.message = _msn + "\n\n" + ctx.message
 
             # Auto-continue: if the loaded history ends with a tool result,
             # the previous agent turn was interrupted mid-work (gateway
@@ -1304,22 +1362,22 @@ class AgentRunnerMixin:
                     if _reason == "shutdown_timeout"
                     else "a gateway interruption"
                 )
-                message = (
+                ctx.message = (
                     f"[System note: Your previous turn in this session was interrupted "
                     f"by {_reason_phrase}. The conversation history below is intact. "
                     f"If it contains unfinished tool result(s), process them first and "
                     f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
-                    + message
+                    f"ctx.message below.]\n\n"
+                    + ctx.message
                 )
             elif _has_fresh_tool_tail:
-                message = (
+                ctx.message = (
                     "[System note: Your previous turn was interrupted before you could "
                     "process the last tool result(s). The conversation history contains "
                     "tool outputs you haven't responded to yet. Please finish processing "
                     "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
-                    + message
+                    "user's new ctx.message below.]\n\n"
+                    + ctx.message
                 )
 
             # Consume one-shot /reload-skills note (if the user ran
@@ -1331,7 +1389,7 @@ class AgentRunnerMixin:
             if _pending_notes and session_key and session_key in _pending_notes:
                 _srn = _pending_notes.pop(session_key, None)
                 if _srn:
-                    message = _srn + "\n\n" + message
+                    ctx.message = _srn + "\n\n" + ctx.message
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
@@ -1346,7 +1404,7 @@ class AgentRunnerMixin:
                     try:
                         from agent.image_routing import build_native_content_parts
                         _parts, _skipped = build_native_content_parts(
-                            message,
+                            ctx.message,
                             _native_imgs,
                         )
                         if _skipped:
@@ -1358,15 +1416,15 @@ class AgentRunnerMixin:
                             _run_message: Any = _parts
                         else:
                             # All images failed to read — fall back to plain text.
-                            _run_message = message
+                            _run_message = ctx.message
                     except Exception as _img_exc:
                         logger.warning(
                             "Native image attachment failed, falling back to text: %s",
                             _img_exc,
                         )
-                        _run_message = message
+                        _run_message = ctx.message
                 else:
-                    _run_message = message
+                    _run_message = ctx.message
 
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
@@ -1377,7 +1435,7 @@ class AgentRunnerMixin:
                     "task_id": session_id,
                 }
                 if observed_group_context:
-                    _conversation_kwargs["persist_user_message"] = message
+                    _conversation_kwargs["persist_user_message"] = ctx.message
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
@@ -1390,7 +1448,7 @@ class AgentRunnerMixin:
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
-            result_holder[0] = result
+            ctx.result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
@@ -1404,7 +1462,7 @@ class AgentRunnerMixin:
             _input_toks = 0
             _output_toks = 0
             _context_length = 0
-            _agent = agent_holder[0]
+            _agent = ctx.agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
@@ -1425,7 +1483,7 @@ class AgentRunnerMixin:
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
-                    "tools": tools_holder[0] or [],
+                    "tools": ctx.tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
@@ -1480,7 +1538,7 @@ class AgentRunnerMixin:
             # mid-run context compression (_compress_context splits sessions).
             # If so, update the session store entry so the NEXT message loads
             # the compressed transcript, not the stale pre-compression one.
-            agent = agent_holder[0]
+            agent = ctx.agent_holder[0]
             _session_was_split = False
             if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
                 _session_was_split = True
@@ -1537,7 +1595,7 @@ class AgentRunnerMixin:
             if final_response and self._session_db:
                 try:
                     from agent.title_generator import maybe_auto_title
-                    all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    all_msgs = ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else []
                     # In Gateway mode, auto-title failures must NOT be
                     # surfaced as user-visible messages (fixes #23246).
                     # Log them at debug level only — they are not actionable
@@ -1567,7 +1625,7 @@ class AgentRunnerMixin:
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
-                        message,
+                        ctx.message,
                         final_response,
                         all_msgs,
                         **maybe_auto_title_kwargs,
@@ -1578,14 +1636,14 @@ class AgentRunnerMixin:
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
-                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-                "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
-                "completed": result_holder[0].get("completed") if result_holder[0] else None,
-                "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
-                "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
-                "error": result_holder[0].get("error") if result_holder[0] else None,
-                "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
-                "tools": tools_holder[0] or [],
+                "messages": ctx.result_holder[0].get("messages", []) if ctx.result_holder[0] else [],
+                "api_calls": ctx.result_holder[0].get("api_calls", 0) if ctx.result_holder[0] else 0,
+                "completed": ctx.result_holder[0].get("completed") if ctx.result_holder[0] else None,
+                "interrupted": ctx.result_holder[0].get("interrupted", False) if ctx.result_holder[0] else False,
+                "partial": ctx.result_holder[0].get("partial", False) if ctx.result_holder[0] else False,
+                "error": ctx.result_holder[0].get("error") if ctx.result_holder[0] else None,
+                "interrupt_message": ctx.result_holder[0].get("interrupt_message") if ctx.result_holder[0] else None,
+                "tools": ctx.tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
@@ -1596,6 +1654,48 @@ class AgentRunnerMixin:
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
             }
+
+
+        def run_sync():
+            """Thin wrapper — builds _RunContext and delegates."""
+            _ctx = _RunContext(
+                message=message,
+                context_prompt=context_prompt,
+                history=history,
+                source=source,
+                session_id=session_id,
+                session_key=session_key,
+                run_generation=run_generation,
+                event_message_id=event_message_id,
+                channel_prompt=channel_prompt,
+                user_config=user_config,
+                platform_key=platform_key,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                tool_progress_enabled=tool_progress_enabled,
+                progress_mode=progress_mode,
+                interim_assistant_messages_enabled=interim_assistant_messages_enabled,
+                cleanup_progress=_cleanup_progress,
+                cleanup_adapter=_cleanup_adapter,
+                progress_thread_id=_progress_thread_id,
+                progress_metadata=_progress_metadata,
+                progress_reply_to=_progress_reply_to,
+                loop_for_step=_loop_for_step,
+                hooks_ref=_hooks_ref,
+                status_adapter=_status_adapter,
+                status_chat_id=_status_chat_id,
+                status_thread_metadata=_status_thread_metadata,
+                run_still_current=_run_still_current,
+                progress_callback=progress_callback,
+                step_callback=_step_callback_sync,
+                status_callback=_status_callback_sync,
+            )
+            _ctx.agent_holder = agent_holder
+            _ctx.result_holder = result_holder
+            _ctx.tools_holder = tools_holder
+            _ctx.stream_consumer_holder = stream_consumer_holder
+            _ctx.progress_queue = progress_queue
+            return _execute_agent_sync(_ctx)
 
         # Start progress message sender if enabled
         progress_task = None

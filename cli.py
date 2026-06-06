@@ -13360,6 +13360,161 @@ class HermesCLI:
             else:
                 self._pending_input.put(payload)
             event.app.current_buffer.reset(append_to_history=True)
+    def _cli_process_loop(self):
+        """Background thread: polls pending_input queue and dispatches to chat.
+
+        Promoted from process_loop closure in _build_tui_app.
+        """
+        while not self._should_exit:
+            try:
+                # Check for pending input with timeout
+                try:
+                    user_input = self._pending_input.get(timeout=0.1)
+                except queue.Empty:
+                    # Periodic config watcher — auto-reload MCP on mcp_servers change
+                    if not self._agent_running:
+                        self._check_config_mcp_changes()
+                        # Check for background process notifications (completions
+                        # and watch pattern matches) while agent is idle.
+                        try:
+                            from tools.process_registry import process_registry
+                            for _evt, _synth in process_registry.drain_notifications():
+                                self._pending_input.put(_synth)
+                        except Exception:
+                            pass
+                    continue
+
+                if not user_input:
+                    continue
+
+                # The user has typed and submitted something, so any
+                # post-resize transient suppression should end here.
+                self._status_bar_suppressed_after_resize = False
+
+                # Unpack image payload: (text, [Path, ...]) or plain str
+                submit_images = []
+                if isinstance(user_input, tuple):
+                    user_input, submit_images = user_input
+
+                if isinstance(user_input, str):
+                    user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
+                    user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
+                    if _had_mouse_reports:
+                        self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
+
+                # Check for commands — but detect dragged/pasted file paths first.
+                # See _detect_file_drop() for details.
+                _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
+                if _file_drop:
+                    _drop_path = _file_drop["path"]
+                    _remainder = _file_drop["remainder"]
+                    if _file_drop["is_image"]:
+                        submit_images.append(_drop_path)
+                        user_input = _remainder or f"[User attached image: {_drop_path.name}]"
+                        _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                    else:
+                        _cprint(f"  📄 Detected file: {_drop_path.name}")
+                        user_input = (
+                            f"[User attached file: {_drop_path}]"
+                            + (f"\n{_remainder}" if _remainder else "")
+                        )
+
+                # A bare number right after a bare `/resume` prompt selects
+                # that session (see #34584). Checked before chat routing so
+                # the digit isn't sent to the agent as a message.
+                if (
+                    not _file_drop
+                    and self._pending_resume_sessions
+                    and isinstance(user_input, str)
+                    and self._consume_pending_resume_selection(user_input)
+                ):
+                    continue
+
+                if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
+                    _cprint(f"\n⚙️  {user_input}")
+                    try:
+                        if not self.process_command(user_input):
+                            self._should_exit = True
+                            # Schedule app exit
+                            if app.is_running:
+                                app.exit()
+                    except KeyboardInterrupt:
+                        # Ctrl+C during a slow slash command (e.g. /skills browse,
+                        # /sessions list with a large DB) should interrupt the
+                        # command and return to the prompt, NOT exit the entire
+                        # session. Without this guard a KeyboardInterrupt unwinds
+                        # to the outer prompt_toolkit loop and the session dies.
+                        _cprint("\n[dim]Command interrupted.[/dim]")
+                    continue
+
+                # Expand paste references back to full content
+                _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                if paste_refs:
+                    user_input = self._expand_paste_references(user_input)
+                print()
+                self._print_user_message_preview(user_input)
+
+                # Show image attachment count
+                if submit_images:
+                    n = len(submit_images)
+                    _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
+                # Regular chat - run agent
+                self._agent_running = True
+                app.invalidate()  # Refresh status line
+
+                try:
+                    self.chat(user_input, images=submit_images or None)
+                finally:
+                    self._agent_running = False
+                    self._spinner_text = ""
+                    self._tool_start_time = 0.0
+                    self._pending_tool_info.clear()
+                    self._last_scrollback_tool = ""
+
+                    app.invalidate()  # Refresh status line
+
+                    # Goal continuation: if a standing goal is active, ask
+                    # the judge whether the turn satisfied it. If not, and
+                    # there's no real user message already queued, push the
+                    # continuation prompt back into _pending_input so the
+                    # next loop iteration picks it up naturally (and any
+                    # user input that arrives in between still preempts).
+                    try:
+                        self._maybe_continue_goal_after_turn()
+                    except Exception as _goal_exc:
+                        logging.debug("goal continuation hook failed: %s", _goal_exc)
+
+                    # Continuous voice: auto-restart recording after agent responds.
+                    # Dispatch to a daemon thread so play_beep (sd.wait) and
+                    # AudioRecorder.start (lock acquire) never block process_loop —
+                    # otherwise queued user input would stall silently.
+                    if self._voice_mode and self._voice_continuous and not self._voice_recording:
+                        def _restart_recording():
+                            try:
+                                if self._voice_tts:
+                                    self._voice_tts_done.wait(timeout=60)
+                                    time.sleep(0.3)
+                                self._voice_start_recording()
+                                app.invalidate()
+                            except Exception as e:
+                                _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                        threading.Thread(target=_restart_recording, daemon=True).start()
+
+                    # Drain process notifications (completions + watch matches)
+                    # that arrived while the agent was running.
+                    try:
+                        from tools.process_registry import process_registry
+                        for _evt, _synth in process_registry.drain_notifications():
+                            self._pending_input.put(_synth)
+                    except Exception:
+                        pass  # Non-fatal — don't break the main loop
+
+            except Exception as e:
+                logger.warning("process_loop unhandled error (msg may be lost): %s", e)
+
+    # Start processing thread
     def _build_tui_app(self):
         """Build the prompt_toolkit Application with all keybindings and widgets.
 
@@ -14968,158 +15123,9 @@ class HermesCLI:
         spinner_thread.start()
         
         # Background thread to process inputs and run agent
-        def process_loop():
-            while not self._should_exit:
-                try:
-                    # Check for pending input with timeout
-                    try:
-                        user_input = self._pending_input.get(timeout=0.1)
-                    except queue.Empty:
-                        # Periodic config watcher — auto-reload MCP on mcp_servers change
-                        if not self._agent_running:
-                            self._check_config_mcp_changes()
-                            # Check for background process notifications (completions
-                            # and watch pattern matches) while agent is idle.
-                            try:
-                                from tools.process_registry import process_registry
-                                for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
-                            except Exception:
-                                pass
-                        continue
-                    
-                    if not user_input:
-                        continue
+        process_loop = self._cli_process_loop
 
-                    # The user has typed and submitted something, so any
-                    # post-resize transient suppression should end here.
-                    self._status_bar_suppressed_after_resize = False
-
-                    # Unpack image payload: (text, [Path, ...]) or plain str
-                    submit_images = []
-                    if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
-
-                    if isinstance(user_input, str):
-                        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
-                        user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
-                        if _had_mouse_reports:
-                            self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-                    
-                    # Check for commands — but detect dragged/pasted file paths first.
-                    # See _detect_file_drop() for details.
-                    _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
-                    if _file_drop:
-                        _drop_path = _file_drop["path"]
-                        _remainder = _file_drop["remainder"]
-                        if _file_drop["is_image"]:
-                            submit_images.append(_drop_path)
-                            user_input = _remainder or f"[User attached image: {_drop_path.name}]"
-                            _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
-                        else:
-                            _cprint(f"  📄 Detected file: {_drop_path.name}")
-                            user_input = (
-                                f"[User attached file: {_drop_path}]"
-                                + (f"\n{_remainder}" if _remainder else "")
-                            )
-
-                    # A bare number right after a bare `/resume` prompt selects
-                    # that session (see #34584). Checked before chat routing so
-                    # the digit isn't sent to the agent as a message.
-                    if (
-                        not _file_drop
-                        and self._pending_resume_sessions
-                        and isinstance(user_input, str)
-                        and self._consume_pending_resume_selection(user_input)
-                    ):
-                        continue
-
-                    if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
-                        _cprint(f"\n⚙️  {user_input}")
-                        try:
-                            if not self.process_command(user_input):
-                                self._should_exit = True
-                                # Schedule app exit
-                                if app.is_running:
-                                    app.exit()
-                        except KeyboardInterrupt:
-                            # Ctrl+C during a slow slash command (e.g. /skills browse,
-                            # /sessions list with a large DB) should interrupt the
-                            # command and return to the prompt, NOT exit the entire
-                            # session. Without this guard a KeyboardInterrupt unwinds
-                            # to the outer prompt_toolkit loop and the session dies.
-                            _cprint("\n[dim]Command interrupted.[/dim]")
-                        continue
-                    
-                    # Expand paste references back to full content
-                    _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
-                    if paste_refs:
-                        user_input = self._expand_paste_references(user_input)
-                    print()
-                    self._print_user_message_preview(user_input)
-                    
-                    # Show image attachment count
-                    if submit_images:
-                        n = len(submit_images)
-                        _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
-
-                    # Regular chat - run agent
-                    self._agent_running = True
-                    app.invalidate()  # Refresh status line
-
-                    try:
-                        self.chat(user_input, images=submit_images or None)
-                    finally:
-                        self._agent_running = False
-                        self._spinner_text = ""
-                        self._tool_start_time = 0.0
-                        self._pending_tool_info.clear()
-                        self._last_scrollback_tool = ""
-
-                        app.invalidate()  # Refresh status line
-
-                        # Goal continuation: if a standing goal is active, ask
-                        # the judge whether the turn satisfied it. If not, and
-                        # there's no real user message already queued, push the
-                        # continuation prompt back into _pending_input so the
-                        # next loop iteration picks it up naturally (and any
-                        # user input that arrives in between still preempts).
-                        try:
-                            self._maybe_continue_goal_after_turn()
-                        except Exception as _goal_exc:
-                            logging.debug("goal continuation hook failed: %s", _goal_exc)
-
-                        # Continuous voice: auto-restart recording after agent responds.
-                        # Dispatch to a daemon thread so play_beep (sd.wait) and
-                        # AudioRecorder.start (lock acquire) never block process_loop —
-                        # otherwise queued user input would stall silently.
-                        if self._voice_mode and self._voice_continuous and not self._voice_recording:
-                            def _restart_recording():
-                                try:
-                                    if self._voice_tts:
-                                        self._voice_tts_done.wait(timeout=60)
-                                        time.sleep(0.3)
-                                    self._voice_start_recording()
-                                    app.invalidate()
-                                except Exception as e:
-                                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
-                            threading.Thread(target=_restart_recording, daemon=True).start()
-
-                        # Drain process notifications (completions + watch matches)
-                        # that arrived while the agent was running.
-                        try:
-                            from tools.process_registry import process_registry
-                            for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
-                        except Exception:
-                            pass  # Non-fatal — don't break the main loop
-
-                except Exception as e:
-                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
-        
-        # Start processing thread
-        process_thread = threading.Thread(target=process_loop, daemon=True)
+        process_thread = threading.Thread(target=self._cli_process_loop, daemon=True)
         process_thread.start()
         
         # Register atexit cleanup so resources are freed even on unexpected exit

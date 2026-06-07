@@ -96,6 +96,10 @@ class TaskClassifier:
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
         "script", "server", "test", "security", "deploy", "compile",
         "refactor", "rewrite", "rework",
+        "write a function", "write a script", "write a class", "write a method",
+        "write a test", "write code", "write a program", "write a query",
+        "create a function", "create a class", "create an endpoint",
+        "parse json", "parse csv", "parse xml", "parse data",
         "continue", "proceed", "go ahead", "keep going", "next step",
         "do it", "go on", "move on", "move forward",
     })

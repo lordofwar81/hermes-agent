@@ -2171,3 +2171,123 @@ async def handle_undo_command(runner, event: MessageEvent) -> str:
         count=result["rewound_count"],
         preview=preview,
     )
+
+
+async def handle_set_home_command(runner, event: MessageEvent) -> str:
+    """Handle /sethome command -- set the current chat as the platform's home channel."""
+    source = event.source
+    platform_name = source.platform.value if source.platform else "unknown"
+    chat_id = source.chat_id
+    chat_name = source.chat_name or chat_id
+
+    env_key = _home_target_env_var(platform_name)
+    thread_env_key = _home_thread_env_var(platform_name)
+    thread_id = source.thread_id
+
+    # Save to .env so it persists across restarts
+    try:
+        from hermes_cli.config import save_env_value
+        save_env_value(env_key, str(chat_id))
+        # Keep thread/topic routing explicit and clear stale values when
+        # /sethome is run from the parent chat instead of a thread.
+        save_env_value(thread_env_key, str(thread_id or ""))
+    except Exception as e:
+        return t("gateway.set_home.save_failed", error=e)
+
+    # Keep the running gateway config in sync too. The pre-restart
+    # notification path reads self.config before the process reloads env.
+    if source.platform:
+        platform_config = runner.config.platforms.setdefault(
+            source.platform,
+            PlatformConfig(enabled=True),
+        )
+        platform_config.home_channel = HomeChannel(
+            platform=source.platform,
+            chat_id=str(chat_id),
+            name=chat_name,
+            thread_id=str(thread_id) if thread_id else None,
+        )
+
+    return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+
+
+async def handle_help_command(runner, event: MessageEvent) -> str:
+    """Handle /help command - list available commands."""
+    from hermes_cli.commands import gateway_help_lines
+    lines = [
+        t("gateway.help.header"),
+        *gateway_help_lines(),
+    ]
+    try:
+        from agent.skill_commands import get_skill_commands
+        skill_cmds = get_skill_commands()
+        if skill_cmds:
+            lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
+            # Show first 10, then point to /commands for the rest
+            sorted_cmds = sorted(skill_cmds)
+            for cmd in sorted_cmds[:10]:
+                lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+            if len(sorted_cmds) > 10:
+                lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
+    except Exception:
+        pass
+    return _telegramize_command_mentions(
+        "\n".join(lines),
+        getattr(getattr(event, "source", None), "platform", None),
+    )
+
+
+async def handle_commands_command(runner, event: MessageEvent) -> str:
+    from hermes_cli.commands import gateway_help_lines
+
+    raw_args = event.get_command_args().strip()
+    if raw_args:
+        try:
+            requested_page = int(raw_args)
+        except ValueError:
+            return t("gateway.commands.usage")
+    else:
+        requested_page = 1
+
+    # Build combined entry list: built-in commands + skill commands
+    entries = list(gateway_help_lines())
+    try:
+        from agent.skill_commands import get_skill_commands
+        skill_cmds = get_skill_commands()
+        if skill_cmds:
+            entries.append("")
+            entries.append(t("gateway.commands.skill_header"))
+            for cmd in sorted(skill_cmds):
+                desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
+                entries.append(f"`{cmd}` — {desc}")
+    except Exception:
+        pass
+
+    if not entries:
+        return t("gateway.commands.none")
+
+    from gateway.config import Platform
+    page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+    total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+    page = max(1, min(requested_page, total_pages))
+    start = (page - 1) * page_size
+    page_entries = entries[start:start + page_size]
+
+    lines = [
+        t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages),
+        "",
+        *page_entries,
+    ]
+    if total_pages > 1:
+        nav_parts = []
+        if page > 1:
+            nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
+        if page < total_pages:
+            nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
+        lines.extend(["", " | ".join(nav_parts)])
+    if page != requested_page:
+        lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
+    return _telegramize_command_mentions(
+        "\n".join(lines),
+        getattr(getattr(event, "source", None), "platform", None),
+    )

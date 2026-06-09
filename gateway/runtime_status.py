@@ -120,3 +120,81 @@ def resume_paused_platform(
         pass
     logger.info("%s resumed — retrying on next watcher tick", platform.value)
     return True
+
+
+# Sentinel placed into _running_agents immediately when a session starts
+# processing, *before* any await.  Prevents a second message for the same
+# session from bypassing the "already running" guard during the async gap
+# between the guard check and actual agent creation.
+_AGENT_PENDING_SENTINEL = object()
+
+
+def running_agent_count(runner) -> int:
+    """Return the number of currently running agents."""
+    return len(runner._running_agents)
+
+
+def status_action_label(runner) -> str:
+    """Return 'restart' if restart is pending, else 'shutdown'."""
+    return "restart" if runner._restart_requested else "shutdown"
+
+
+def status_action_gerund(runner) -> str:
+    """Return 'restarting' if restart is pending, else 'shutting down'."""
+    return "restarting" if runner._restart_requested else "shutting down"
+
+
+def queue_during_drain_enabled(runner) -> bool:
+    """Check if queue-during-drain mode is enabled.
+
+    Both "queue" and "steer" modes imply the user doesn't want messages
+    to be lost during restart — queue them for the newly-spawned gateway
+    process to pick up.  "interrupt" mode drops them (current behaviour).
+    """
+    return runner._restart_requested and runner._busy_input_mode in {"queue", "steer"}
+
+
+def snapshot_running_agents(runner) -> Dict[str, Any]:
+    """Snapshot current running agents, excluding pending sentinel."""
+    return {
+        session_key: agent
+        for session_key, agent in runner._running_agents.items()
+        if agent is not _AGENT_PENDING_SENTINEL
+    }
+
+
+def agent_has_active_subagents(running_agent: Any) -> bool:
+    """Return True when *running_agent* is currently driving subagents.
+
+    Background (#30170): ``AIAgent.interrupt()`` cascades through the
+    parent's ``_active_children`` list and calls ``interrupt()`` on
+    every child synchronously, which aborts in-flight subagent work
+    and produces a fallback cascade with no actionable signal.
+    Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
+    whenever this helper returns True protects subagent work from
+    conversational follow-ups while leaving the explicit ``/stop``
+    path (which goes through ``_interrupt_and_clear_session``)
+    untouched. Safe-by-default: returns False on any attribute or
+    lock error so a missing/broken parent never blocks the existing
+    interrupt path.
+    """
+    if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+        return False
+    children = getattr(running_agent, "_active_children", None)
+    # AIAgent always initialises this as a concrete list (see
+    # agent/agent_init.py). Reject anything that isn't a real
+    # collection — this guards against ``MagicMock()._active_children``
+    # auto-creating a truthy stub in tests and triggering the demotion
+    # against an agent that doesn't actually have subagents.
+    if not isinstance(children, (list, tuple, set)):
+        return False
+    if not children:
+        return False
+    lock = getattr(running_agent, "_active_children_lock", None)
+    try:
+        if lock is not None:
+            with lock:
+                return bool(children)
+        return bool(children)
+    except Exception:
+        return False

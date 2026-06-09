@@ -7,11 +7,11 @@
 | Metric | Value |
 |--------|-------|
 | Original lines | 20,072 |
-| Current lines | 13,439 |
-| Lines extracted | 6,633 |
-| Lines remaining | 12,939 |
+| Current lines | 13,010 |
+| Lines extracted | 7,062 |
+| Lines remaining | 12,510 |
 | Target lines | 500 |
-| Progress | **33%** complete |
+| Progress | **35%** complete |
 
 ## Completed Extractions
 
@@ -29,7 +29,7 @@
 9. Agent Runtime Config (`gateway/agent_runtime_config.py`) ✅
 10. Watchers (`gateway/watchers.py`) ✅
 
-### Phase 3: Major Extractions (~3,100 lines)
+### Phase 3: Major Extractions (~3,500 lines)
 11. **Runner Init** (`gateway/runner_init.py`) ✅ - 278 lines
 12. **Adapter Factory** (`gateway/adapter_factory.py`) ✅ - 234 lines
 13. **Authorization** (`gateway/authorization.py`) ✅ - 356 lines
@@ -42,35 +42,43 @@
 20. **Exit State** (`gateway/exit_state.py`) ✅ - 56 lines
 21. **Queue Helpers** (`gateway/queue_helpers.py`) ✅ - 131 lines
 
+### Phase 4: Gateway Entry Point (~430 lines)
+22. **Gateway Startup** (`gateway/gateway_startup.py`) ✅ - 460 lines
+    - `start_gateway()` - main entry point
+    - Signal handling, duplicate-instance guards
+    - Planned stop watcher, cron ticker
+
 ## Remaining Large Methods to Extract
 
 | Method | Lines | Priority | Notes |
 |--------|-------|----------|-------|
-| `run_sync` | 859 | High | Module-level function |
-| `start_gateway` | 431 | High | Module-level function |
-| `_stop_impl` | 413 | Medium | Nested in stop() |
-| `send_progress_messages` | 338 | Medium | Progress streaming |
-| `__init__` | 230 | High | Already has runner_init helpers |
-| `_process_handoff` | 168 | Low | Session handoff |
+| `run_sync` | 859 | High | Nested function in _run_agent |
+| `send_progress_messages` | 338 | Medium | Nested function, needs context capture |
+| `__init__` | 230 | Medium | Could use runner_init helpers more |
+| `_process_handoff` | 168 | Low | Session handoff processing |
 | `_run_process_watcher` | 167 | Low | Process watching |
-| `_handle_resume_command` | 106 | Low | Command handler |
-| `_execute_mcp_reload` | 106 | Low | MCP reload |
-| `_handle_reload_skills_command` | 100 | Low | Command handler |
+| `_handle_kanban_command` | 98 | Low | Command handler |
+| `_send_update_notification` | 96 | Low | Update notification |
+| `_handle_restart_command` | 95 | Low | Command handler |
+| `_handle_platform_command` | 93 | Low | Command handler |
+| `_handle_goal_command` | 77 | Low | Command handler |
+| `_handle_footer_command` | 85 | Low | Command handler |
+| `_handle_voice_command` | 70 | Low | Command handler |
 
 ## Estimated Remaining Work
 
-- **Total lines to extract**: ~13,000
-- **Quick wins**: Module-level functions (~1,300 lines)
-- **Medium complexity**: Command handlers, utilities (~2,000 lines)
-- **High complexity**: Nested functions, __init__ expansion (~1,000 lines)
+- **Total lines to extract**: ~12,500
+- **Quick wins**: Module-level helpers (~500 lines)
+- **Medium complexity**: Command handlers (~1,000 lines)
+- **High complexity**: Nested functions, __init__ (~2,000 lines)
 - **Estimated time**: 6-8 hours
 
 ## Next Steps
 
-1. **Extract module-level functions** - run_sync, start_gateway
-2. **Extract __init__ helpers** - Use runner_init functions more thoroughly
-3. **Extract remaining command handlers** - Group into command_handlers.py
-4. **Extract progress/message utilities** - Separate module for send_progress_messages
+1. **Extract nested functions** - run_sync, send_progress_messages
+2. **Simplify __init__** - Use runner_init helpers more thoroughly
+3. **Extract remaining command handlers** - ~15 handlers to command_handlers.py
+4. **Extract utility functions** - Group into helper modules
 
 ## Technical Notes
 
@@ -79,9 +87,9 @@
 - Import structure: modules import from `gateway.*` and call via `runner` parameter
 - No circular imports - all dependencies flow one way
 
-## Files Created
+## Files Created (22 modules)
 
-**New Files (21 modules):**
+**New Files:**
 - `gateway/runner_init.py` (278 lines)
 - `gateway/adapter_factory.py` (234 lines)
 - `gateway/authorization.py` (356 lines)
@@ -100,12 +108,13 @@
 - `gateway/kanban_helpers.py` (115 lines)
 - `gateway/command_handlers.py` (1,400+ lines)
 - `gateway/agent_runtime_config.py` (477 lines)
-- `gateway/watchers.py` (162+167+163 = ~500 lines)
+- `gateway/watchers.py` (~500 lines)
 - `gateway/signal_handlers.py` (~100 lines)
 - `gateway/integrate_v2.py` (integration script)
+- `gateway/gateway_startup.py` (460 lines)
 
 **Modified Files:**
-- `gateway/run.py` (20,072 → 13,439 lines, -6,633 lines)
+- `gateway/run.py` (20,072 → 13,010 lines, -7,062 lines)
 
 ---
 

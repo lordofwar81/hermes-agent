@@ -7,11 +7,11 @@
 | Metric | Value |
 |--------|-------|
 | Original lines | 20,072 |
-| Current lines | 17,428 |
-| Lines extracted | 2,644 |
-| Lines remaining | 16,928 |
+| Current lines | 15,933 |
+| Lines extracted | 4,139 |
+| Lines remaining | 15,433 |
 | Target lines | 500 |
-| Progress | 13.2% complete |
+| Progress | **20.6%** complete |
 
 ## Completed Extractions
 
@@ -27,62 +27,60 @@
 - Status: Integrated 2025-06-08
 - Lines extracted: 40
 - Methods:
-  - `warn_if_docker_media_delivery_is_risky()` - Docker media delivery warnings
-  - `has_setup_skill()` - Setup skill availability check
-  - `adapter_disconnect_timeout_secs()` - Adapter disconnect timeout
-  - `platform_connect_timeout_secs()` - Platform connect timeout
+  - `warn_if_docker_media_delivery_is_risky()`
+  - `has_setup_skill()`
+  - `adapter_disconnect_timeout_secs()`
+  - `platform_connect_timeout_secs()`
 
 ### 4. Session Management (`gateway/session_management.py`) ✅
 - Status: Integrated 2025-06-08
 - Lines extracted: ~200
 - Methods:
-  - `session_key_for_source()` - Session key resolution
-  - `cache_session_source()` - Session source LRU caching
-  - `get_cached_session_source()` - Cached source retrieval
-  - `active_profile_name()` - Profile name detection
-  - `read_user_config()` - User config reading
-  - `set_session_env()` - Session context variable setting
-  - `clear_session_env()` - Session context cleanup
-  - `format_session_info()` - Model/config info formatting
+  - `session_key_for_source()`
+  - `cache_session_source()`
+  - `get_cached_session_source()`
+  - `active_profile_name()`
+  - `read_user_config()`
+  - `set_session_env()`
+  - `clear_session_env()`
+  - `format_session_info()`
 
 ### 5. Media Delivery (`gateway/media_delivery.py`) ✅
 - Status: Integrated 2025-06-08
 - Lines extracted: ~180
 - Methods:
-  - `collect_auto_append_media_tags()` - MEDIA: tag collection
-  - `consume_pending_native_image_paths()` - Native image path consumption
-  - `deliver_media_from_response()` - Media extraction and delivery
-  - `SlashConfirmHandler` - Destructive command confirmation UI
+  - `collect_auto_append_media_tags()`
+  - `consume_pending_native_image_paths()`
+  - `deliver_media_from_response()`
+  - `SlashConfirmHandler`
 
-### 6. Agent Runtime Config (`gateway/agent_runtime_config.py`) ✅
-- Status: Integrated in previous session
-- Methods: Agent config resolution, signature computation, model overrides
+### 6. Agent Runtime Config (`gateway/agent_runtime_config.py`) ⚠️
+- Status: Module exists but NOT integrated
+- Lines: 1,400+ in module
+- Note: Marked as integrated in previous session but verification shows methods still in run.py
 
 ### 7. Shutdown Notifications (`gateway/shutdown_notifications.py`) ✅
 - Status: Extracted 2025-06-08
 - Lines extracted: 166
 - Methods:
-  - `notify_active_sessions_of_shutdown()` - Shutdown notifications to active sessions
+  - `notify_active_sessions_of_shutdown()`
 
 ### 8. Kanban Helpers (`gateway/kanban_helpers.py`) ✅
 - Status: Extracted 2025-06-08
 - Lines extracted: 84
 - Methods:
-  - `deliver_kanban_artifacts()` - Kanban artifact file delivery
+  - `deliver_kanban_artifacts()`
 
-## Partially Extracted
-
-### Command Handlers (`gateway/command_handlers.py`) ⚠️
-- Status: Module created but NOT integrated (except _handle_reset_command)
-- Lines: 1,400+ lines in module
-- Methods extracted but not wrapped:
-  - `handle_model_command()` - /model command
-  - `handle_compress_command()` - /compress command
-  - `handle_usage_command()` - /usage command
-  - `handle_reasoning_command()` - /reasoning command
-  - `handle_update_command()` - /update command
-
-**Action needed:** Integrate remaining command handlers as thin wrappers
+### 9. Command Handlers (`gateway/command_handlers.py`) ✅
+- Status: Integrated 2025-06-08
+- Lines extracted: 176
+- Methods wrapped:
+  - `handle_reset_command()` 
+  - `handle_compress_command()` - 157 lines → wrapper
+  - `handle_usage_command()` - wrapper
+  - `handle_reasoning_command()` - wrapper
+  - `handle_update_command()` - wrapper
+  - Plus: handle_model_command, handle_reload_skills_command (from previous session)
 
 ## Remaining Large Methods to Extract
 
@@ -105,27 +103,40 @@
 | `_create_adapter` | 210 | Low | Adapter factory |
 | `_run_background_task` | 202 | Low | Background task execution |
 | `_run_process_watcher` | 198 | Low | Process watching |
+| `_notify_active_sessions_of_shutdown` | 173 | ✅ Extracted |
+| `_process_handoff` | 168 | Low | Session handoff processing |
+| `_platform_reconnect_watcher` | 167 | Low | Platform reconnection |
+| `_session_expiry_watcher` | 163 | Low | Session expiration |
+| `_handle_reset_command` | 161 | ✅ Extracted |
+| `_handle_compress_command` | 170 | ✅ Wrapped |
+| `_handle_update_command` | 153 | ✅ Wrapped |
+| `_handle_usage_command` | 137 | ✅ Wrapped |
+| `_deliver_kanban_artifacts` | 109 | ✅ Extracted |
+| `_resolve_session_agent_runtime` | 108 | ⚠️ In agent_runtime_config.py but not integrated |
+| `_handle_restart_command` | 95 | Medium | Restart command |
+| `_handle_reasoning_command` | 115 | ✅ Wrapped |
 
 ## Estimated Remaining Work
 
-- **Total lines to extract**: ~16,928
-- **Number of large methods (>20 lines)**: ~50+
-- **Quick wins available**: ~500 lines from command handler wrappers
-- **Estimated time for full completion**: 10-15 hours
+- **Total lines to extract**: ~15,433
+- **Quick wins**: agent_runtime_config.py integration (~200 lines)
+- **Medium complexity**: __init__, watcher methods (~500 lines)
+- **High complexity**: _run_agent, _handle_message, _replace (~5,500 lines)
+- **Estimated time**: 8-12 hours
 
 ## Next Steps
 
-1. **Integrate command_handlers.py** - Replace 5 method implementations with thin wrappers (~500 lines)
-2. **Extract `__init__()` initialization logic** - Use runner_init.py (~230 lines)
+1. **Integrate agent_runtime_config.py** - 5 methods need wrappers (~200 lines)
+2. **Extract `__init__()`** - Use runner_init.py (~230 lines)
 3. **Extract watcher methods** - Group into gateway/watchers.py (~300 lines)
-4. **Extract large core methods** - Tackle _run_agent, _handle_message, _replace
+4. **Tackle core methods** - Extract _run_agent, _handle_message, _replace
 
 ## Technical Notes
 
 - The GatewayRunner class has ~67 methods total
 - Many methods are deeply integrated with class state
 - Circular dependencies exist between several methods
-- Command handlers module exists but needs wrapper integration
+- agent_runtime_config.py module exists but methods not integrated as wrappers
 
 ## Files Created/Modified
 
@@ -135,10 +146,11 @@
 - `gateway/media_delivery.py` (443 lines)
 - `gateway/shutdown_notifications.py` (194 lines)
 - `gateway/kanban_helpers.py` (115 lines)
-- `gateway/command_handlers.py` (1,400+ lines) - needs integration
+- `gateway/command_handlers.py` (1,400+ lines)
+- `gateway/agent_runtime_config.py` (400+ lines) - needs integration
 
 **Modified Files:**
-- `gateway/run.py` (20,072 → 17,428 lines, -2,644 lines)
+- `gateway/run.py` (20,072 → 15,933 lines, -4,139 lines)
 
 ---
 

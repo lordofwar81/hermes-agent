@@ -1733,44 +1733,12 @@ class AgentRunnerMixin:
 
         # Start stream consumer task — polls for consumer creation since it
         # happens inside run_sync (thread pool) after the agent is constructed.
-        stream_task = None
-
-        async def _start_stream_consumer():
-            """Wait for the stream consumer to be created, then run it."""
-            for _ in range(200):  # Up to 10s wait
-                if stream_consumer_holder[0] is not None:
-                    await stream_consumer_holder[0].run()
-                    return
-                await asyncio.sleep(0.05)
-
-        stream_task = asyncio.create_task(_start_stream_consumer())
+        stream_task = asyncio.create_task(self._start_stream_consumer_task(stream_consumer_holder))
 
         # Track this agent as running for this session (for interrupt support)
-        # We do this in a callback after the agent is created
-        async def track_agent():
-            # Wait for agent to be created
-            while agent_holder[0] is None:
-                await asyncio.sleep(0.05)
-            if not session_key:
-                return
-            # Only promote the sentinel to the real agent if this run is still
-            # current.  If /stop or /new bumped the generation while we were
-            # spinning up, leave the newer run's slot alone — we'll be
-            # discarded by the stale-result check in _handle_message_with_agent.
-            if run_generation is not None and not self._is_session_run_current(
-                session_key, run_generation
-            ):
-                logger.info(
-                    "Skipping stale agent promotion for %s — generation %s is no longer current",
-                    session_key or "",
-                    run_generation,
-                )
-                return
-            self._running_agents[session_key] = agent_holder[0]
-            if self._draining:
-                self._update_runtime_status("draining")
-
-        tracking_task = asyncio.create_task(track_agent())
+        tracking_task = asyncio.create_task(
+            self._track_agent_task(agent_holder, session_key, run_generation)
+        )
 
         # Monitor for interrupts from the adapter (new messages arriving).
         # This is the PRIMARY interrupt path for regular text messages —
@@ -1780,45 +1748,9 @@ class AgentRunnerMixin:
         # task dies (no error handling = silent death = lost interrupts).
         _interrupt_detected = asyncio.Event()  # shared with backup check
 
-        async def monitor_for_interrupt():
-            if not session_key:
-                return
-
-            while True:
-                await asyncio.sleep(0.2)  # Check every 200ms
-                try:
-                    # Re-resolve adapter each iteration so reconnects don't
-                    # leave us holding a stale reference.
-                    _adapter = self.adapters.get(source.platform)
-                    if not _adapter:
-                        continue
-                    # Check if adapter has a pending interrupt for this session.
-                    # Must use session_key (build_session_key output) — NOT
-                    # source.chat_id — because the adapter stores interrupt events
-                    # under the full session key.
-                    if hasattr(_adapter, 'has_pending_interrupt') and _adapter.has_pending_interrupt(session_key):
-                        agent = agent_holder[0]
-                        if agent:
-                            # Peek at the pending message text WITHOUT consuming it.
-                            # The message must remain in _pending_messages so the
-                            # post-run dequeue at _dequeue_pending_event() can
-                            # retrieve the full MessageEvent (with media metadata).
-                            # If we pop here, a race exists: the agent may finish
-                            # before checking _interrupt_requested, and the message
-                            # is lost — neither the interrupt path nor the dequeue
-                            # path finds it.
-                            _peek_event = _adapter._pending_messages.get(session_key)
-                            pending_text = _peek_event.text if _peek_event else None
-                            logger.debug("Interrupt detected from adapter, signaling agent...")
-                            agent.interrupt(pending_text)
-                            _interrupt_detected.set()
-                            break
-                except asyncio.CancelledError:
-                    raise
-                except Exception as _mon_err:
-                    logger.debug("monitor_for_interrupt error (will retry): %s", _mon_err)
-
-        interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
+        interrupt_monitor = asyncio.create_task(
+            self._monitor_interrupt_task(session_key, source, agent_holder, _interrupt_detected)
+        )
 
         # Periodic "still working" notifications for long-running tasks.
         # Fires every N seconds so the user knows the agent hasn't died.
@@ -1829,45 +1761,17 @@ class AgentRunnerMixin:
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
 
-        async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
-            _notify_adapter = self.adapters.get(source.platform)
-            if not _notify_adapter:
-                return
-            while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
-                _agent_ref = agent_holder[0]
-                _status_detail = ""
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
-                try:
-                    _notify_res = await _notify_adapter.send(
-                        source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
-                    )
-                    if (
-                        _cleanup_progress
-                        and getattr(_notify_res, "success", False)
-                        and getattr(_notify_res, "message_id", None)
-                    ):
-                        _cleanup_msg_ids.append(str(_notify_res.message_id))
-                except Exception as _ne:
-                    logger.debug("Long-running notification error: %s", _ne)
-
-        _notify_task = asyncio.create_task(_notify_long_running())
+        _notify_task = asyncio.create_task(
+            self._notify_long_running_task(
+                _NOTIFY_INTERVAL,
+                _notify_start,
+                source,
+                agent_holder,
+                _status_thread_metadata,
+                _cleanup_progress,
+                _cleanup_msg_ids,
+            )
+        )
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -2446,4 +2350,186 @@ class AgentRunnerMixin:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
         return response
+
+    async def _start_stream_consumer_task(
+        self, stream_consumer_holder: list
+    ) -> None:
+        """Wait for the stream consumer to be created, then run it.
+
+        Polls for consumer creation since it happens inside run_sync (thread pool)
+        after the agent is constructed. Waits up to 10 seconds.
+
+        Args:
+            stream_consumer_holder: Mutable list [consumer or None] that will be
+                populated by the agent construction process.
+        """
+        for _ in range(200):  # Up to 10s wait
+            if stream_consumer_holder[0] is not None:
+                await stream_consumer_holder[0].run()
+                return
+            await asyncio.sleep(0.05)
+
+    async def _track_agent_task(
+        self,
+        agent_holder: list,
+        session_key: Optional[str],
+        run_generation: Optional[int],
+    ) -> None:
+        """Track this agent as running for this session (for interrupt support).
+
+        Waits for the agent to be created, then promotes it to the running_agents
+        registry if the run is still current. Skips promotion if /stop or /new
+        bumped the generation while spinning up.
+
+        Args:
+            agent_holder: Mutable list [agent or None] that will be populated
+                by the agent construction process.
+            session_key: The session key (build_session_key output) for this run.
+            run_generation: The generation ID for this run.
+        """
+        # Wait for agent to be created
+        while agent_holder[0] is None:
+            await asyncio.sleep(0.05)
+        if not session_key:
+            return
+        # Only promote the sentinel to the real agent if this run is still
+        # current.  If /stop or /new bumped the generation while we were
+        # spinning up, leave the newer run's slot alone — we'll be
+        # discarded by the stale-result check in _handle_message_with_agent.
+        if run_generation is not None and not self._is_session_run_current(
+            session_key, run_generation
+        ):
+            logger.info(
+                "Skipping stale agent promotion for %s — generation %s is no longer current",
+                session_key or "",
+                run_generation,
+            )
+            return
+        self._running_agents[session_key] = agent_holder[0]
+        if self._draining:
+            self._update_runtime_status("draining")
+
+    async def _monitor_interrupt_task(
+        self,
+        session_key: Optional[str],
+        source: "SessionSource",
+        agent_holder: list,
+        interrupt_detected: asyncio.Event,
+    ) -> None:
+        """Monitor for interrupts from the adapter (new messages arriving).
+
+        This is the PRIMARY interrupt path for regular text messages —
+        Level 1 (base.py) catches them before _handle_message() is reached,
+        so the Level 2 running_agent.interrupt() path never fires.
+        The inactivity poll loop below has a BACKUP check in case this
+        task dies (no error handling = silent death = lost interrupts).
+
+        Args:
+            session_key: The session key (build_session_key output) for this run.
+            source: The SessionSource object for this message.
+            agent_holder: Mutable list [agent or None] that will be populated
+                by the agent construction process.
+            interrupt_detected: Event to signal when interrupt is detected
+                (shared with backup check in inactivity poll loop).
+        """
+        if not session_key:
+            return
+
+        while True:
+            await asyncio.sleep(0.2)  # Check every 200ms
+            try:
+                # Re-resolve adapter each iteration so reconnects don't
+                # leave us holding a stale reference.
+                _adapter = self.adapters.get(source.platform)
+                if not _adapter:
+                    continue
+                # Check if adapter has a pending interrupt for this session.
+                # Must use session_key (build_session_key output) — NOT
+                # source.chat_id — because the adapter stores interrupt events
+                # under the full session key.
+                if hasattr(_adapter, 'has_pending_interrupt') and _adapter.has_pending_interrupt(session_key):
+                    agent = agent_holder[0]
+                    if agent:
+                        # Peek at the pending message text WITHOUT consuming it.
+                        # The message must remain in _pending_messages so the
+                        # post-run dequeue at _dequeue_pending_event() can
+                        # retrieve the full MessageEvent (with media metadata).
+                        # If we pop here, a race exists: the agent may finish
+                        # before checking _interrupt_requested, and the message
+                        # is lost — neither the interrupt path nor the dequeue
+                        # path finds it.
+                        _peek_event = _adapter._pending_messages.get(session_key)
+                        pending_text = _peek_event.text if _peek_event else None
+                        logger.debug("Interrupt detected from adapter, signaling agent...")
+                        agent.interrupt(pending_text)
+                        interrupt_detected.set()
+                        break
+            except asyncio.CancelledError:
+                raise
+            except Exception as _mon_err:
+                logger.debug("monitor_for_interrupt error (will retry): %s", _mon_err)
+
+    async def _notify_long_running_task(
+        self,
+        notify_interval: Optional[float],
+        notify_start: float,
+        source: "SessionSource",
+        agent_holder: list,
+        status_thread_metadata: Optional[dict],
+        cleanup_progress: bool,
+        cleanup_msg_ids: list,
+    ) -> None:
+        """Send periodic "still working" notifications for long-running tasks.
+
+        Fires every N seconds so the user knows the agent hasn't died.
+        Config: agent.gateway_notify_interval in config.yaml, or
+        HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
+        0 = disable notifications.
+
+        Args:
+            notify_interval: Seconds between notifications (None = disabled).
+            notify_start: Timestamp when the agent started running.
+            source: The SessionSource object for this message.
+            agent_holder: Mutable list [agent or None] that will be populated
+                by the agent construction process.
+            status_thread_metadata: Optional thread metadata for status messages.
+            cleanup_progress: Whether to register cleanup for notification messages.
+            cleanup_msg_ids: List to accumulate message IDs for cleanup.
+        """
+        if notify_interval is None:
+            return  # Notifications disabled (gateway_notify_interval: 0)
+        notify_adapter = self.adapters.get(source.platform)
+        if not notify_adapter:
+            return
+        while True:
+            await asyncio.sleep(notify_interval)
+            elapsed_mins = int((time.time() - notify_start) // 60)
+            # Include agent activity context if available.
+            agent_ref = agent_holder[0]
+            status_detail = ""
+            if agent_ref and hasattr(agent_ref, "get_activity_summary"):
+                try:
+                    a = agent_ref.get_activity_summary()
+                    parts = [f"iteration {a['api_call_count']}/{a['max_iterations']}"]
+                    if a.get("current_tool"):
+                        parts.append(f"running: {a['current_tool']}")
+                    else:
+                        parts.append(a.get("last_activity_desc", ""))
+                    status_detail = " — " + ", ".join(parts)
+                except Exception:
+                    pass
+            try:
+                notify_res = await notify_adapter.send(
+                    source.chat_id,
+                    f"⏳ Still working... ({elapsed_mins} min elapsed{status_detail})",
+                    metadata=status_thread_metadata,
+                )
+                if (
+                    cleanup_progress
+                    and getattr(notify_res, "success", False)
+                    and getattr(notify_res, "message_id", None)
+                ):
+                    cleanup_msg_ids.append(str(notify_res.message_id))
+            except Exception as _ne:
+                logger.debug("Long-running notification error: %s", _ne)
 

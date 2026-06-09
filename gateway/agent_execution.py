@@ -13,12 +13,25 @@ NOTE: Functions take 'runner' (GatewayRunner instance) as first parameter.
 """
 
 import asyncio
+import inspect
 import logging
 import os
+import re
+import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.media_delivery import collect_auto_append_media_tags
+from gateway.session import SessionSource
+from gateway.utils.config_resolvers import _float_env, _resolve_gateway_model
+from gateway.adapter_factory import _load_gateway_config
+from gateway.platforms.base import BasePlatformAdapter
+
+
+def _platform_config_key(platform) -> str:
+    """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
+    return "cli" if platform.value == "cli" else platform.value
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +84,12 @@ async def run_agent(
         if run_generation is None or not session_key:
             return True
         return runner._is_session_run_current(session_key, run_generation)
-    
-    user_config = _load_gateway_config()
+
+    # Load raw YAML config for tools_config compatibility
+    import yaml
+    config_path = runner._config_path if hasattr(runner, '_config_path') else Path.home() / ".hermes" / "config.yaml"
+    with open(config_path, 'r') as f:
+        user_config = yaml.safe_load(f) or {}
     platform_key = _platform_config_key(source.platform)
 
     from hermes_cli.tools_config import _get_platform_tools
@@ -727,6 +744,17 @@ async def run_agent(
             _fut.add_done_callback(_track_status_id)
 
     def run_sync():
+        # Late imports from gateway.run to avoid circular import at module level.
+        # These are only needed inside this function.
+        from gateway.run import (
+            _auto_continue_freshness_window,
+            _build_gateway_agent_history,
+            _dequeue_pending_event,
+            _is_fresh_gateway_interruption,
+            _last_transcript_timestamp,
+            _resolve_gateway_model,
+            _wrap_current_message_with_observed_context,
+        )
         # The conditional re-assignment of `message` further below
         # (prepending model-switch notes) makes Python treat it as a
         # local variable in the entire function.  `nonlocal` lets us
@@ -758,6 +786,7 @@ async def run_agent(
         # Re-read .env and config for fresh credentials (gateway is long-lived,
         # keys may change without restart). Keep config.yaml authoritative for
         # runtime budget settings bridged into env vars.
+        from gateway.run import _reload_runtime_env_preserving_config_authority
         _reload_runtime_env_preserving_config_authority()
 
         try:
@@ -779,17 +808,18 @@ async def run_agent(
             }
 
         pr = runner._provider_routing
+        from gateway import config_loaders
         reasoning_config = config_loaders.resolve_session_reasoning_config(
             runner._session_reasoning_overrides,
             session_key,
             runner._reasoning_config,
         )
         runner._reasoning_config = reasoning_config
-        runner._service_tier = config_loaders.load_service_tier(runner.config)
+        runner._service_tier = config_loaders.load_service_tier(user_config)
         # Set up stream consumer for token streaming or interim commentary.
         _stream_consumer = None
         _stream_delta_cb = None
-        _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
+        _scfg = getattr(getattr(runner, 'config', None), 'streaming', None)
         if _scfg is None:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
@@ -909,8 +939,8 @@ async def run_agent(
             user_id_alt=getattr(source, "user_id_alt", None),
         )
         agent = None
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        _cache = getattr(self, "_agent_cache", None)
+        _cache_lock = getattr(runner, "_agent_cache_lock", None)
+        _cache = getattr(runner, "_agent_cache", None)
         if _cache_lock and _cache is not None:
             with _cache_lock:
                 cached = _cache.get(session_key)
@@ -1123,6 +1153,7 @@ async def run_agent(
         # history and attached to the current addressed message as
         # API-only context, so persisted history stores only the real
         # addressed user turn.
+        from gateway.run import _build_gateway_agent_history
         agent_history, observed_group_context = _build_gateway_agent_history(
             history,
             channel_prompt=channel_prompt,
@@ -1236,7 +1267,7 @@ async def run_agent(
                 logger.error("Failed to send approval request: %s", _e)
 
         # Prepend pending model switch note so the model knows about the switch
-        _pending_notes = getattr(self, '_pending_model_notes', {})
+        _pending_notes = getattr(runner, '_pending_model_notes', {})
         _msn = _pending_notes.pop(session_key, None) if session_key else None
         if _msn:
             message = _msn + "\n\n" + message
@@ -1318,7 +1349,7 @@ async def run_agent(
         # queue pattern as CLI: prepend to the NEXT user message, then
         # clear. Nothing was written to the transcript out-of-band, so
         # message alternation stays intact.
-        _pending_notes = getattr(self, "_pending_skills_reload_notes", None)
+        _pending_notes = getattr(runner, "_pending_skills_reload_notes", None)
         if _pending_notes and session_key and session_key in _pending_notes:
             _srn = _pending_notes.pop(session_key, None)
             if _srn:
@@ -1975,6 +2006,7 @@ async def run_agent(
         pending_event = None
         pending = None
         if result and adapter and session_key:
+            from gateway.run import _dequeue_pending_event
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: after consuming the adapter's "next-up"
             # slot, promote the next queued event into it so the
@@ -2445,7 +2477,7 @@ async def run_agent_via_proxy(
 
     # Set up platform streaming if available -------------------------
     _stream_consumer = None
-    _scfg = getattr(getattr(self, "config", None), "streaming", None)
+    _scfg = getattr(getattr(runner, "config", None), "streaming", None)
     if _scfg is None:
         from gateway.config import StreamingConfig
         _scfg = StreamingConfig()

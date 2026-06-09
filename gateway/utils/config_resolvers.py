@@ -96,3 +96,21 @@ def _get_gateway_platform_value(platform: Any) -> str:
     """
     from gateway.utils.gateway_helpers import _gateway_platform_value
     return _gateway_platform_value(platform)
+
+
+def _resolve_gateway_model(config: dict | None = None) -> str:
+    """Read model from config.yaml — single source of truth.
+
+    Without this, temporary AIAgent instances (e.g. /compress) fall
+    back to the hardcoded default which fails when the active provider is
+    openai-codex.
+    """
+    from gateway.adapter_factory import _load_gateway_config
+
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, str):
+        return model_cfg
+    elif isinstance(model_cfg, dict):
+        return model_cfg.get("default") or model_cfg.get("model") or ""
+    return ""

@@ -2933,3 +2933,138 @@ async def handle_rollback_command(runner, event: MessageEvent) -> str:
             reason=result["reason"],
         )
     return t("gateway.rollback.restore_failed", error=result["error"])
+
+
+async def handle_fast_command(runner, event: MessageEvent) -> str:
+    """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
+    import yaml
+    from hermes_cli.models import model_supports_fast_mode
+
+    args = event.get_command_args().strip().lower()
+    config_path = _hermes_home / "config.yaml"
+    runner._service_tier = runner._load_service_tier()
+
+    user_config = _load_gateway_config()
+    model = _resolve_gateway_model(user_config)
+    if not model_supports_fast_mode(model):
+        return t("gateway.fast.not_supported")
+
+    def _save_config_key(key_path: str, value):
+        """Save a dot-separated key to config.yaml."""
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            keys = key_path.split(".")
+            current = user_config
+            for k in keys[:-1]:
+                if k not in current or not isinstance(current[k], dict):
+                    current[k] = {}
+                current = current[k]
+            current[keys[-1]] = value
+            atomic_yaml_write(config_path, user_config)
+            return True
+        except Exception as e:
+            logger.error("Failed to save config key %s: %s", key_path, e)
+            return False
+
+    if not args or args == "status":
+        status = t("gateway.fast.status_fast") if runner._service_tier == "priority" else t("gateway.fast.status_normal")
+        return t("gateway.fast.status", mode=status)
+
+    if args in {"fast", "on"}:
+        runner._service_tier = "priority"
+        saved_value = "fast"
+        label = t("gateway.fast.label_fast")
+    elif args in {"normal", "off"}:
+        runner._service_tier = None
+        saved_value = "normal"
+        label = t("gateway.fast.label_normal")
+    else:
+        return t("gateway.fast.unknown_arg", arg=args)
+
+    if _save_config_key("agent.service_tier", saved_value):
+        return t("gateway.fast.saved", label=label)
+    return t("gateway.fast.session_only", label=label)
+
+
+async def handle_yolo_command(runner, event: MessageEvent) -> Union[str, EphemeralReply]:
+    """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+    from tools.approval import (
+        disable_session_yolo,
+        enable_session_yolo,
+        is_session_yolo_enabled,
+    )
+
+    session_key = runner._session_key_for_source(event.source)
+    current = is_session_yolo_enabled(session_key)
+    if current:
+        disable_session_yolo(session_key)
+        return EphemeralReply(t("gateway.yolo.disabled"))
+    else:
+        enable_session_yolo(session_key)
+        return EphemeralReply(t("gateway.yolo.enabled"))
+
+
+async def handle_verbose_command(runner, event: MessageEvent) -> str:
+    """Handle /verbose command — cycle tool progress display mode.
+
+    Gated by ``display.tool_progress_command`` in config.yaml (default off).
+    When enabled, cycles the tool progress mode through off → new → all →
+    verbose → off for the *current platform*.  The setting is saved to
+    ``display.platforms.<platform>.tool_progress`` so each channel can
+    have its own verbosity level independently.
+    """
+
+    config_path = _hermes_home / "config.yaml"
+    platform_key = _platform_config_key(event.source.platform)
+
+    # --- check config gate ------------------------------------------------
+    try:
+        user_config = _load_gateway_config()
+        gate_enabled = is_truthy_value(
+            cfg_get(user_config, "display", "tool_progress_command"),
+            default=False,
+        )
+    except Exception:
+        gate_enabled = False
+
+    if not gate_enabled:
+        return t("gateway.verbose.not_enabled")
+
+    # --- cycle mode (per-platform) ----------------------------------------
+    cycle = ["off", "new", "all", "verbose"]
+    descriptions = {
+        "off": t("gateway.verbose.mode_off"),
+        "new": t("gateway.verbose.mode_new"),
+        "all": t("gateway.verbose.mode_all"),
+        "verbose": t("gateway.verbose.mode_verbose"),
+    }
+
+    # Read current effective mode for this platform via the resolver
+    from gateway.display_config import resolve_display_setting
+    current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+    if current not in cycle:
+        current = "all"
+    idx = (cycle.index(current) + 1) % len(cycle)
+    new_mode = cycle[idx]
+
+    # Save to display.platforms.<platform>.tool_progress
+    try:
+        if "display" not in user_config or not isinstance(user_config.get("display"), dict):
+            user_config["display"] = {}
+        display = user_config["display"]
+        if "platforms" not in display or not isinstance(display.get("platforms"), dict):
+            display["platforms"] = {}
+        if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
+            display["platforms"][platform_key] = {}
+        display["platforms"][platform_key]["tool_progress"] = new_mode
+        atomic_yaml_write(config_path, user_config)
+        return (
+            f"{descriptions[new_mode]}\n"
+            + t("gateway.verbose.saved_suffix", platform=platform_key)
+        )
+    except Exception as e:
+        logger.warning("Failed to save tool_progress mode: %s", e)
+        return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)

@@ -1180,3 +1180,495 @@ async def process_handoff(
     if not getattr(result, "success", True):
         err = getattr(result, "error", "send returned success=False")
         raise RuntimeError(f"adapter.send failed: {err}")
+
+
+def _auto_continue_freshness_window() -> float:
+    """Return the configured auto-continue freshness window in seconds.
+
+    Reads ``HERMES_AUTO_CONTINUE_FRESHNESS`` (bridged from
+    ``config.yaml`` ``agent.gateway_auto_continue_freshness`` at gateway
+    startup, same pattern as ``HERMES_AGENT_TIMEOUT``).  Falls back to the
+    module default when unset or malformed.  Non-positive values disable
+    the freshness gate (restores the pre-fix "always fresh" behaviour for
+    users who want to opt out).
+    """
+    import os
+
+    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+    if raw is None or raw == "":
+        return 3600.0  # 1 hour default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 3600.0
+
+
+def schedule_resume_pending_sessions(
+    runner,  # GatewayRunner instance
+) -> int:
+    """Auto-continue fresh restart-interrupted sessions after startup.
+
+    ``resume_pending`` already preserves the transcript AND the existing
+    ``_is_resume_pending`` branch in ``_handle_message_with_agent``
+    injects a reason-aware recovery system note on the next turn.  This
+    method closes the UX gap by synthesizing that next turn once
+    adapters are back online — the event text is empty so the existing
+    injection path owns the wording and we never double up.
+
+    Adapters that are not yet ready (adapter missing from
+    ``self.adapters``) are skipped silently; their sessions stay
+    ``resume_pending`` and will auto-resume on the next real user
+    message, or on the next gateway startup.
+    """
+    from datetime import datetime
+    from gateway.message_event import MessageEvent, MessageType
+
+    window = _auto_continue_freshness_window()
+    try:
+        with runner.session_store._lock:  # noqa: SLF001 — snapshot under lock
+            runner.session_store._ensure_loaded_locked()  # noqa: SLF001
+            candidates = [
+                entry for entry in runner.session_store._entries.values()  # noqa: SLF001
+                if entry.resume_pending
+                and not entry.suspended
+                and entry.origin is not None
+                and entry.resume_reason in runner._AUTO_RESUME_REASONS
+            ]
+    except Exception as exc:
+        logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
+        return 0
+
+    now = datetime.now()
+    scheduled = 0
+    for entry in candidates:
+        marker = entry.last_resume_marked_at or entry.updated_at
+        if marker is not None and (now - marker).totalseconds() > window:
+            continue
+
+        source = entry.origin
+        adapter = runner.adapters.get(source.platform)
+        if adapter is None:
+            logger.debug(
+                "Skipping auto-resume for %s: adapter not ready for %s",
+                entry.session_key,
+                getattr(source.platform, "value", source.platform),
+            )
+            continue
+
+        # Empty-text internal event — the _is_resume_pending branch in
+        # _handle_message_with_agent prepends the proper reason-aware
+        # system note before the turn runs.
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+        )
+        import asyncio
+        task = asyncio.create_task(adapter.handle_message(event))
+        runner._background_tasks.add(task)
+        task.add_done_callback(runner._background_tasks.discard)
+        scheduled += 1
+
+    if scheduled:
+        logger.info(
+            "Scheduled auto-resume for %d restart-interrupted session(s)",
+            scheduled,
+        )
+    return scheduled
+
+
+def suspend_stuck_loop_sessions(
+    runner,  # GatewayRunner instance
+) -> int:
+    """Suspend sessions that have been active across too many restarts.
+
+    Returns the number of sessions suspended.  Called on gateway startup
+    AFTER suspend_recently_active() to catch the stuck-loop pattern:
+    session loads → agent gets stuck → gateway restarts → repeat.
+    """
+    import json
+    from pathlib import Path
+
+    _hermes_home = Path.home() / ".hermes"
+    path = _hermes_home / runner._STUCK_LOOP_FILE
+    if not path.exists():
+        return 0
+
+    try:
+        counts = json.loads(path.read_text())
+    except Exception:
+        return 0
+
+    suspended = 0
+    stuck_keys = [k for k, v in counts.items() if v >= runner._STUCK_LOOP_THRESHOLD]
+
+    for session_key in stuck_keys:
+        try:
+            entry = runner.session_store._entries.get(session_key)
+            if entry and not entry.suspended:
+                entry.suspended = True
+                suspended += 1
+                logger.warning(
+                    "Auto-suspended stuck session %s (active across %d "
+                    "consecutive restarts — likely a stuck loop)",
+                    session_key, counts[session_key],
+                )
+        except Exception:
+            pass
+
+    if suspended:
+        try:
+            runner.session_store._save()
+        except Exception:
+            pass
+
+    # Clear the file — counters start fresh after suspension
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    return suspended
+
+
+def clear_session_boundary_security_state(
+    runner,  # GatewayRunner instance
+    session_key: str,
+) -> None:
+    """Clear per-session control state that must not survive a boundary switch."""
+    if not session_key:
+        return
+
+    pending_skills_reload_notes = getattr(
+        runner, "_pending_skills_reload_notes", None
+    )
+    if isinstance(pending_skills_reload_notes, dict):
+        pending_skills_reload_notes.pop(session_key, None)
+
+    pending_approvals = getattr(runner, "_pending_approvals", None)
+    if isinstance(pending_approvals, dict):
+        pending_approvals.pop(session_key, None)
+
+    update_prompt_pending = getattr(runner, "_update_prompt_pending", None)
+    if isinstance(update_prompt_pending, dict):
+        update_prompt_pending.pop(session_key, None)
+
+    try:
+        from tools import slash_confirm as _slash_confirm_mod
+    except Exception:
+        _slash_confirm_mod = None
+    if _slash_confirm_mod is not None:
+        try:
+            _slash_confirm_mod.clear(session_key)
+        except Exception as e:
+            logger.debug(
+                "Failed to clear slash-confirm state for session boundary %s: %s",
+                session_key,
+                e,
+            )
+
+    try:
+        from tools.approval import clear_session as _clear_approval_session
+    except Exception:
+        return
+
+    try:
+        _clear_approval_session(session_key)
+    except Exception as e:
+        logger.debug(
+            "Failed to clear approval state for session boundary %s: %s",
+            session_key,
+            e,
+        )
+
+
+def sibling_thread_run_keys(
+    runner,  # GatewayRunner instance
+    source,  # SessionSource
+    own_key: str,
+) -> list:
+    """Find running-agent keys for OTHER participants in the same thread.
+
+    Only applies when the message originates in a thread.  In per-user
+    thread mode (``thread_sessions_per_user=True``) each participant gets
+    an isolated session key of the form
+    ``agent:main:{platform}:{chat_type}:{chat_id}:{thread_id}:{user_id}``,
+    so a run started by another user is invisible to the caller's own
+    ``/stop``.  This returns the keys of any *actually running* agents
+    (not the pending sentinel, not the caller's own key) whose key shares
+    the caller's ``{chat_id}:{thread_id}`` prefix.
+
+    Returns an empty list when the source is not in a thread, or when no
+    sibling runs exist — callers must still gate on authorization.
+    """
+    _AGENT_PENDING_SENTINEL = getattr(runner, "_AGENT_PENDING_SENTINEL", None)
+
+    thread_id = getattr(source, "thread_id", None)
+    chat_id = getattr(source, "chat_id", None)
+    if not thread_id or not chat_id:
+        return []
+    platform = source.platform.value
+    chat_type = getattr(source, "chat_type", None) or ""
+    # Prefix that every per-user key in this thread shares, up to and
+    # including the thread_id segment.  Matching either the exact
+    # shared-thread key or any key with a further (user_id) segment
+    # (prefix + ":") avoids cross-matching an unrelated thread whose id
+    # merely starts with this one.
+    prefix = ":".join(
+        ["agent:main", platform, chat_type, str(chat_id), str(thread_id)]
+    )
+    matches = []
+    for key, agent in list(runner._running_agents.items()):
+        if key == own_key:
+            continue
+        if agent is _AGENT_PENDING_SENTINEL or not agent:
+            continue
+        if key == prefix or key.startswith(prefix + ":"):
+            matches.append(key)
+    return matches
+
+
+def _teams_pipeline_plugin_enabled() -> bool:
+    """Check if the Teams pipeline plugin is enabled."""
+    try:
+        from plugins.teams_pipeline.runtime import is_enabled
+        return is_enabled()
+    except Exception:
+        return False
+
+
+def wire_teams_pipeline_runtime(
+    runner,  # GatewayRunner instance
+) -> None:
+    """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
+
+    No-op when the msgraph_webhook adapter isn't running or the
+    teams_pipeline plugin isn't enabled — lets the gateway start cleanly
+    whether or not the user has opted into the pipeline.
+    """
+    from hermes_cli.enums import Platform
+
+    if Platform.MSGRAPH_WEBHOOK not in runner.adapters:
+        return
+    if not _teams_pipeline_plugin_enabled():
+        logger.debug("Teams pipeline plugin is disabled; skipping runtime wiring")
+        return
+    try:
+        from plugins.teams_pipeline.runtime import bind_gateway_runtime
+    except Exception as exc:
+        logger.warning("Teams pipeline runtime import failed: %s", exc)
+        return
+    try:
+        bound = bind_gateway_runtime(runner)
+    except Exception as exc:
+        logger.warning("Teams pipeline runtime wiring failed: %s", exc)
+        return
+    if bound:
+        logger.info("Teams pipeline runtime bound to msgraph webhook ingress")
+    elif runner._teams_pipeline_runtime_error:
+        logger.warning(
+            "Teams pipeline runtime unavailable: %s",
+            runner._teams_pipeline_runtime_error,
+        )
+
+
+def increment_restart_failure_counts(
+    runner,  # GatewayRunner instance
+    active_session_keys: set,
+) -> None:
+    """Increment restart-failure counters for sessions active at shutdown.
+
+    Persists to a JSON file so counters survive across restarts.
+    Sessions NOT in active_session_keys are removed (they completed
+    successfully, so the loop is broken).
+    """
+    import json
+    from pathlib import Path
+
+    _hermes_home = Path.home() / ".hermes"
+    path = _hermes_home / runner._STUCK_LOOP_FILE
+    try:
+        counts = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:
+        counts = {}
+
+    # Increment active sessions, remove inactive ones (loop broken)
+    new_counts = {}
+    for key in active_session_keys:
+        new_counts[key] = counts.get(key, 0) + 1
+    # Keep any entries that are still above 0 even if not active now
+    # (they might become active again next restart)
+
+    try:
+        from gateway.file_utils import atomic_json_write
+        atomic_json_write(path, new_counts, indent=None)
+    except Exception:
+        pass
+
+
+def clear_restart_failure_count(
+    runner,  # GatewayRunner instance
+    session_key: str,
+) -> None:
+    """Clear the restart-failure counter for a session that completed OK.
+
+    Called after a successful agent turn to signal the loop is broken.
+    """
+    import json
+    from pathlib import Path
+
+    _hermes_home = Path.home() / ".hermes"
+    path = _hermes_home / runner._STUCK_LOOP_FILE
+    if not path.exists():
+        return
+    try:
+        from gateway.file_utils import atomic_json_write
+
+        counts = json.loads(path.read_text())
+        if session_key in counts:
+            del counts[session_key]
+            if counts:
+                atomic_json_write(path, counts, indent=None)
+            else:
+                path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def pause_failed_platform(
+    runner,  # GatewayRunner instance
+    platform,
+    *,
+    reason: str = "",
+) -> None:
+    """Mark a queued platform as paused — keep it in ``_failed_platforms``
+    but stop the reconnect watcher from hammering it.
+
+    Used by ``/platform pause <name>`` for manual operator intervention.
+    Paused platforms are surfaced in ``/platform list`` and resumed with
+    ``/platform resume <name>``.  Note: the reconnect watcher does NOT
+    auto-pause — retryable (network/DNS) failures keep retrying at the
+    backoff cap indefinitely so a transient outage self-heals without
+    manual intervention.
+    """
+    info = getattr(runner, "_failed_platforms", {}).get(platform)
+    if info is None:
+        return
+    if info.get("paused"):
+        return
+    info["paused"] = True
+    info["pause_reason"] = reason or "auto-paused after repeated failures"
+    # Push next_retry far enough out that even if "paused" is missed
+    # by a stale code path, the watcher won't fire on it.
+    info["next_retry"] = float("inf")
+    try:
+        runner._update_platform_runtime_status(
+            platform.value,
+            platform_state="paused",
+            error_code=None,
+            error_message=info["pause_reason"],
+        )
+    except Exception:
+        pass
+    logger.warning(
+        "%s paused after %d consecutive failures (%s) — "
+        "fix the underlying issue then run `/platform resume %s` "
+        "to retry, or `hermes gateway restart` to restart the gateway.",
+        platform.value, info.get("attempts", 0),
+        info["pause_reason"], platform.value,
+    )
+
+
+def resume_paused_platform(
+    runner,  # GatewayRunner instance
+    platform,
+) -> bool:
+    """Unpause a platform — reset its attempt counter and schedule an
+    immediate retry.  Returns True if the platform was paused and is
+    now queued for retry.
+    """
+    info = getattr(runner, "_failed_platforms", {}).get(platform)
+    if info is None:
+        return False
+    if not info.get("paused"):
+        return False
+    info["paused"] = False
+    info["pause_reason"] = None
+    info["attempts"] = 0
+    info["next_retry"] = 0  # Trigger immediate retry
+    try:
+        runner._update_platform_runtime_status(
+            platform.value,
+            platform_state="waiting",
+            error_code=None,
+            error_message=None,
+        )
+    except Exception:
+        pass
+    logger.info(
+        "%s resumed — scheduling immediate reconnect",
+        platform.value,
+    )
+    return True
+
+
+async def safe_adapter_disconnect(
+    runner,  # GatewayRunner instance
+    adapter,
+    platform,
+) -> None:
+    """Call adapter.disconnect() defensively, swallowing any error.
+
+    Used when adapter.connect() failed or raised — the adapter may
+    have allocated partial resources (aiohttp.ClientSession, poll
+    tasks, child subprocesses) that would otherwise leak and surface
+    as "Unclosed client session" warnings at process exit.
+
+    Must tolerate partial-init state and never raise, since callers
+    use it inside error-handling blocks.
+    """
+    import asyncio
+
+    timeout = runner._adapter_disconnect_timeout_secs()
+    try:
+        if timeout <= 0:
+            await adapter.disconnect()
+        else:
+            await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
+            timeout,
+            platform.value if platform is not None else "adapter",
+        )
+    except Exception as e:
+        logger.debug(
+            "Defensive %s disconnect after failed connect raised: %s",
+            platform.value if platform is not None else "adapter",
+            e,
+        )
+
+
+def finalize_shutdown_agents(
+    runner,  # GatewayRunner instance
+    active_agents: dict,
+) -> None:
+    """Finalize active agents during shutdown.
+
+    Calls plugin hooks and cleans up agent resources for each running agent.
+    """
+    from gateway.agent_execution import cleanup_agent_resources
+
+    for agent in active_agents.values():
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_finalize",
+                session_id=getattr(agent, "session_id", None),
+                platform="gateway",
+                reason="shutdown",
+            )
+        except Exception:
+            pass
+        cleanup_agent_resources(agent=agent)

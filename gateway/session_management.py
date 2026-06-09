@@ -316,3 +316,49 @@ def format_session_info(
         lines.append(f"◆ Endpoint: {base_url}")
 
     return "\n".join(lines)
+
+
+def begin_session_run_generation(
+    runner,  # GatewayRunner instance
+    session_key: str,
+) -> int:
+    """Begin a new run generation for a session.
+
+    Returns the new generation number.
+    """
+    generations = runner.__dict__.get("_session_run_generation") or {}
+    current = generations.get(session_key, 0)
+    next_generation = current + 1
+    generations[session_key] = next_generation
+    runner._session_run_generation = generations
+    return next_generation
+
+
+def invalidate_session_run_generation(
+    runner,  # GatewayRunner instance
+    session_key: str,
+    *,
+    reason: str = "",
+) -> int:
+    """Invalidate any in-flight run token for ``session_key``."""
+    generation = begin_session_run_generation(runner, session_key)
+    if reason:
+        logger.info(
+            "Invalidated run generation for %s → %d (%s)",
+            session_key,
+            generation,
+            reason,
+        )
+    return generation
+
+
+def is_session_run_current(
+    runner,  # GatewayRunner instance
+    session_key: str,
+    generation: int,
+) -> bool:
+    """Return True when ``generation`` is still current for ``session_key``."""
+    if not session_key or generation is None:
+        return True
+    generations = runner.__dict__.get("_session_run_generation") or {}
+    return int(generations.get(session_key, 0)) == int(generation)

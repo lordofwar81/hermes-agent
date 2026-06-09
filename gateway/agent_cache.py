@@ -285,3 +285,29 @@ def sweep_idle_cached_agents(
             name=f"agent-cache-idle-{key[:24]}",
         ).start()
     return len(to_evict)
+
+
+def release_evicted_agent_soft(
+    agent: Any,
+    cleanup_fn: Optional[Callable[[Any], None]] = None,
+) -> None:
+    """Soft cleanup for cache-evicted agents — preserves session tool state.
+
+    Called from enforce_agent_cache_cap and sweep_idle_cached_agents.
+    Distinct from full cleanup because a cache-evicted session may resume
+    at any time — its terminal sandbox, browser daemon, and tracked bg
+    processes must outlive the Python AIAgent instance so the next agent
+    built for the same task_id inherits them.
+    """
+    if agent is None:
+        return
+    try:
+        if hasattr(agent, "release_clients"):
+            agent.release_clients()
+        else:
+            # Older agent instance (shouldn't happen in practice) —
+            # fall back to the legacy full-close path.
+            if cleanup_fn:
+                cleanup_fn(agent)
+    except Exception:
+        pass

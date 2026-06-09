@@ -598,3 +598,221 @@ def consume_pending_native_image_paths_impl(session_key: str) -> list[str]:
         List of image paths for this session (empty if none)
     """
     return list(_PENDING_NATIVE_IMAGE_SESSIONS.pop(session_key, []) or [])
+
+
+def enqueue_fifo(
+    runner,  # GatewayRunner instance
+    session_key: str,
+    queued_event: "MessageEvent",
+    adapter: "Any",
+) -> None:
+    """Append a /queue event to the FIFO chain for a session."""
+    if adapter is None:
+        return
+    pending_slot = getattr(adapter, "_pending_messages", None)
+    if pending_slot is None:
+        return
+    queued_events = getattr(runner, "_queued_events", None)
+    if queued_events is None:
+        queued_events = {}
+        runner._queued_events = queued_events
+    if session_key in pending_slot:
+        queued_events.setdefault(session_key, []).append(queued_event)
+    else:
+        pending_slot[session_key] = queued_event
+
+
+def decide_image_input_mode(
+    runner,  # GatewayRunner instance
+) -> str:
+    """Resolve the image-input routing for the currently active model.
+
+    Returns ``"native"`` (attach pixels on the user turn) or ``"text"``
+    (pre-analyze with vision_analyze and prepend the description). See
+    agent/image_routing.py for the full decision table.
+
+    The active provider/model are read from config.yaml so the decision
+    tracks ``/model`` switches automatically on the next message.
+    """
+    try:
+        from agent.image_routing import decide_image_input_mode as _decide_mode
+        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        provider = _read_main_provider()
+        model = _read_main_model()
+        return _decide_mode(provider, model, cfg)
+    except Exception as exc:
+        logger.debug("image_routing: decision failed, falling back to text — %s", exc)
+        return "text"
+
+
+async def enrich_message_with_vision(
+    runner,  # GatewayRunner instance
+    user_text: str,
+    image_paths: list[str],
+) -> str:
+    """
+    Auto-analyze user-attached images with the vision tool and prepend
+    the descriptions to the message text.
+
+    Each image is analyzed with a general-purpose prompt.  The resulting
+    description *and* the local cache path are injected so the model can:
+      1. Immediately understand what the user sent (no extra tool call).
+      2. Re-examine the image with vision_analyze if it needs more detail.
+
+    Args:
+        runner: GatewayRunner instance
+        user_text:   The user's original caption / message text.
+        image_paths: List of local file paths to cached images.
+
+    Returns:
+        The enriched message string with vision descriptions prepended.
+    """
+    import json
+    from tools.vision_tools import vision_analyze_tool
+    from agent.memory_manager import sanitize_context
+
+    analysis_prompt = (
+        "Describe everything visible in this image in thorough detail. "
+        "Include any text, code, data, objects, people, layout, colors, "
+        "and any other notable visual information."
+    )
+
+    enriched_parts = []
+    for path in image_paths:
+        try:
+            logger.debug("Auto-analyzing user image: %s", path)
+            result_json = await vision_analyze_tool(
+                image_url=path,
+                user_prompt=analysis_prompt,
+            )
+            result = json.loads(result_json)
+            if result.get("success"):
+                description = result.get("analysis", "")
+                description = sanitize_context(description)
+                enriched_parts.append(
+                    f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                    f"[If you need a closer look, use vision_analyze with "
+                    f"image_url: {path} ~]"
+                )
+            else:
+                enriched_parts.append(
+                    "[The user sent an image but I couldn't quite see it "
+                    "this time (>_<) You can try looking at it yourself "
+                    f"with vision_analyze using image_url: {path}]"
+                )
+        except Exception as e:
+            logger.error("Vision auto-analysis error: %s", e)
+            enriched_parts.append(
+                f"[The user sent an image but something went wrong when I "
+                f"tried to look at it~ You can try examining it yourself "
+                f"with vision_analyze using image_url: {path}]"
+            )
+
+    # Combine: vision descriptions first, then the user's original text
+    if enriched_parts:
+        prefix = "\n\n".join(enriched_parts)
+        if user_text:
+            return f"{prefix}\n\n{user_text}"
+        return prefix
+    return user_text
+
+
+async def enrich_message_with_transcription(
+    runner,  # GatewayRunner instance
+    user_text: str,
+    audio_paths: list[str],
+) -> str:
+    """
+    Auto-transcribe user voice/audio messages using the configured STT provider
+    and prepend the transcript to the message text.
+
+    Args:
+        runner: GatewayRunner instance
+        user_text:   The user's original caption / message text.
+        audio_paths: List of local file paths to cached audio files.
+
+    Returns:
+        The enriched message string with transcriptions prepended.
+    """
+    import os
+    from tools.transcription_tools import transcribe_audio
+    from gateway.run import _probe_audio_duration
+
+    if not getattr(runner.config, "stt_enabled", True):
+        notes = []
+        for path in audio_paths:
+            abs_path = os.path.abspath(path)
+            duration_str = await _probe_audio_duration(abs_path)
+            if duration_str:
+                notes.append(
+                    f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
+                )
+            else:
+                notes.append(f"[The user sent a voice message: {abs_path}]")
+        if not notes:
+            return user_text
+        prefix = "\n\n".join(notes)
+        _placeholder = "(The user sent a message with no text content)"
+        if user_text and user_text.strip() == _placeholder:
+            return prefix
+        if user_text:
+            return f"{prefix}\n\n{user_text}"
+        return prefix
+
+    enriched_parts = []
+    for path in audio_paths:
+        try:
+            logger.debug("Transcribing user voice: %s", path)
+            result = await asyncio.to_thread(transcribe_audio, path)
+            if result["success"]:
+                transcript = result["transcript"]
+                enriched_parts.append(
+                    f'[The user sent a voice message~ '
+                    f'Here\'s what they said: "{transcript}"]'
+                )
+            else:
+                error = result.get("error", "unknown error")
+                if (
+                    "No STT provider" in error
+                    or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
+                ):
+                    _no_stt_note = (
+                        "[The user sent a voice message but I can't listen "
+                        "to it right now — no STT provider is configured. "
+                        "A direct message has already been sent to the user "
+                        "with setup instructions."
+                    )
+                    if runner._has_setup_skill():
+                        _no_stt_note += (
+                            " You have a skill called hermes-agent-setup "
+                            "that can help users configure Hermes features "
+                            "including voice, tools, and more."
+                        )
+                    _no_stt_note += "]"
+                    enriched_parts.append(_no_stt_note)
+                else:
+                    enriched_parts.append(
+                        "[The user sent a voice message but I had trouble "
+                        f"transcribing it~ ({error})]"
+                    )
+        except Exception as e:
+            logger.error("Transcription error: %s", e)
+            enriched_parts.append(
+                "[The user sent a voice message but something went wrong "
+                "when I tried to listen to it~ Let them know!]"
+            )
+
+    if enriched_parts:
+        prefix = "\n\n".join(enriched_parts)
+        # Strip the empty-content placeholder from the Discord adapter
+        # when we successfully transcribed the audio — it's redundant.
+        _placeholder = "(The user sent a message with no text content)"
+        if user_text and user_text.strip() == _placeholder:
+            return prefix
+        if user_text:
+            return f"{prefix}\n\n{user_text}"
+        return prefix
+    return user_text

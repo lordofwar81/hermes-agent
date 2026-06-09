@@ -4395,3 +4395,188 @@ async def _handle_adapter_fatal_error(runner, adapter: BasePlatformAdapter) -> N
             "retry in background.",
             len(runner._failed_platforms),
         )
+
+
+def is_goal_continuation_event(event_or_text: Any) -> bool:
+    """Return True for synthetic /goal continuation turns.
+
+    Goal continuations are normal queued user-role events, so pause/clear
+    must distinguish them from real user /queue messages before removing or
+    suppressing them.
+    """
+    text = getattr(event_or_text, "text", event_or_text) or ""
+    return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+
+
+def clear_goal_pending_continuations(
+    runner,  # GatewayRunner instance
+    session_key: str,
+    adapter: Any,
+) -> int:
+    """Remove queued synthetic /goal continuations for one session.
+
+    User-issued /goal pause/clear can race with a continuation already
+    queued by the judge.  Remove only synthetic goal continuations while
+    preserving normal /queue and user follow-up events.
+    """
+    removed = 0
+    pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+    if isinstance(pending_slot, dict):
+        pending_event = pending_slot.get(session_key)
+        if is_goal_continuation_event(pending_event):
+            pending_slot.pop(session_key, None)
+            removed += 1
+
+    queued_events = getattr(runner, "_queued_events", None)
+    if isinstance(queued_events, dict):
+        overflow = queued_events.get(session_key) or []
+        if overflow:
+            kept = []
+            for queued_event in overflow:
+                if is_goal_continuation_event(queued_event):
+                    removed += 1
+                else:
+                    kept.append(queued_event)
+            if kept:
+                queued_events[session_key] = kept
+            else:
+                queued_events.pop(session_key, None)
+    return removed
+
+
+async def defer_goal_status_notice_after_delivery(
+    runner,  # GatewayRunner instance
+    source: Any,
+    message: str,
+) -> None:
+    """Send a /goal status line after the main response is delivered.
+
+    The gateway message handler returns the agent response to the platform
+    adapter, which sends it after this method's caller has returned.  For a
+    natural Discord/Telegram reading order, goal status belongs after that
+    send.  Platform adapters provide a one-shot post-delivery callback for
+    exactly this boundary; when unavailable, fall back to direct awaited
+    delivery rather than silently dropping the notice.
+    """
+    adapter = runner.adapters.get(source.platform)
+    if not adapter:
+        logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
+        return
+
+    async def _deliver() -> None:
+        try:
+            await runner._send_goal_status_notice(source, message)
+        except Exception as exc:
+            logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
+
+    try:
+        session_key = runner._session_key_for_source(source)
+    except Exception:
+        session_key = None
+
+    if session_key and hasattr(adapter, "register_post_delivery_callback"):
+        try:
+            generation = None
+            active = getattr(adapter, "_active_sessions", {}).get(session_key)
+            if active is not None:
+                generation = getattr(active, "_hermes_run_generation", None)
+            adapter.register_post_delivery_callback(
+                session_key,
+                _deliver,
+                generation=generation,
+            )
+            return
+        except Exception as exc:
+            logger.debug("goal continuation: post-delivery callback registration failed: %s", exc)
+
+    await _deliver()
+
+
+def parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
+    """Parse `/reasoning` args into `(value, persist_global)`.
+
+    `/reasoning <level>` is session-scoped by default. `--global` may be
+    supplied in any position to persist the change to config.yaml.
+    """
+    import shlex
+
+    text = str(raw_args or "").strip().replace("—", "--")
+    if not text:
+        return "", False
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+
+    persist_global = False
+    value_tokens = []
+    for token in tokens:
+        if token == "--global":
+            persist_global = True
+        else:
+            value_tokens.append(token)
+    return " ".join(value_tokens).strip().lower(), persist_global
+
+
+def goal_max_turns_from_config(
+    runner,  # GatewayRunner instance
+) -> int:
+    """Resolve the configured /goal turn budget for gateway sessions.
+
+    GatewayRunner.config is a GatewayConfig dataclass, not the full
+    user config mapping. Top-level config blocks such as ``goals`` are
+    therefore only available through hermes_cli.config.load_config().
+    """
+    try:
+        goals_cfg = (
+            (runner.config or {}).get("goals", {})
+            if isinstance(runner.config, dict)
+            else getattr(runner.config, "goals", {}) or {}
+        )
+        if not goals_cfg:
+            from hermes_cli.config import load_config
+
+            goals_cfg = (load_config() or {}).get("goals") or {}
+        return int(goals_cfg.get("max_turns", 20) or 20)
+    except Exception:
+        return 20
+
+
+def get_goal_manager_for_event(
+    runner,  # GatewayRunner instance
+    event,  # MessageEvent
+):
+    """Return a GoalManager bound to the session for this gateway event.
+
+    Returns ``(manager, session_entry)`` or ``(None, None)`` if the
+    goals module can't be loaded.
+    """
+    try:
+        from hermes_cli.goals import GoalManager
+    except Exception as exc:
+        logger.debug("goal manager unavailable: %s", exc)
+        return None, None
+    try:
+        session_entry = runner.session_store.get_or_create_session(event.source)
+    except Exception as exc:
+        logger.debug("goal manager: session lookup failed: %s", exc)
+        return None, None
+    sid = getattr(session_entry, "session_id", None) or ""
+    if not sid:
+        return None, None
+    max_turns = goal_max_turns_from_config(runner)
+    return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+
+def get_guild_id(event) -> int | None:
+    """Extract Discord guild_id from the raw message object."""
+    raw = getattr(event, "raw_message", None)
+    if raw is None:
+        return None
+    # Slash command interaction
+    if hasattr(raw, "guild_id") and raw.guild_id:
+        return int(raw.guild_id)
+    # Regular message
+    if hasattr(raw, "guild") and raw.guild:
+        return raw.guild.id
+    return None

@@ -2660,3 +2660,83 @@ async def run_agent_via_proxy(
 
     # ------------------------------------------------------------------
 
+
+
+def cleanup_agent_resources(agent: Any) -> None:
+    """Best-effort cleanup for temporary or cached agent instances."""
+    if agent is None:
+        return
+    try:
+        if hasattr(agent, "shutdown_memory_provider"):
+            # Pass the agent's own conversation transcript so memory
+            # providers' ``on_session_end`` hooks see the real messages
+            # instead of the empty default (#15165). ``_session_messages``
+            # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
+            # the end of every ``run_conversation`` turn via
+            # ``_persist_session``; on an agent built through
+            # ``object.__new__`` (test stubs) the attribute may be
+            # absent, so ``getattr`` with a ``None`` default keeps the
+            # call signature-compatible with the pre-fix behaviour
+            # (``shutdown_memory_provider(messages=None)``).
+            session_messages = getattr(agent, "_session_messages", None)
+            if isinstance(session_messages, list):
+                agent.shutdown_memory_provider(session_messages)
+            else:
+                agent.shutdown_memory_provider()
+    except Exception:
+        pass
+    # Close tool resources (terminal sandboxes, browser daemons,
+    # background processes, httpx clients) to prevent zombie
+    # process accumulation.
+    try:
+        if hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    # Auxiliary async clients (session_search/web/vision/etc.) live in a
+    # process-global cache and are created inside worker threads. Clean up
+    # any entries whose event loop is now dead so their httpx transports do
+    # not accumulate across gateway turns.
+    try:
+        from agent.auxiliary_client import cleanup_stale_async_clients
+        cleanup_stale_async_clients()
+    except Exception:
+        pass
+
+
+def agent_has_active_subagents(running_agent: Any) -> bool:
+    """Return True when *running_agent* is currently driving subagents
+    via the ``delegate_task`` tool.
+
+    Background (#30170): ``AIAgent.interrupt()`` cascades through the
+    parent's ``_active_children`` list and calls ``interrupt()`` on
+    every child synchronously, which aborts in-flight subagent work
+    and produces a fallback cascade with no actionable signal.
+    Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
+    whenever this helper returns True protects subagent work from
+    conversational follow-ups while leaving the explicit ``/stop``
+    path (which goes through ``_interrupt_and_clear_session``)
+    untouched. Safe-by-default: returns False on any attribute or
+    lock error so a missing/broken parent never blocks the existing
+    interrupt path.
+    """
+    if running_agent is None or running_agent is agent_execution._AGENT_PENDING_SENTINEL:
+        return False
+    children = getattr(running_agent, "_active_children", None)
+    # AIAgent always initialises this as a concrete list (see
+    # agent/agent_init.py). Reject anything that isn't a real
+    # collection — this guards against ``MagicMock()._active_children``
+    # auto-creating a truthy stub in tests and triggering the demotion
+    # against an agent that doesn't actually have subagents.
+    if not isinstance(children, (list, tuple, set)):
+        return False
+    if not children:
+        return False
+    lock = getattr(running_agent, "_active_children_lock", None)
+    try:
+        if lock is not None:
+            with lock:
+                return bool(children)
+        return bool(children)
+    except Exception:
+        return False

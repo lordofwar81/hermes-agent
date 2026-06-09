@@ -6277,52 +6277,10 @@ class GatewayRunner:
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        session_id = session_entry.session_id
-
-        if not self._session_db:
-            from hermes_state import format_session_db_unavailable
-            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-
-        # Ensure session exists in SQLite DB (it may only exist in session_store
-        # if this is the first command in a new session)
-        existing_title = self._session_db.get_session_title(session_id)
-        if existing_title is None:
-            # Session doesn't exist in DB yet — create it
-            try:
-                self._session_db.create_session(
-                    session_id=session_id,
-                    source=source.platform.value if source.platform else "unknown",
-                    user_id=source.user_id,
-                )
-            except Exception:
-                pass  # Session might already exist, ignore errors
-
-        title_arg = event.get_command_args().strip()
-        if title_arg:
-            # Sanitize the title before setting
-            try:
-                sanitized = self._session_db.sanitize_title(title_arg)
-            except ValueError as e:
-                return t("gateway.shared.warn_passthrough", error=e)
-            if not sanitized:
-                return t("gateway.title.empty_after_clean")
-            # Set the title
-            try:
-                if self._session_db.set_session_title(session_id, sanitized):
-                    return t("gateway.title.set_to", title=sanitized)
-                else:
-                    return t("gateway.title.not_found")
-            except ValueError as e:
-                return t("gateway.shared.warn_passthrough", error=e)
-        else:
-            # Show the current title and session ID
-            title = self._session_db.get_session_title(session_id)
-            if title:
-                return t("gateway.title.current_with_title", session_id=session_id, title=title)
-            else:
-                return t("gateway.title.current_no_title", session_id=session_id)
+        return await command_handlers.handle_title_command(
+            runner=self,
+            event=event,
+        )
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         return await command_handlers.handle_resume_command(
@@ -6337,90 +6295,10 @@ class GatewayRunner:
         a different approach without losing the original.
         Inspired by Claude Code's /branch command.
         """
-        import uuid as _uuid
-
-        if not self._session_db:
-            from hermes_state import format_session_db_unavailable
-            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
-
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        # Load the current session and its transcript
-        current_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(current_entry.session_id)
-        if not history:
-            return t("gateway.branch.no_conversation")
-
-        branch_name = event.get_command_args().strip()
-
-        # Generate the new session ID
-        from datetime import datetime as _dt
-        now = _dt.now()
-        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-        short_uuid = _uuid.uuid4().hex[:6]
-        new_session_id = f"{timestamp_str}_{short_uuid}"
-
-        # Determine branch title
-        if branch_name:
-            branch_title = branch_name
-        else:
-            current_title = self._session_db.get_session_title(current_entry.session_id)
-            base = current_title or "branch"
-            branch_title = self._session_db.get_next_title_in_lineage(base)
-
-        parent_session_id = current_entry.session_id
-
-        # Create the new session with parent link
-        try:
-            self._session_db.create_session(
-                session_id=new_session_id,
-                source=source.platform.value if source.platform else "gateway",
-                model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
-                parent_session_id=parent_session_id,
-            )
-        except Exception as e:
-            logger.error("Failed to create branch session: %s", e)
-            return t("gateway.branch.create_failed", error=e)
-
-        # Copy conversation history to the new session
-        for msg in history:
-            try:
-                self._session_db.append_message(
-                    session_id=new_session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning"),
-                    reasoning_content=msg.get("reasoning_content"),
-                    reasoning_details=msg.get("reasoning_details"),
-                    codex_reasoning_items=msg.get("codex_reasoning_items"),
-                    codex_message_items=msg.get("codex_message_items"),
-                )
-            except Exception:
-                pass  # Best-effort copy
-
-        # Set title
-        try:
-            self._session_db.set_session_title(new_session_id, branch_title)
-        except Exception:
-            pass
-
-        # Switch the session store entry to the new session
-        new_entry = self.session_store.switch_session(session_key, new_session_id)
-        if not new_entry:
-            return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
-
-        # Evict any cached agent for this session
-        self._evict_cached_agent(session_key)
-
-        msg_count = len([m for m in history if m.get("role") == "user"])
-        key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        return await command_handlers.handle_branch_command(
+            runner=self,
+            event=event,
+        )
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
@@ -6430,52 +6308,10 @@ class GatewayRunner:
         return await command_handlers.handle_usage_command(self, event)
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
-        args = event.get_command_args().strip()
-
-        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
-        args = re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
-
-        days = 30
-        source = None
-
-        # Parse simple args: /insights 7  or  /insights --days 7
-        if args:
-            parts = args.split()
-            i = 0
-            while i < len(parts):
-                if parts[i] == "--days" and i + 1 < len(parts):
-                    try:
-                        days = int(parts[i + 1])
-                    except ValueError:
-                        return t("gateway.insights.invalid_days", value=parts[i + 1])
-                    i += 2
-                elif parts[i] == "--source" and i + 1 < len(parts):
-                    source = parts[i + 1]
-                    i += 2
-                elif parts[i].isdigit():
-                    days = int(parts[i])
-                    i += 1
-                else:
-                    i += 1
-
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-
-            loop = asyncio.get_running_loop()
-
-            def _run_insights():
-                db = SessionDB()
-                engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
-                db.close()
-                return result
-
-            return await loop.run_in_executor(None, _run_insights)
-        except Exception as e:
-            logger.error("Insights command error: %s", e, exc_info=True)
-            return t("gateway.insights.error", error=e)
+        return await command_handlers.handle_insights_command(
+            runner=self,
+            event=event,
+        )
 
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         return await command_handlers.handle_reload_mcp_command(
@@ -6516,33 +6352,10 @@ class GatewayRunner:
         message suitable for any gateway adapter; bundles are loaded by
         invoking the bundle's own ``/<slug>`` command, not by this one.
         """
-        try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            logger.warning("Bundles command unavailable: %s", exc)
-            return f"Bundles subsystem unavailable: {exc}"
-
-        bundles = list_bundles()
-        if not bundles:
-            return (
-                "No skill bundles installed.\n"
-                "Create one on the host with:\n"
-                "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
-                f"Directory: `{_bundles_dir()}`"
-            )
-
-        lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]
-        for info in bundles:
-            skill_count = len(info.get("skills", []))
-            desc = info.get("description") or f"Load {skill_count} skills"
-            lines.append(
-                f"• `/{info['slug']}` — {desc} _({skill_count} skills)_"
-            )
-            for s in info.get("skills", []):
-                lines.append(f"    · {s}")
-        lines.append("")
-        lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
-        return "\n".join(lines)
+        return await command_handlers.handle_bundles_command(
+            runner=self,
+            event=event,
+        )
 
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
@@ -6832,43 +6645,10 @@ class GatewayRunner:
             /approve always       — approve oldest + remember permanently
             /approve all always   — approve all + remember permanently
         """
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+        return await command_handlers.handle_approve_command(
+            runner=self,
+            event=event,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
-
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
-        resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
-
-        if any(a in {"always", "permanent", "permanently"} for a in remaining):
-            choice = "always"
-        elif any(a in {"session", "ses"} for a in remaining):
-            choice = "session"
-        else:
-            choice = "once"
-
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
-        if not count:
-            return t("gateway.approve.no_pending")
-
-        # Resume typing indicator — agent is about to continue processing.
-        _adapter = self.adapters.get(source.platform)
-        if _adapter:
-            _adapter.resume_typing_for_chat(source.chat_id)
-
-        logger.info("User approved %d dangerous command(s) via /approve (%s)", count, choice)
-        plural = "plural" if count > 1 else "singular"
-        return t(f"gateway.approve.{choice}_{plural}", count=count)
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject pending dangerous command(s).
@@ -6878,35 +6658,10 @@ class GatewayRunner:
 
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
         """
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+        return await command_handlers.handle_deny_command(
+            runner=self,
+            event=event,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
-
-        args = event.get_command_args().strip().lower()
-        resolve_all = "all" in args
-
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
-        if not count:
-            return t("gateway.deny.no_pending")
-
-        # Resume typing indicator — agent continues (with BLOCKED result).
-        _adapter = self.adapters.get(source.platform)
-        if _adapter:
-            _adapter.resume_typing_for_chat(source.chat_id)
-
-        logger.info("User denied %d dangerous command(s) via /deny", count)
-        if count > 1:
-            return t("gateway.deny.denied_plural", count=count)
-        return t("gateway.deny.denied_singular")
 
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
@@ -6924,42 +6679,10 @@ class GatewayRunner:
         NOT full log files, to protect conversation privacy.  Users who need
         full log uploads should use ``hermes debug share`` from the CLI.
         """
-        import asyncio
-        from hermes_cli.debug import (
-            _capture_dump, collect_debug_report,
-            upload_to_pastebin, _schedule_auto_delete,
-            _GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
+        return await command_handlers.handle_debug_command(
+            runner=self,
+            event=event,
         )
-
-        loop = asyncio.get_running_loop()
-
-        # Run blocking I/O (dump capture, log reads, uploads) in a thread.
-        def _collect_and_upload():
-            _best_effort_sweep_expired_pastes()
-            dump_text = _capture_dump()
-            report = collect_debug_report(log_lines=200, dump_text=dump_text)
-
-            urls = {}
-            try:
-                urls["Report"] = upload_to_pastebin(report)
-            except Exception as exc:
-                return t("gateway.debug.upload_failed", error=exc)
-
-            # Schedule auto-deletion after 6 hours
-            _schedule_auto_delete(list(urls.values()))
-
-            lines = [_GATEWAY_PRIVACY_NOTICE, "", t("gateway.debug.header"), ""]
-            label_width = max(len(k) for k in urls)
-            for label, url in urls.items():
-                lines.append(f"`{label:<{label_width}}`  {url}")
-
-            lines.append("")
-            lines.append(t("gateway.debug.auto_delete"))
-            lines.append(t("gateway.debug.full_logs_hint"))
-            lines.append(t("gateway.debug.share_hint"))
-            return "\n".join(lines)
-
-        return await loop.run_in_executor(None, _collect_and_upload)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

@@ -20,6 +20,9 @@ from agent.i18n import t  # noqa: F401 — required per mixin convention
 from gateway.platforms.base import BasePlatformAdapter  # noqa: F401 — used in type checks
 from gateway.session import SessionSource  # noqa: F401 — used in type annotation
 
+# Lazy import to avoid circular dependency
+# from gateway.queue_helpers import promote_queued_event, is_goal_continuation_event, goal_still_active_for_session
+
 logger = logging.getLogger(__name__)
 
 
@@ -2075,7 +2078,8 @@ class AgentRunnerMixin:
                 # occupied for the full FIFO chain, which (a) preserves
                 # order, and (b) causes any mid-chain /queue to correctly
                 # route to overflow rather than jumping the queue.
-                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+                from gateway.queue_helpers import promote_queued_event
+                pending_event = promote_queued_event(self, session_key, adapter, pending_event)
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     interrupt_message = result.get("interrupt_message")
                     if _is_control_interrupt_message(interrupt_message):
@@ -2233,7 +2237,8 @@ class AgentRunnerMixin:
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+                    from gateway.queue_helpers import is_goal_continuation_event, goal_still_active_for_session
+                    if is_goal_continuation_event(pending_event) and not goal_still_active_for_session(session_id):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",

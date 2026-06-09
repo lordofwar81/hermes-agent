@@ -36,6 +36,9 @@ from gateway.platforms.base import (
 )
 from gateway.session import SessionSource
 
+# Lazy import to avoid circular dependency
+# Authorization functions imported at call site
+
 logger = logging.getLogger(__name__)
 
 
@@ -849,7 +852,8 @@ class SessionMixin:
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
+        from gateway.authorization import is_user_authorized
+        if not is_user_authorized(self, event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",

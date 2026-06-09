@@ -4,6 +4,9 @@ import logging
 
 from agent.i18n import t
 
+# Lazy import to avoid circular dependency
+# from gateway.authorization import is_user_authorized
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,7 +153,8 @@ class VoiceMediaMixin:
                 chat_type="channel",
             )
 
-        if not self._is_user_authorized(source):
+        from gateway.authorization import is_user_authorized
+        if not is_user_authorized(self, source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
 

@@ -10,6 +10,9 @@ from typing import Any, Optional
 
 from agent.i18n import t
 
+# Lazy import to avoid circular dependency
+# from gateway.adapter_factory import create_adapter
+
 logger = logging.getLogger(__name__)
 
 
@@ -281,7 +284,8 @@ class LifecycleMixin:
                 continue
             enabled_platform_count += 1
 
-            adapter = self._create_adapter(platform, platform_config)
+            from gateway.adapter_factory import create_adapter
+            adapter = create_adapter(self, platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value

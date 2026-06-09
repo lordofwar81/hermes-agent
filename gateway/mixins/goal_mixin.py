@@ -35,6 +35,9 @@ from gateway.platforms.base import (
 )
 from gateway.session import SessionSource
 
+# Lazy import to avoid circular dependency
+# from gateway.queue_helpers import enqueue_fifo, is_goal_continuation_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -106,7 +109,8 @@ class GoalMixin:
                     message_id=None,
                     channel_prompt=None,
                 )
-                self._enqueue_fifo(_quick_key, cont_event, adapter)
+                from gateway.queue_helpers import enqueue_fifo
+                enqueue_fifo(self, _quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
@@ -206,7 +210,8 @@ class GoalMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
             pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
+            from gateway.queue_helpers import is_goal_continuation_event
+            if is_goal_continuation_event(pending_event):
                 pending_slot.pop(session_key, None)
                 removed += 1
 
@@ -216,7 +221,7 @@ class GoalMixin:
             if overflow:
                 kept = []
                 for queued_event in overflow:
-                    if self._is_goal_continuation_event(queued_event):
+                    if is_goal_continuation_event(queued_event):
                         removed += 1
                     else:
                         kept.append(queued_event)

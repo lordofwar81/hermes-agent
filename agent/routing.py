@@ -94,7 +94,7 @@ class TaskClassifier:
     _CODE_KW = frozenset({
         "debug", "debugging", "implement", "implementation", "patch",
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
-        "script", "server", "test", "security", "deploy", "compile",
+        "script", "server", "test", "deploy", "compile",
         "refactor", "rewrite", "rework",
         "write a function", "write a script", "write a class", "write a method",
         "write a test", "write code", "write a program", "write a query",

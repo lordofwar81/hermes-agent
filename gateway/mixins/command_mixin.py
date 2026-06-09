@@ -19,6 +19,9 @@ from gateway.platforms.base import (
 )
 from gateway.session import SessionSource
 
+# Lazy import to avoid circular dependency
+# from gateway.queue_helpers import queue_depth, enqueue_fifo, clear_goal_pending_continuations
+
 from agent.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -397,7 +400,8 @@ class CommandMixin:
 
         # Count pending /queue follow-ups (slot + overflow).
         adapter = self.adapters.get(source.platform) if source else None
-        queue_depth = self._queue_depth(session_key, adapter=adapter)
+        from gateway.queue_helpers import queue_depth
+        queue_depth = queue_depth(self, session_key, adapter=adapter)
 
         title = None
         # Pull token totals from the SQLite session DB rather than the
@@ -1398,7 +1402,8 @@ class CommandMixin:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
-                    self._clear_goal_pending_continuations(_quick_key, adapter)
+                    from gateway.queue_helpers import clear_goal_pending_continuations
+                    clear_goal_pending_continuations(self, _quick_key, adapter)
             except Exception as exc:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
@@ -1416,7 +1421,8 @@ class CommandMixin:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
                 if adapter and _quick_key:
-                    self._clear_goal_pending_continuations(_quick_key, adapter)
+                    from gateway.queue_helpers import clear_goal_pending_continuations
+                    clear_goal_pending_continuations(self, _quick_key, adapter)
             except Exception as exc:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
@@ -1440,7 +1446,8 @@ class CommandMixin:
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
                 )
-                self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                from gateway.queue_helpers import enqueue_fifo
+                enqueue_fifo(self, _quick_key, kickoff_event, adapter)
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 

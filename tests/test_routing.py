@@ -132,8 +132,8 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("test the API endpoint") == Category.CODE
 
     def test_code_security_keyword(self):
-        # "security" is in _CODE_KW
-        assert TaskClassifier.classify("security audit needed") == Category.CODE
+        # "security" removed from _CODE_KW (June 2026) — security audit is ANALYSIS
+        assert TaskClassifier.classify("security audit needed") == Category.ANALYSIS
 
     def test_code_continue_keyword(self):
         assert TaskClassifier.classify("continue") == Category.CODE

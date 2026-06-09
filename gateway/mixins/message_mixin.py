@@ -22,6 +22,10 @@ from gateway.session import SessionSource
 
 from agent.i18n import t
 
+# Lazy import to avoid circular dependency
+# from gateway.authorization import is_user_authorized, get_unauthorized_dm_behavior
+# from gateway.queue_helpers import enqueue_fifo, queue_depth
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,13 +115,16 @@ class MessageMixin:
         if is_internal:
             pass
         elif source.user_id is None:
-            if not self._is_user_authorized(source):
+            from gateway.authorization import is_user_authorized
+            if not is_user_authorized(self, source):
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-        elif not self._is_user_authorized(source):
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
-                platform_name = source.platform.value if source.platform else "unknown"
+        else:
+            from gateway.authorization import is_user_authorized, get_unauthorized_dm_behavior
+            if not is_user_authorized(self, source):
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                if source.chat_type == "dm" and get_unauthorized_dm_behavior(self, source.platform) == "pair":
+                    platform_name = source.platform.value if source.platform else "unknown"
                 if self.pairing_store._is_rate_limited(platform_name, source.user_id):
                     return None
                 code = self.pairing_store.generate_code(
@@ -365,8 +372,9 @@ class MessageMixin:
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
                     )
-                    self._enqueue_fifo(_quick_key, queued_event, adapter)
-                depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                    from gateway.queue_helpers import enqueue_fifo, queue_depth
+                    enqueue_fifo(self, _quick_key, queued_event, adapter)
+                depth = queue_depth(self, _quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
                     return "Queued for the next turn."
                 return f"Queued for the next turn. ({depth} queued)"

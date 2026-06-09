@@ -564,8 +564,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+
+    # Discord adapter migrated to plugin — try both paths
+    try:
+        from gateway.platforms.discord import DiscordAdapter
+    except ImportError:
+        try:
+            from plugins.platforms.discord.adapter import DiscordAdapter
+        except ImportError:
+            DiscordAdapter = None
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -593,7 +601,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
-        Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
+        Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH if DiscordAdapter else 2000,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
     if _feishu_available:

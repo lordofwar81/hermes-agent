@@ -645,6 +645,178 @@ class ProcessWatcher:
         pass
 
 
+
+async def run_process_watcher(
+    runner,  # GatewayRunner instance
+    watcher: dict,
+) -> None:
+    """
+    Periodically check a background process and push updates to the user.
+
+    Runs as an asyncio task. Stays silent when nothing changed.
+    Auto-removes when the process exits or is killed.
+
+    Notification mode (from ``display.background_process_notifications``):
+      - ``all``    — running-output updates + final message
+      - ``result`` — final completion message only
+      - ``error``  — final message only when exit code != 0
+      - ``off``    — no messages at all
+    """
+    from tools.process_registry import process_registry
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    session_id = watcher["session_id"]
+    interval = watcher["check_interval"]
+    session_key = watcher.get("session_key", "")
+    platform_name = watcher.get("platform", "")
+    chat_id = watcher.get("chat_id", "")
+    thread_id = watcher.get("thread_id", "")
+    user_id = watcher.get("user_id", "")
+    user_name = watcher.get("user_name", "")
+    message_id = str(watcher.get("message_id") or "").strip() or None
+    agent_notify = watcher.get("notify_on_complete", False)
+    notify_mode = runner._load_background_notifications_mode()
+
+    logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
+                  session_id, interval, notify_mode, agent_notify)
+
+    if notify_mode == "off" and not agent_notify:
+        # Still wait for the process to exit so we can log it, but don't
+        # push any messages to the user.
+        while True:
+            await asyncio.sleep(interval)
+            session = process_registry.get(session_id)
+            if session is None or session.exited:
+                break
+        logger.debug("Process watcher ended (silent): %s", session_id)
+        return
+
+    last_output_len = 0
+    while True:
+        await asyncio.sleep(interval)
+
+        session = process_registry.get(session_id)
+        if session is None:
+            break
+
+        current_output_len = len(session.output_buffer)
+        has_new_output = current_output_len > last_output_len
+        last_output_len = current_output_len
+
+        if session.exited:
+            # --- Agent-triggered completion: inject synthetic message ---
+            # Skip if the agent already consumed the result via wait/poll/log
+            from tools.process_registry import process_registry as _pr_check
+            if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                from tools.ansi_strip import strip_ansi
+                _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                # Truncate at line boundaries so notifications never start
+                # mid-line (fixes #23284). Keep the last ~2000 chars but
+                # snap to the nearest preceding newline, then prepend a
+                # truncation marker when output was cut.
+                _LIMIT = 2000
+                if len(_raw) > _LIMIT:
+                    _tail = _raw[-_LIMIT:]
+                    _nl = _tail.find("\n")
+                    _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+                    _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
+                else:
+                    _out = _raw
+                synth_text = (
+                    f"[IMPORTANT: Background process {session_id} completed "
+                    f"(exit code {session.exit_code}).\n"
+                    f"Command: {session.command}\n"
+                    f"Output:\n{_out}]"
+                )
+                source = runner._build_process_event_source({
+                    "session_id": session_id,
+                    "session_key": session_key,
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "user_name": user_name,
+                })
+                if not source:
+                    logger.warning(
+                        "Dropping completion notification with no routing metadata for process %s",
+                        session_id,
+                    )
+                    break
+
+                adapter = None
+                for p, a in runner.adapters.items():
+                    if p == source.platform:
+                        adapter = a
+                        break
+                if adapter and source.chat_id:
+                    try:
+                        synth_event = MessageEvent(
+                            text=synth_text,
+                            message_type=MessageType.TEXT,
+                            source=source,
+                            internal=True,
+                            message_id=message_id,
+                        )
+                        logger.info(
+                            "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                            session_id,
+                            session_key,
+                            source.chat_id,
+                            source.thread_id,
+                        )
+                        await adapter.handle_message(synth_event)
+                    except Exception as e:
+                        logger.error("Agent notify injection error: %s", e)
+                break
+
+            # --- Normal text-only notification ---
+            # Decide whether to notify based on mode
+            should_notify = (
+                notify_mode in {"all", "result"}
+                or (notify_mode == "error" and session.exit_code not in {0, None})
+            )
+            if should_notify:
+                new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                message_text = (
+                    f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                    f"Here's the final output:\n{new_output}]"
+                )
+                adapter = None
+                for p, a in runner.adapters.items():
+                    if p.value == platform_name:
+                        adapter = a
+                        break
+                if adapter and chat_id:
+                    try:
+                        send_meta = {"thread_id": thread_id} if thread_id else None
+                        await adapter.send(chat_id, message_text, metadata=send_meta)
+                    except Exception as e:
+                        logger.error("Watcher delivery error: %s", e)
+                break
+
+        elif has_new_output and notify_mode == "all" and not agent_notify:
+            # New output available -- deliver status update (only in "all" mode)
+            # Skip periodic updates for agent_notify watchers (they only care about completion)
+            new_output = session.output_buffer[-500:] if session.output_buffer else ""
+            message_text = (
+                f"[Background process {session_id} is still running~ "
+                f"New output:\n{new_output}]"
+            )
+            adapter = None
+            for p, a in runner.adapters.items():
+                if p.value == platform_name:
+                    adapter = a
+                    break
+            if adapter and chat_id:
+                try:
+                    send_meta = {"thread_id": thread_id} if thread_id else None
+                    await adapter.send(chat_id, message_text, metadata=send_meta)
+                except Exception as e:
+                    logger.error("Watcher delivery error: %s", e)
+
+    logger.debug("Process watcher ended: %s", session_id)
+
 async def kanban_dispatcher_watcher(
     runner,  # GatewayRunner instance
 ) -> None:

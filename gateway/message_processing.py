@@ -11,12 +11,51 @@ and manage the message lifecycle through the gateway.
 
 import asyncio
 import logging
-from typing import Any, Optional
+import os
+import time
+from datetime import datetime
+from typing import Any, Dict, Optional
 
-from gateway.events import MessageEvent
+from gateway.platforms.base import MessageEvent, Platform
 from gateway.authorization import is_user_authorized, get_unauthorized_dm_behavior
+from gateway.utils.config_resolvers import _float_env, _resolve_gateway_model
+from gateway import command_handlers
+from gateway.runtime_status import _AGENT_PENDING_SENTINEL
+from gateway.session import build_session_context, build_session_context_prompt
+from gateway import agent_execution
+from gateway.adapter_factory import _load_gateway_config
+from gateway.utils import _sanitize_gateway_final_response
 
 logger = logging.getLogger(__name__)
+
+
+# Built-in home-target env vars for platforms with built-in home support.
+_HOME_TARGET_ENV_VARS = {
+    "discord": "DISCORD_HOME_CHANNEL",
+    "telegram": "TELEGRAM_HOME_CHANNEL",
+    "slack": "SLACK_HOME_CHANNEL",
+    "guilded": "GUILDED_HOME_CHANNEL",
+    "matrix": "MATRIX_HOME_ROOM",
+}
+
+
+def _home_target_env_var(platform_name: str) -> str:
+    """Return the configured home-target env var for a platform.
+
+    Consults built-in ``_HOME_TARGET_ENV_VARS`` first, then the plugin
+    registry via ``cron.scheduler._resolve_home_env_var``, then falls back
+    to ``<PLATFORM>_HOME_CHANNEL`` for unknown names.
+    """
+    if platform_name in _HOME_TARGET_ENV_VARS:
+        return _HOME_TARGET_ENV_VARS[platform_name]
+    try:
+        from cron.scheduler import _resolve_home_env_var
+        resolved = _resolve_home_env_var(platform_name)
+        if resolved:
+            return resolved
+    except Exception:
+        pass
+    return f"{platform_name.upper()}_HOME_CHANNEL"
 
 
 async def handle_message(
@@ -405,7 +444,7 @@ async def handle_message(
             )
             # Clean up the running agent entry so the reset handler
             # doesn't think an agent is still active.
-            return await runner._handle_reset_command(event)
+            return await command_handlers.handle_reset_command(runner, event)
 
         # /queue <prompt> — queue without interrupting.
         # Semantics: each /queue invocation produces its own full agent
@@ -868,10 +907,10 @@ async def handle_message(
                 break
 
     if canonical == "new":
-        if telegram_topic.is_telegram_topic_root_lobby(source):
-            return telegram_topic.telegram_topic_root_new_message()
+        if runner._is_telegram_topic_root_lobby(source):
+            return runner._telegram_topic_root_new_message()
         async def _do_reset():
-            return await runner._handle_reset_command(event)
+            return await command_handlers.handle_reset_command(runner, event)
         return await runner._maybe_confirm_destructive_slash(
             event=event,
             command="new",
@@ -1288,11 +1327,11 @@ async def handle_message(
     # No bare text matching — "yes" in normal conversation must not trigger
     # execution of a dangerous command.
 
-    if telegram_topic.is_telegram_topic_root_lobby(source):
+    if runner._is_telegram_topic_root_lobby(source):
         # Debounce the lobby reminder so a user who forgets about
         # topic mode and fires ten prompts doesn't get ten copies.
         if runner._should_send_telegram_lobby_reminder(source):
-            return telegram_topic.telegram_topic_root_lobby_message()
+            return runner._telegram_topic_root_lobby_message()
         return None
 
     # ── Claim this session before any await ───────────────────────
@@ -1389,7 +1428,7 @@ async def handle_message_with_agent(
     session_entry = runner.session_store.get_or_create_session(source)
     session_key = session_entry.session_key
     runner._cache_session_source(session_key, source)
-    if telegram_topic.is_telegram_topic_lane(source):
+    if runner._is_telegram_topic_lane(source):
         try:
             binding = runner._session_db.get_telegram_topic_binding(
                 chat_id=str(source.chat_id),
@@ -2023,8 +2062,8 @@ async def handle_message_with_agent(
         await runner.hooks.emit("agent:start", hook_ctx)
 
         # Run the agent
-        agent_result = await run_agent(
-            self,  # GatewayRunner instance
+        agent_result = await agent_execution.run_agent(
+            runner,  # GatewayRunner instance
             message=message_text,
             context_prompt=context_prompt,
             history=history,
@@ -2145,6 +2184,7 @@ async def handle_message_with_agent(
         # shutdown) — the turn ran to completion, so recovery
         # succeeded and subsequent messages should no longer receive
         # the restart-interruption system note.
+        from gateway.run import _should_clear_resume_pending_after_turn
         if session_key and _should_clear_resume_pending_after_turn(agent_result):
             runner._clear_restart_failure_count(session_key)
             try:
@@ -2157,6 +2197,7 @@ async def handle_message_with_agent(
 
         # Normalize empty responses: surface errors, partial failures, and
         # the case where agent did work but returned no text. Fix for #18765.
+        from gateway.run import _normalize_empty_agent_response
         response = _normalize_empty_agent_response(
             agent_result, response, history_len=len(history),
         )

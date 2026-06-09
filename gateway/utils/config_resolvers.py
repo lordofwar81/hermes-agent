@@ -105,7 +105,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
-    from gateway.adapter_factory import _load_gateway_config
+    from gateway.run import _load_gateway_config
 
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})

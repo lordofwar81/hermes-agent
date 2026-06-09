@@ -1098,7 +1098,7 @@ from gateway import config_loaders
 from gateway import exit_state
 from gateway import queue_helpers
 from gateway import gateway_startup
-from gateway.utils import message_builders
+from gateway.utils import message_builders, gateway_helpers
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,

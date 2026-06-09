@@ -5259,66 +5259,12 @@ class GatewayRunner:
         Creates a synthetic MessageEvent and processes it through the
         adapter's full message pipeline (session, typing, agent, TTS reply).
         """
-        adapter = self.adapters.get(Platform.DISCORD)
-        if not adapter:
-            return
-
-        text_ch_id = adapter._voice_text_channels.get(guild_id)
-        if not text_ch_id:
-            return
-
-        # Build source — reuse the linked text channel's metadata when available
-        # so voice input shares the same session as the bound text conversation.
-        source_data = getattr(adapter, "_voice_sources", {}).get(guild_id)
-        if source_data:
-            source = SessionSource.from_dict(source_data)
-            source.user_id = str(user_id)
-            source.user_name = str(user_id)
-        else:
-            source = SessionSource(
-                platform=Platform.DISCORD,
-                chat_id=str(text_ch_id),
-                user_id=str(user_id),
-                user_name=str(user_id),
-                chat_type="channel",
-            )
-
-        # Check authorization before processing voice input
-        if not self._is_user_authorized(source):
-            logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
-            return
-
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
-            logger.info(
-                "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
-                guild_id,
-                user_id,
-                transcript[:100],
-            )
-            return
-
-        # Show transcript in text channel (after auth, with mention sanitization)
-        try:
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        except Exception:
-            pass
-
-        # Build a synthetic MessageEvent and feed through the normal pipeline
-        # Use SimpleNamespace as raw_message so _get_guild_id() can extract
-        # guild_id and _send_voice_reply() plays audio in the voice channel.
-        from types import SimpleNamespace
-        event = MessageEvent(
-            source=source,
-            text=transcript,
-            message_type=MessageType.VOICE,
-            raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+        return await command_handlers._handle_voice_channel_input(
+            runner=self,
+            guild_id=guild_id,
+            user_id=user_id,
+            transcript=transcript,
         )
-
-        await adapter.handle_message(event)
-
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -5337,42 +5283,13 @@ class GatewayRunner:
           in which case the base adapter won't have text for auto-TTS so the
           runner must handle it.
         """
-        if not response or response.startswith("Error:"):
-            return False
-
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
-        is_voice_input = (event.message_type == MessageType.VOICE)
-
-        should = (
-            (voice_mode == "all")
-            or (voice_mode == "voice_only" and is_voice_input)
+        return command_handlers._should_send_voice_reply(
+            runner=self,
+            event=event,
+            response=response,
+            agent_messages=agent_messages,
+            already_sent=already_sent,
         )
-        if not should:
-            return False
-
-        # Dedup: agent already called TTS tool
-        has_agent_tts = any(
-            msg.get("role") == "assistant"
-            and any(
-                tc.get("function", {}).get("name") == "text_to_speech"
-                for tc in (msg.get("tool_calls") or [])
-            )
-            for msg in agent_messages
-        )
-        if has_agent_tts:
-            return False
-
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if is_voice_input and not already_sent:
-            return False
-
-        return True
-
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid

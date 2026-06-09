@@ -4127,3 +4127,199 @@ async def handle_topic_command(runner, event: MessageEvent, args: str = "") -> s
         return t("gateway.topic.thread_ready")
 
     return _telegram_topic_root_status_message(runner, source)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice channel input handlers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _handle_voice_channel_input(runner, guild_id: int, user_id: int, transcript: str):
+    """Handle transcribed voice from a user in a voice channel.
+
+    Creates a synthetic MessageEvent and processes it through the
+    adapter's full message pipeline (session, typing, agent, TTS reply).
+    """
+    adapter = runner.adapters.get(Platform.DISCORD)
+    if not adapter:
+        return
+
+    text_ch_id = adapter._voice_text_channels.get(guild_id)
+    if not text_ch_id:
+        return
+
+    # Build source — reuse the linked text channel's metadata when available
+    # so voice input shares the same session as the bound text conversation.
+    source_data = getattr(adapter, "_voice_sources", {}).get(guild_id)
+    if source_data:
+        source = SessionSource.from_dict(source_data)
+        source.user_id = str(user_id)
+        source.user_name = str(user_id)
+    else:
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(text_ch_id),
+            user_id=str(user_id),
+            user_name=str(user_id),
+            chat_type="channel",
+        )
+
+    # Check authorization before processing voice input
+    if not runner._is_user_authorized(source):
+        logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
+        return
+
+    if runner._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        logger.info(
+            "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
+            guild_id,
+            user_id,
+            transcript[:100],
+        )
+        return
+
+    # Show transcript in text channel (after auth, with mention sanitization)
+    try:
+        channel = adapter._client.get_channel(text_ch_id)
+        if channel:
+            safe_text = transcript[:2000].replace("@everyone", "@​everyone").replace("@here", "@​here")
+            await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+    except Exception:
+        pass
+
+    # Build a synthetic MessageEvent and feed through the normal pipeline
+    # Use SimpleNamespace as raw_message so _get_guild_id() can extract
+    # guild_id and _send_voice_reply() plays audio in the voice channel.
+    from types import SimpleNamespace
+    event = MessageEvent(
+        source=source,
+        text=transcript,
+        message_type=MessageType.VOICE,
+        raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
+    )
+
+    await adapter.handle_message(event)
+
+
+def _should_send_voice_reply(runner, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False) -> bool:
+    """Decide whether the runner should send a TTS voice reply.
+
+    Returns False when:
+    - voice_mode is off for this chat
+    - response is empty or an error
+    - agent already called text_to_speech tool (dedup)
+    - voice input and base adapter auto-TTS already handled it (skip_double)
+      UNLESS streaming already consumed the response (already_sent=True),
+      in which case the base adapter won't have text for auto-TTS so the
+      runner must handle it.
+    """
+    if not response or response.startswith("Error:"):
+        return False
+
+    chat_id = event.source.chat_id
+    voice_mode = runner._voice_mode.get(runner._voice_key(event.source.platform, chat_id), "off")
+    is_voice_input = (event.message_type == MessageType.VOICE)
+
+    should = (
+        (voice_mode == "all")
+        or (voice_mode == "voice_only" and is_voice_input)
+    )
+    if not should:
+        return False
+
+    # Dedup: agent already called TTS tool
+    has_agent_tts = any(
+        msg.get("role") == "assistant"
+        and any(
+            tc.get("function", {}).get("name") == "text_to_speech"
+            for tc in (msg.get("tool_calls") or [])
+        )
+        for msg in agent_messages
+    )
+    if has_agent_tts:
+        return False
+
+    # Dedup: base adapter auto-TTS already handles voice input
+    # (play_tts plays in VC when connected, so runner can skip).
+    # When streaming already delivered the text (already_sent=True),
+    # the base adapter will receive None and can't run auto-TTS,
+    # so the runner must take over.
+    if is_voice_input and not already_sent:
+        return False
+
+    return True
+
+
+async def _send_voice_reply(runner, event: MessageEvent, text: str) -> None:
+    """Generate TTS audio and send as a voice message before the text reply."""
+    import uuid as _uuid
+    audio_path = None
+    actual_path = None
+    try:
+        from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+
+        tts_text = _strip_markdown_for_tts(text[:4000])
+        if not tts_text:
+            return
+
+        # Use .mp3 extension so edge-tts conversion to opus works correctly.
+        # The TTS tool may convert to .ogg — use file_path from result.
+        audio_path = os.path.join(
+            tempfile.gettempdir(), "hermes_voice",
+            f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+        )
+        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+
+        result_json = await asyncio.to_thread(
+            text_to_speech_tool, text=tts_text, output_path=audio_path
+        )
+        try:
+            result = json.loads(result_json)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Auto voice reply TTS returned invalid JSON: %s", result_json[:200] if result_json else result_json)
+            return
+
+        # Use the actual file path from result (may differ after opus conversion)
+        actual_path = result.get("file_path", audio_path)
+        if not result.get("success") or not os.path.isfile(actual_path):
+            logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+            return
+
+        adapter = runner.adapters.get(event.source.platform)
+
+        # If connected to a voice channel, play there instead of sending a file
+        guild_id = runner._get_guild_id(event)
+        if (guild_id
+                and hasattr(adapter, "play_in_voice_channel")
+                and hasattr(adapter, "is_in_voice_channel")
+                and adapter.is_in_voice_channel(guild_id)):
+            await adapter.play_in_voice_channel(guild_id, actual_path)
+        elif adapter and hasattr(adapter, "send_voice"):
+            reply_anchor = runner._reply_anchor_for_event(event)
+            thread_meta = runner._thread_metadata_for_source(event.source, reply_anchor)
+            # Mark the auto voice reply as notify-worthy.  Mirrors the
+            # final-text path in gateway/platforms/base.py which sets
+            # ``notify=True`` so platform adapters that gate push
+            # notifications (Telegram "important" mode) deliver the
+            # final voice reply as a normal notification instead of a
+            # silent message.  Clone first so we don't mutate metadata
+            # shared with concurrent typing-indicator state.
+            if thread_meta is not None:
+                thread_meta = dict(thread_meta)
+                thread_meta["notify"] = True
+            else:
+                thread_meta = {"notify": True}
+            send_kwargs = {
+                "chat_id": event.source.chat_id,
+                "audio_path": actual_path,
+                "reply_to": reply_anchor,
+                "metadata": thread_meta,
+            }
+            await adapter.send_voice(**send_kwargs)
+    except Exception as e:
+        logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+    finally:
+        for p in {audio_path, actual_path} - {None}:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass

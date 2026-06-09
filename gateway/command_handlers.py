@@ -3068,3 +3068,81 @@ async def handle_verbose_command(runner, event: MessageEvent) -> str:
     except Exception as e:
         logger.warning("Failed to save tool_progress mode: %s", e)
         return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
+
+
+async def handle_voice_channel_join(runner, event: MessageEvent) -> str:
+    """Join the user's current Discord voice channel."""
+    import sys
+
+    adapter = runner.adapters.get(event.source.platform)
+    if not hasattr(adapter, "join_voice_channel"):
+        return "Voice channels are not supported on this platform."
+
+    guild_id = runner._get_guild_id(event)
+    if not guild_id:
+        return "This command only works in a Discord server."
+
+    voice_channel = await adapter.get_user_voice_channel(
+        guild_id, event.source.user_id
+    )
+    if not voice_channel:
+        return "You need to be in a voice channel first."
+
+    # Wire callbacks BEFORE join so voice input arriving immediately
+    # after connection is not lost.
+    if hasattr(adapter, "_voice_input_callback"):
+        adapter._voice_input_callback = runner._handle_voice_channel_input
+    if hasattr(adapter, "_on_voice_disconnect"):
+        adapter._on_voice_disconnect = runner._handle_voice_timeout_cleanup
+
+    try:
+        success = await adapter.join_voice_channel(voice_channel)
+    except Exception as e:
+        logger.warning("Failed to join voice channel: %s", e)
+        adapter._voice_input_callback = None
+        err_lower = str(e).lower()
+        if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
+            return (
+                "Voice dependencies are missing (PyNaCl / davey). "
+                f"Install with: `{sys.executable} -m pip install PyNaCl`"
+            )
+        return f"Failed to join voice channel: {e}"
+
+    if success:
+        adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+        if hasattr(adapter, "_voice_sources"):
+            adapter._voice_sources[guild_id] = event.source.to_dict()
+        runner._voice_mode[runner._voice_key(event.source.platform, event.source.chat_id)] = "all"
+        runner._save_voice_modes()
+        runner._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+        return (
+            f"Joined voice channel **{voice_channel.name}**.\n"
+            f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+        )
+    # Join failed — clear callback
+    adapter._voice_input_callback = None
+    return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+
+async def handle_voice_channel_leave(runner, event: MessageEvent) -> str:
+    """Leave the Discord voice channel."""
+    adapter = runner.adapters.get(event.source.platform)
+    guild_id = runner._get_guild_id(event)
+
+    if not guild_id or not hasattr(adapter, "leave_voice_channel"):
+        return "Not in a voice channel."
+
+    if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+        return "Not in a voice channel."
+
+    try:
+        await adapter.leave_voice_channel(guild_id)
+    except Exception as e:
+        logger.warning("Error leaving voice channel: %s", e)
+    # Always clean up state even if leave raised an exception
+    runner._voice_mode[runner._voice_key(event.source.platform, event.source.chat_id)] = "off"
+    runner._save_voice_modes()
+    runner._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+    if hasattr(adapter, "_voice_input_callback"):
+        adapter._voice_input_callback = None
+    return "Left voice channel."

@@ -3761,3 +3761,369 @@ async def _run_background_task(
             )
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Telegram topic command helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_telegram_topic_capabilities(runner, source: SessionSource) -> dict:
+    """Read Telegram private-topic capability flags via Bot API getMe."""
+    adapter = runner.adapters.get(source.platform) if getattr(runner, "adapters", None) else None
+    bot = getattr(adapter, "_bot", None)
+    if bot is None or not hasattr(bot, "get_me"):
+        return {"checked": False}
+    try:
+        me = await bot.get_me()
+    except Exception:
+        logger.debug("Failed to fetch Telegram getMe topic capabilities", exc_info=True)
+        return {"checked": False}
+
+    def _field(name: str):
+        if hasattr(me, name):
+            return getattr(me, name)
+        api_kwargs = getattr(me, "api_kwargs", None)
+        if isinstance(api_kwargs, dict) and name in api_kwargs:
+            return api_kwargs.get(name)
+        if isinstance(me, dict):
+            return me.get(name)
+        return None
+
+    return {
+        "checked": True,
+        "has_topics_enabled": _field("has_topics_enabled"),
+        "allows_users_to_create_topics": _field("allows_users_to_create_topics"),
+    }
+
+
+async def _ensure_telegram_system_topic(runner, source: SessionSource) -> None:
+    """Create/pin the managed System topic after /topic activation when possible."""
+    adapter = runner.adapters.get(source.platform) if getattr(runner, "adapters", None) else None
+    if adapter is None or not source.chat_id:
+        return
+
+    thread_id = None
+    create_topic = getattr(adapter, "_create_dm_topic", None)
+    if callable(create_topic):
+        try:
+            thread_id = await create_topic(int(source.chat_id), "System")
+        except Exception:
+            logger.debug("Failed to create Telegram System topic", exc_info=True)
+    if not thread_id:
+        return
+
+    message_id = None
+    try:
+        send_result = await adapter.send(
+            source.chat_id,
+            "System topic for Hermes commands and status.",
+            metadata={"thread_id": str(thread_id)},
+        )
+        message_id = getattr(send_result, "message_id", None)
+    except Exception:
+        logger.debug("Failed to send Telegram System topic intro", exc_info=True)
+    if not message_id:
+        return
+
+    bot = getattr(adapter, "_bot", None)
+    if bot is None or not hasattr(bot, "pin_chat_message"):
+        return
+    try:
+        await bot.pin_chat_message(
+            chat_id=int(source.chat_id),
+            message_id=int(message_id),
+            disable_notification=True,
+        )
+    except Exception:
+        logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
+
+
+async def _send_telegram_topic_setup_image(runner, source: SessionSource) -> None:
+    """Send the bundled BotFather Threads Settings screenshot when available."""
+    adapter = runner.adapters.get(source.platform) if getattr(runner, "adapters", None) else None
+    if adapter is None or not source.chat_id or not hasattr(adapter, "send_image_file"):
+        return
+    image_path = Path(__file__).resolve().parent.parent / "gateway" / "assets" / "telegram-botfather-threads-settings.jpg"
+    if not image_path.exists():
+        return
+    try:
+        await adapter.send_image_file(
+            chat_id=source.chat_id,
+            image_path=str(image_path),
+            caption="BotFather → Bot Settings → Threads Settings",
+            metadata={"thread_id": str(source.thread_id)} if source.thread_id else None,
+        )
+    except Exception:
+        logger.debug("Failed to send Telegram topic setup image", exc_info=True)
+
+
+def _should_send_telegram_capability_hint(runner, source: SessionSource) -> bool:
+    """Rate-limit the BotFather Threads Settings screenshot.
+
+    If a user sends /topic repeatedly while Threads Settings are still
+    off, we shouldn't keep re-uploading the screenshot every time.
+    """
+    if not hasattr(runner, "_telegram_capability_hint_ts"):
+        runner._telegram_capability_hint_ts = {}
+    chat_id = str(source.chat_id or "")
+    if not chat_id:
+        return True
+    import time as _time
+    now = _time.monotonic()
+    last = runner._telegram_capability_hint_ts.get(chat_id, 0.0)
+    if now - last < getattr(runner, "_TELEGRAM_CAPABILITY_HINT_COOLDOWN_S", 300.0):
+        return False
+    runner._telegram_capability_hint_ts[chat_id] = now
+    return True
+
+
+def _telegram_topic_help_text() -> str:
+    return (
+        "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
+        "\n"
+        "Usage:\n"
+        "  /topic             Enable topic mode, or show status if already on\n"
+        "  /topic help        Show this message\n"
+        "  /topic off         Disable topic mode and clear topic bindings\n"
+        "  /topic <id>        Inside a topic: restore a previous session by ID\n"
+        "\n"
+        "How it works:\n"
+        "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
+        "   Settings are enabled and flips on multi-session mode.\n"
+        "2. Tap All Messages at the top of the bot and send any message.\n"
+        "   Telegram creates a new topic for that message; each topic is\n"
+        "   an independent Hermes session (fresh history, fresh context).\n"
+        "3. The root DM becomes a system lobby — send /topic, /status,\n"
+        "   /help, /usage there. Normal prompts go in a topic.\n"
+        "4. /new inside a topic resets just that topic's session.\n"
+        "5. /topic <id> inside a topic restores an old session into it."
+    )
+
+
+def _disable_telegram_topic_mode_for_chat(runner, source: SessionSource) -> str:
+    """Cleanly disable topic mode for a chat via /topic off."""
+    if not runner._session_db:
+        from hermes_state import format_session_db_unavailable
+        return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+    chat_id = str(source.chat_id or "")
+    if not chat_id:
+        return "Could not determine chat ID."
+    # No-op if never enabled.
+    try:
+        currently_enabled = runner._session_db.is_telegram_topic_mode_enabled(
+            chat_id=chat_id,
+            user_id=str(source.user_id or ""),
+        )
+    except Exception:
+        currently_enabled = False
+    if not currently_enabled:
+        return "Multi-session topic mode is not currently enabled for this chat."
+    try:
+        runner._session_db.disable_telegram_topic_mode(chat_id=chat_id)
+    except Exception as exc:
+        logger.exception("Failed to disable Telegram topic mode")
+        return f"Failed to disable topic mode: {exc}"
+    # Reset per-chat debounce state so the user doesn't see a stale
+    # cooldown on the next activation.
+    for attr in ("_telegram_lobby_reminder_ts", "_telegram_capability_hint_ts"):
+        store = getattr(runner, attr, None)
+        if isinstance(store, dict):
+            store.pop(chat_id, None)
+    return (
+        "Multi-session topic mode is now OFF for this chat.\n\n"
+        "Existing topics in Telegram aren't removed — they'll just stop "
+        "being gated as independent sessions. The root DM works as a "
+        "normal Hermes chat again. Run /topic to re-enable later."
+    )
+
+
+def _telegram_topic_root_status_message(runner, source: SessionSource) -> str:
+    lines = [
+        "Telegram multi-session topics are enabled.",
+        "",
+        "To create a new Hermes chat, open All Messages at the top of this "
+        "bot interface and send any message there. Telegram will create a "
+        "new topic for it.",
+        "",
+    ]
+    try:
+        sessions = runner._session_db.list_unlinked_telegram_sessions_for_user(
+            chat_id=str(source.chat_id),
+            user_id=str(source.user_id),
+            limit=10,
+        )
+    except Exception:
+        logger.debug("Failed to list unlinked Telegram sessions", exc_info=True)
+        sessions = []
+
+    if sessions:
+        lines.append("Previous unlinked sessions:")
+        for session in sessions:
+            session_id = str(session.get("id") or "")
+            title = str(session.get("title") or "Untitled session")
+            preview = str(session.get("preview") or "").strip()
+            line = f"- {title} — `{session_id}`"
+            if preview:
+                line += f" — {preview}"
+            lines.append(line)
+        lines.extend([
+            "",
+            "To restore one:",
+            "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+            "2. Send /topic <session-id> inside that topic.",
+            f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
+        ])
+    else:
+        lines.extend([
+            "No previous unlinked Telegram sessions found.",
+            "",
+            "To restore a previous session later:",
+            "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+            "2. Send /topic <session-id> inside that topic.",
+        ])
+    return "\n".join(lines)
+
+
+async def _restore_telegram_topic_session(runner, event: MessageEvent, raw_session_id: str) -> str:
+    """Restore an existing Telegram-owned Hermes session into this topic."""
+    source = event.source
+    session_id = runner._session_db.resolve_session_id(raw_session_id.strip())
+    if not session_id:
+        return f"Session not found: {raw_session_id.strip()}"
+
+    session = runner._session_db.get_session(session_id)
+    if not session:
+        return f"Session not found: {raw_session_id.strip()}"
+    if str(session.get("source") or "") != "telegram":
+        return "That session is not a Telegram session and cannot be restored into this topic."
+    if str(session.get("user_id") or "") != str(source.user_id):
+        return "That session does not belong to this Telegram user."
+
+    linked = runner._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
+    current_binding = runner._session_db.get_telegram_topic_binding(
+        chat_id=str(source.chat_id),
+        thread_id=str(source.thread_id),
+    )
+    if linked:
+        if not current_binding or current_binding.get("session_id") != session_id:
+            return "That session is already linked to another Telegram topic."
+
+    session_key = runner._session_key_for_source(source)
+    try:
+        runner._session_db.bind_telegram_topic(
+            chat_id=str(source.chat_id),
+            thread_id=str(source.thread_id),
+            user_id=str(source.user_id),
+            session_key=session_key,
+            session_id=session_id,
+            managed_mode="restored",
+        )
+    except ValueError as exc:
+        if "already linked" in str(exc):
+            return "That session is already linked to another Telegram topic."
+        raise
+
+    title = runner._session_db.get_session_title(session_id) or session_id
+    last_assistant = None
+    try:
+        for message in reversed(runner._session_db.get_messages(session_id)):
+            if message.get("role") == "assistant" and message.get("content"):
+                last_assistant = str(message.get("content"))
+                break
+    except Exception:
+        last_assistant = None
+
+    response = f"Session restored: {title}"
+    if last_assistant:
+        response += f"\n\nLast Hermes message:\n{last_assistant}"
+    return response
+
+
+async def handle_topic_command(runner, event: MessageEvent, args: str = "") -> str:
+    """Handle /topic for Telegram DM user-managed topic sessions."""
+    source = event.source
+    if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+        return t("gateway.topic.not_telegram_dm")
+    if not runner._session_db:
+        from hermes_state import format_session_db_unavailable
+        return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+    # Authorization: /topic activates multi-session mode and mutates
+    # SQLite side tables. Unauthorized senders (not in allowlist) must
+    # not be able to do that. Gateway routes already authorize the
+    # message before reaching here, but defense in depth.
+    auth_fn = getattr(runner, "_is_user_authorized", None)
+    if callable(auth_fn):
+        try:
+            if not auth_fn(source):
+                return t("gateway.topic.unauthorized")
+        except Exception:
+            logger.debug("Topic auth check failed", exc_info=True)
+
+    args = event.get_command_args().strip()
+
+    # /topic help — inline usage without leaving the bot.
+    if args.lower() in {"help", "?", "-h", "--help"}:
+        return _telegram_topic_help_text()
+
+    # /topic off — clean disable path so users don't have to edit the DB.
+    if args.lower() in {"off", "disable", "stop"}:
+        return _disable_telegram_topic_mode_for_chat(runner, source)
+
+    if args:
+        if not source.thread_id:
+            return t("gateway.topic.restore_needs_topic")
+        return await _restore_telegram_topic_session(runner, event, args)
+
+    capabilities = await _get_telegram_topic_capabilities(runner, source)
+    if capabilities.get("checked"):
+        if capabilities.get("has_topics_enabled") is False:
+            # Debounce the BotFather screenshot: don't re-send on every
+            # /topic while threads are still disabled.
+            if _should_send_telegram_capability_hint(runner, source):
+                await _send_telegram_topic_setup_image(runner, source)
+            return t("gateway.topic.topics_disabled")
+        if capabilities.get("allows_users_to_create_topics") is False:
+            if _should_send_telegram_capability_hint(runner, source):
+                await _send_telegram_topic_setup_image(runner, source)
+            return t("gateway.topic.topics_user_disallowed")
+
+    try:
+        runner._session_db.enable_telegram_topic_mode(
+            chat_id=str(source.chat_id),
+            user_id=str(source.user_id),
+            has_topics_enabled=capabilities.get("has_topics_enabled"),
+            allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"),
+        )
+    except Exception as exc:
+        logger.exception("Failed to enable Telegram topic mode")
+        return t("gateway.topic.enable_failed", error=exc)
+
+    if not source.thread_id:
+        await _ensure_telegram_system_topic(runner, source)
+
+    if source.thread_id:
+        try:
+            binding = runner._session_db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+        except Exception:
+            logger.debug("Failed to read Telegram topic binding", exc_info=True)
+            binding = None
+        if binding:
+            session_id = str(binding.get("session_id") or "")
+            title = None
+            try:
+                title = runner._session_db.get_session_title(session_id)
+            except Exception:
+                title = None
+            session_label = title or t("gateway.topic.untitled_session")
+            return t(
+                "gateway.topic.bound_status",
+                label=session_label,
+                session_id=session_id,
+            )
+        return t("gateway.topic.thread_ready")
+
+    return _telegram_topic_root_status_message(runner, source)

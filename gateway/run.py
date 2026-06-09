@@ -5536,38 +5536,10 @@ class GatewayRunner:
         On change, the cached agent for this session is evicted so the next
         message creates a fresh AIAgent with the new api_mode wired in
         (avoids prompt-cache invalidation mid-session)."""
-        from hermes_cli import codex_runtime_switch as crs
-
-        raw_args = event.get_command_args().strip() if event else ""
-        new_value, errors = crs.parse_args(raw_args)
-        if errors:
-            return "❌ " + "\n❌ ".join(errors)
-
-        # Load + persist via the same helpers used for /model and /yolo
-        try:
-            from hermes_cli.config import load_config, save_config
-        except Exception as exc:
-            return f"❌ Could not load config: {exc}"
-        cfg = load_config()
-
-        result = crs.apply(
-            cfg,
-            new_value,
-            persist_callback=(save_config if new_value is not None else None),
+        return await command_handlers.handle_codex_runtime_command(
+            runner=self,
+            event=event,
         )
-
-        # On a real change, evict the cached agent so the new runtime takes
-        # effect on the next message rather than waiting for cache TTL.
-        if result.success and new_value is not None and result.requires_new_session:
-            try:
-                session_key = self._session_key_for_source(event.source)
-                self._evict_cached_agent(session_key)
-            except Exception:
-                logger.debug("could not evict cached agent after codex-runtime change",
-                             exc_info=True)
-
-        prefix = "✓" if result.success else "✗"
-        return f"{prefix} {result.message}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
@@ -5640,39 +5612,10 @@ class GatewayRunner:
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
-        
-        # Find the last user message
-        last_user_msg = None
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
-                last_user_idx = i
-                break
-        
-        if not last_user_msg:
-            return t("gateway.retry.no_previous")
-        
-        # Truncate history to before the last user message and persist
-        truncated = history[:last_user_idx]
-        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
-        # Reset stored token count — transcript was truncated
-        session_entry.last_prompt_tokens = 0
-        
-        # Re-send by creating a fake text event with the old message
-        retry_event = MessageEvent(
-            text=last_user_msg,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=event.raw_message,
-            channel_prompt=event.channel_prompt,
+        return await command_handlers.handle_retry_command(
+            runner=self,
+            event=event,
         )
-        
-        # Let the normal message handler process it
-        return await self._handle_message(retry_event)
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

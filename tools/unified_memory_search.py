@@ -627,6 +627,141 @@ class UnifiedMemorySearch:
 
 
 # -----------------------------------------------------------------------------
+# Standalone convenience function (used by builtin_memory_provider)
+# -----------------------------------------------------------------------------
+
+
+def search_memories(
+    query: str,
+    *,
+    limit: int = 10,
+    filters: Optional[Dict[str, Any]] = None,
+    include_related: bool = False,
+    include_temporal: bool = False,
+    recency_weight: float = 0.3,
+    recency_halflife_days: float = 30,
+) -> List[Dict[str, Any]]:
+    """Standalone memory search — convenience wrapper around UnifiedMemorySearch.
+
+    Initialises stores lazily on first call, then reuses them for subsequent
+    calls within the same process.  This avoids the per-call overhead of
+    opening LanceDB / SQLite connections that the class-based interface
+    requires callers to manage.
+
+    Parameters mirror ``builtin_memory_provider._select_memories`` usage::
+
+        search_memories(
+            query="Python preferences",
+            limit=20,
+            filters={"after": 1718000000.0},
+            include_related=False,
+            include_temporal=False,
+            recency_weight=0.3,
+            recency_halflife_days=30,
+        )
+
+    Returns a list of dicts, each with at least: ``id``, ``text``, ``source``,
+    ``memory_type``, ``epistemic_status``, ``confidence``, ``entities``,
+    ``keywords``, ``created_at``, ``similarity``.
+    """
+    try:
+        import lancedb
+        from .bm25_memory import BM25MemoryStore
+    except ImportError:
+        return []
+
+    try:
+        db_path = Path.home() / ".hermes" / "vector_memory"
+        db = lancedb.connect(str(db_path))
+
+        tables = db.list_tables()
+        actual_tables = tables.tables if hasattr(tables, "tables") else tables
+        if "memory_vectors" not in actual_tables:
+            return []
+
+        vector_store = db.open_table("memory_vectors")
+        bm25_store = BM25MemoryStore()
+
+        searcher = UnifiedMemorySearch(vector_store, bm25_store)
+        # Override class-level defaults with caller-supplied values
+        searcher.RECENCY_WEIGHT = recency_weight
+        searcher.RECENCY_HALFLIFE_DAYS = recency_halflife_days
+
+        # Determine search mode from flags
+        mode = "hybrid"
+        if not include_related and not include_temporal:
+            mode = "vector"  # fast path when only vector results needed
+
+        # Translate ``filters`` into query filter syntax
+        # The builtin provider passes ``{"after": <unix_timestamp>}`` etc.
+        filter_parts = [query] if query else []
+        effective_filters = dict(filters) if filters else {}
+
+        after_val = effective_filters.pop("after", None)
+        before_val = effective_filters.pop("before", None)
+        time_range_days = effective_filters.pop("time_range_days", None)
+
+        if after_val is not None and isinstance(after_val, (int, float)):
+            dt = datetime.fromtimestamp(after_val)
+            effective_filters["after"] = dt.strftime("%Y-%m-%d")
+        elif after_val is not None:
+            effective_filters["after"] = str(after_val)
+
+        if before_val is not None and isinstance(before_val, (int, float)):
+            dt = datetime.fromtimestamp(before_val)
+            effective_filters["before"] = dt.strftime("%Y-%m-%d")
+        elif before_val is not None:
+            effective_filters["before"] = str(before_val)
+
+        if time_range_days is not None:
+            effective_filters["time_range_days"] = int(time_range_days)
+
+        # Build query string with colon-style filters for parse_query
+        for key, value in effective_filters.items():
+            if key in ("source", "memory_type", "epistemic_status"):
+                filter_parts.append(f"{key}:{value}")
+            elif key == "time_range_days":
+                filter_parts.append(f"time_range:{value}d")
+            elif key in ("before", "after"):
+                filter_parts.append(f"{key}:{value}")
+
+        parsed_query = " ".join(filter_parts)
+
+        results_json = searcher.search(
+            query=parsed_query,
+            mode=mode,
+            top_k=limit,
+        )
+
+        results_data = json.loads(results_json)
+        raw_results = results_data.get("results", [])
+
+        # Normalise keys: UnifiedMemorySearch returns ``memory_id`` but
+        # builtin_memory_provider expects ``id``.
+        normalised = []
+        for r in raw_results:
+            entry = dict(r)
+            # Ensure ``id`` key exists
+            if "memory_id" in entry and "id" not in entry:
+                entry["id"] = entry["memory_id"]
+            # Ensure fields expected by _format_memory
+            entry.setdefault("source", "")
+            entry.setdefault("memory_type", "")
+            entry.setdefault("epistemic_status", "stated")
+            entry.setdefault("confidence", 0.5)
+            entry.setdefault("entities", [])
+            entry.setdefault("keywords", [])
+            entry.setdefault("created_at", 0)
+            normalised.append(entry)
+
+        return normalised
+
+    except Exception as e:
+        logger.warning("search_memories failed: %s", e)
+        return []
+
+
+# -----------------------------------------------------------------------------
 # Tool integration
 # -----------------------------------------------------------------------------
 

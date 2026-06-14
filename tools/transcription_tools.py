@@ -167,8 +167,9 @@ def _get_local_command_template() -> Optional[str]:
 
     whisper_binary = _find_whisper_binary()
     if whisper_binary:
+        quoted_binary = shlex.quote(whisper_binary)
         return (
-            f"{whisper_binary} {{input_path}} --model {{model}} --output_format txt "
+            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}"
         )
     return None
@@ -213,7 +214,11 @@ def _try_lazy_install_stt() -> bool:
     """
     try:
         from tools.lazy_deps import ensure
-        ensure("stt.faster_whisper")
+        # prompt=False: never raise a blocking input() prompt mid-session.
+        # Under the interactive CLI prompt_toolkit owns stdin, so a bare
+        # input() deadlocks the terminal (#40490). The install is already
+        # gated by security.allow_lazy_installs, so reaching here is opt-in.
+        ensure("stt.faster_whisper", prompt=False)
         # Re-check dynamically after install
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):
@@ -485,6 +490,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             proc.kill()
@@ -550,7 +556,7 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -1181,8 +1187,11 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
         return converted_path, None
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg conversion timed out for %s", file_path)
+        return None, "Audio conversion for local STT timed out"
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("ffmpeg conversion failed for %s: %s", file_path, details)
@@ -1216,17 +1225,18 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 return {"success": False, "transcript": "", "error": prep_error}
 
             command = command_template.format(
-                input_path=prepared_input,
-                output_dir=output_dir,
-                language=language,
-                model=normalized_model,
+                input_path=shlex.quote(prepared_input),
+                output_dir=shlex.quote(output_dir),
+                language=shlex.quote(language),
+                model=shlex.quote(normalized_model),
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+            
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

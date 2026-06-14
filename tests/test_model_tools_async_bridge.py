@@ -380,7 +380,8 @@ class TestVisionDispatchLoopSafety:
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
             patch(
-                "tools.vision_tools._validate_image_url",
+                "tools.vision_tools._validate_image_url_async",
+                new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
@@ -424,7 +425,8 @@ class TestVisionDispatchLoopSafety:
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
             patch(
-                "tools.vision_tools._validate_image_url",
+                "tools.vision_tools._validate_image_url_async",
+                new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(

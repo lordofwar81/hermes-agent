@@ -260,8 +260,27 @@ class HermesTokenStorage:
         # model_validate because it's not part of the SDK's OAuthToken schema.
         absolute_expiry = data.pop("expires_at", None)
         if absolute_expiry is not None:
-            data["expires_in"] = int(max(absolute_expiry - time.time(), 0))
-        elif data.get("expires_in") is not None:
+            # expires_at should be a float epoch (written by set_tokens), but
+            # some token files / writers store it as an ISO-8601 string
+            # (e.g. "2026-06-14T12:30:27"). A bare string would raise
+            # ``TypeError: unsupported operand type(s) for -: 'str' and
+            # 'float'`` below and abort the MCP connection, so parse both
+            # shapes; fall through to the legacy expires_in branch on any
+            # value we cannot interpret.
+            parsed_expiry = None
+            try:
+                parsed_expiry = float(absolute_expiry)
+            except (TypeError, ValueError):
+                try:
+                    from datetime import datetime
+                    parsed_expiry = datetime.fromisoformat(str(absolute_expiry)).timestamp()
+                except (TypeError, ValueError):
+                    parsed_expiry = None
+            if parsed_expiry is not None:
+                data["expires_in"] = int(max(parsed_expiry - time.time(), 0))
+            else:
+                absolute_expiry = None
+        if absolute_expiry is None and data.get("expires_in") is not None:
             try:
                 file_mtime = self._tokens_path().stat().st_mtime
             except OSError:

@@ -1348,7 +1348,7 @@ class TestCachedAgentInactivityReset:
         agent = self._fake_agent(stale_seconds=1800.0)
         old_ts = agent._last_activity_ts
 
-        with patch("gateway.agent_cache.time") as mock_time:
+        with patch("gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -1365,7 +1365,7 @@ class TestCachedAgentInactivityReset:
 
         agent = self._fake_agent()
 
-        with patch("gateway.agent_cache.time") as mock_time:
+        with patch("gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -1449,7 +1449,7 @@ class TestCachedAgentInactivityReset:
         agent_fresh = self._fake_agent()
         agent_interrupted = self._fake_agent()
 
-        with patch("gateway.agent_cache.time") as mock_time:
+        with patch("gateway.run.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent_fresh, interrupt_depth=0)
         GatewayRunner._init_cached_agent_for_turn(agent_interrupted, interrupt_depth=1)

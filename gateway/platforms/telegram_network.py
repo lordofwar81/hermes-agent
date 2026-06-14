@@ -256,4 +256,5 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    """Return True for transient network errors where retrying on another IP is safe."""
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout))

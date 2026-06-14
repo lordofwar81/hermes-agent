@@ -576,6 +576,32 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._compression_fallback_index = 0
+
+    def update_compression_fallback(self, chain: List[Dict[str, str]]) -> None:
+        """Set the compression fallback chain from the agent's fallback providers.
+
+        Called by the agent when its own fallback chain is configured or
+        updated. The compressor uses these entries to try alternative
+        providers for summary generation when the primary model is degraded.
+
+        Args:
+            chain: List of dicts, each with keys: model, provider, base_url, api_key.
+        """
+        self._compression_fallback_chain = [
+            fb for fb in chain
+            if isinstance(fb, dict) and fb.get("model") and fb.get("base_url")
+        ]
+        self._compression_fallback_index = 0
+        if self._compression_fallback_chain and not self.quiet_mode:
+            logger.info(
+                "Compression fallback chain set: %d entries (%s)",
+                len(self._compression_fallback_chain),
+                ", ".join(
+                    f"{fb.get('provider', '?')}/{fb.get('model', '?')}"
+                    for fb in self._compression_fallback_chain
+                ),
+            )
 
     def update_model(
         self,
@@ -604,6 +630,17 @@ class ContextCompressor(ContextEngine):
         self.max_summary_tokens = min(
             int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
+        # Reset anti-thrashing on model switch — a different model may
+        # compress effectively where the previous one couldn't.
+        if self._ineffective_compression_count >= 2:
+            logger.info(
+                "Anti-thrashing reset on model switch (%s → %s). "
+                "Previous count: %d",
+                getattr(self, "model", "?"), model,
+                self._ineffective_compression_count,
+            )
+        self._ineffective_compression_count = 0
+        self._ineffective_since = 0.0
 
     def __init__(
         self,
@@ -681,11 +718,21 @@ class ContextCompressor(ContextEngine):
 
         self.summary_model = summary_model_override or ""
 
+        # Compression fallback chain: list of dicts with model/provider/base_url/api_key.
+        # Populated from the agent's fallback chain or config. When the summary model
+        # (or main model used for summaries) fails, these are tried before giving up.
+        # This breaks the circular dependency where compression uses the same failing
+        # model that caused the context overflow in the first place.
+        self._compression_fallback_chain: List[Dict[str, str]] = []
+        self._compression_fallback_index: int = 0
+
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._ineffective_since: float = 0.0  # monotonic timestamp of first ineffective hit
+        self._ANTITHRASH_RESET_SECONDS: float = 300.0  # 5 min timeout before retrying compression
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -756,20 +803,37 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Anti-thrashing resets after 5 minutes so a stuck session can
+        eventually retry compression (the condition that caused ineffective
+        compression may have changed). Also resets on model switch via
+        update_model().
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
-        # Anti-thrashing: back off if recent compressions were ineffective
+        # Anti-thrashing: back off if recent compressions were ineffective,
+        # but auto-reset after timeout so the session isn't permanently stuck.
         if self._ineffective_compression_count >= 2:
-            if not self.quiet_mode:
-                logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+            _elapsed = time.monotonic() - self._ineffective_since if self._ineffective_since > 0 else 0
+            if _elapsed < self._ANTITHRASH_RESET_SECONDS:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped — last %d compressions saved <10%% each. "
+                        "Auto-resets in %.0fs. Consider /new or /compress <topic>.",
+                        self._ineffective_compression_count,
+                        self._ANTITHRASH_RESET_SECONDS - _elapsed,
+                    )
+                return False
+            else:
+                logger.info(
+                    "Anti-thrashing reset: %.0fs elapsed since last ineffective "
+                    "compression. Retrying (count was %d).",
+                    _elapsed,
                     self._ineffective_compression_count,
                 )
-            return False
+                self._ineffective_compression_count = 0
+                self._ineffective_since = 0.0
         return True
 
     # ------------------------------------------------------------------
@@ -1221,6 +1285,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         callers, clear the summary model so the next call uses the main one,
         and clear the cooldown so the immediate retry can run.
 
+        If a compression fallback chain is configured and the main model
+        is the same provider/model that failed, try the next entry in the
+        chain first — this breaks the circular dependency where compression
+        reuses the same degraded model that caused the context overflow.
+
         ``reason`` is a short human-readable phrase ("unavailable",
         "timed out", "returned invalid JSON", "failed") that is interpolated
         into the warning log.
@@ -1236,6 +1305,51 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _err_text = _err_text[:217].rstrip() + "..."
         self._last_aux_model_failure_error = _err_text
         self._last_aux_model_failure_model = self.summary_model
+
+        # ── Compression fallback chain ────────────────────────────────
+        # Before falling back to the main model (which may be the same
+        # degraded model that caused the context overflow), try entries
+        # from the compression fallback chain. These are typically the
+        # agent's fallback providers (different hosts/models) so
+        # compression has an independent failure domain.
+        _tried_chain = False
+        while self._compression_fallback_index < len(self._compression_fallback_chain):
+            fb = self._compression_fallback_chain[self._compression_fallback_index]
+            self._compression_fallback_index += 1
+            fb_model = fb.get("model", "")
+            fb_provider = fb.get("provider", "")
+            fb_base_url = fb.get("base_url", "")
+            fb_api_key = fb.get("api_key", "")
+            # Skip if same model+provider as the one that just failed
+            if (
+                fb_model == (self.summary_model or self.model)
+                and fb_provider == self.provider
+            ):
+                continue
+            if not fb_model or not fb_base_url:
+                continue
+            logger.info(
+                "Compression fallback chain: trying %s/%s (entry %d/%d)",
+                fb_provider, fb_model,
+                self._compression_fallback_index,
+                len(self._compression_fallback_chain),
+            )
+            self.summary_model = fb_model
+            self.base_url = fb_base_url
+            self.api_key = fb_api_key
+            self.provider = fb_provider
+            self._summary_failure_cooldown_until = 0.0
+            _tried_chain = True
+            return
+
+        # No viable fallback entry found (chain empty or exhausted).
+        # Fall through to main model as last resort.
+        if self._compression_fallback_chain:
+            logger.warning(
+                "Compression fallback chain exhausted (%d entries tried). "
+                "Falling back to main model '%s'.",
+                self._compression_fallback_index, self.model,
+            )
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
@@ -2102,8 +2216,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:
             self._ineffective_compression_count += 1
+            if self._ineffective_since == 0.0:
+                self._ineffective_since = time.monotonic()
         else:
             self._ineffective_compression_count = 0
+            self._ineffective_since = 0.0
 
         if not self.quiet_mode:
             logger.info(

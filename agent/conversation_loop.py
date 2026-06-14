@@ -1106,7 +1106,60 @@ def run_conversation(
             except Exception:
                 pass
             break
-        
+
+        # ── Hard context-size gate ──────────────────────────────────────
+        # If estimated request tokens exceed 90% of the model's context
+        # window AND compression is unavailable (anti-thrashing lockout,
+        # summary model failure, or abort_on_summary_failure), abort the
+        # call rather than sending a guaranteed-to-fail request that burns
+        # 3 retries + fallback attempts before landing on "(empty)".
+        # This is the general-case gate (Ollama has its own above).
+        _compressor = agent.context_compressor
+        if (
+            agent.compression_enabled
+            and approx_request_tokens > 0
+            and _compressor.context_length > 0
+            and approx_request_tokens > int(_compressor.context_length * 0.90)
+            and (
+                getattr(_compressor, "_ineffective_compression_count", 0) >= 2
+                or getattr(_compressor, "_last_compress_aborted", False)
+            )
+        ):
+            _ctx_pct = approx_request_tokens / _compressor.context_length * 100
+            final_response = (
+                "⚠️ Context is too large to continue "
+                f"({approx_request_tokens:,} tokens ≈ {_ctx_pct:.0f}% of "
+                f"{_compressor.context_length:,} window). "
+                "Compression was unable to reduce it further.\n\n"
+                "Use `/compress <topic>` for focused compression, "
+                "`/new` to start a fresh session, or "
+                "`/model` to switch to a model with a larger context window."
+            )
+            failed = True
+            _turn_exit_reason = "context_too_large_compression_exhausted"
+            messages.append({"role": "assistant", "content": final_response})
+            agent._emit_status(
+                f"❌ Context too large ({_ctx_pct:.0f}%) — "
+                "compression exhausted. Use /compress <topic>, /new, or /model."
+            )
+            logger.warning(
+                "Hard context gate: ~%s tokens / %s context (%.0f%%). "
+                "Compression unavailable (ineffective=%s, aborted=%s). "
+                "Aborting API call to prevent empty-response loop.",
+                f"{approx_request_tokens:,}",
+                f"{_compressor.context_length:,}",
+                _ctx_pct,
+                getattr(_compressor, "_ineffective_compression_count", 0),
+                getattr(_compressor, "_last_compress_aborted", False),
+            )
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+            try:
+                agent.iteration_budget.refund()
+            except Exception:
+                pass
+            break
+
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
         
@@ -4329,6 +4382,62 @@ def run_conversation(
                     # Exhausted retries and fallback chain (or no
                     # fallback configured).  Fall through to the
                     # "(empty)" terminal.
+                    # ── Emergency compression recovery ──────────────
+                    # Before giving up entirely, try one last emergency
+                    # compression to reduce context. This catches the case
+                    # where context grew past the model's limit between
+                    # preflight checks (tool results, injected context)
+                    # and the model returning empty. If compression
+                    # succeeds, reset retries and try the model again
+                    # with the reduced context.
+                    if (
+                        agent.compression_enabled
+                        and not getattr(agent, "_emergency_compress_attempted", False)
+                    ):
+                        _est = estimate_request_tokens_rough(
+                            messages,
+                            system_prompt=active_system_prompt or "",
+                            tools=agent.tools or None,
+                        )
+                        _compressor = agent.context_compressor
+                        if _est > _compressor.threshold_tokens:
+                            agent._emergency_compress_attempted = True
+                            logger.warning(
+                                "Emergency compression: %s tokens, threshold %s. "
+                                "Attempting to salvage session before empty terminal.",
+                                f"{_est:,}", f"{_compressor.threshold_tokens:,}",
+                            )
+                            agent._buffer_status(
+                                "🗜️ Emergency compression — context overflow "
+                                "detected. Attempting to reduce context..."
+                            )
+                            _pre_len = len(messages)
+                            messages, active_system_prompt = agent._compress_context(
+                                messages, system_message,
+                                approx_tokens=_est,
+                                task_id=effective_task_id,
+                                force=True,
+                            )
+                            if len(messages) < _pre_len:
+                                # Compression reduced context — retry with fresh state
+                                agent._empty_content_retries = 0
+                                agent._thinking_prefill_retries = 0
+                                conversation_history = None
+                                agent._buffer_status(
+                                    "↻ Emergency compression succeeded — "
+                                    "retrying with reduced context."
+                                )
+                                logger.info(
+                                    "Emergency compression recovered: %d → %d messages",
+                                    _pre_len, len(messages),
+                                )
+                                continue
+                            else:
+                                logger.warning(
+                                    "Emergency compression failed to reduce context. "
+                                    "Falling through to empty terminal."
+                                )
+
                     # Surface the buffered retry/fallback trace so the
                     # user can see what was attempted before "(empty)".
                     agent._flush_status_buffer()
@@ -4376,6 +4485,7 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
+                agent._emergency_compress_attempted = False
                 # Successful content reached — drop any buffered retry
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()

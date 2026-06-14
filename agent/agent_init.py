@@ -895,6 +895,13 @@ def init_agent(
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
+    # Wire the fallback chain into the compressor so summary generation
+    # can try alternative providers when the primary model is degraded.
+    if agent._fallback_chain and hasattr(agent, "context_compressor"):
+        try:
+            agent.context_compressor.update_compression_fallback(agent._fallback_chain)
+        except Exception:
+            pass
     if agent._fallback_chain and not agent.quiet_mode:
         if len(agent._fallback_chain) == 1:
             fb = agent._fallback_chain[0]

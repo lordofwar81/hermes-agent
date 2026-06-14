@@ -6909,6 +6909,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # boundary. No race with the running turn.
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
+            # /optimize <prompt> — rewrite the user's prompt using the
+            # prompt-optimizer skill, then execute it.  Delegates to the
+            # skill-invocation system for prompt-optimizer.
+            if _cmd_def_inner and _cmd_def_inner.name == "optimize":
+                optimize_text = event.get_command_args().strip()
+                if not optimize_text:
+                    return "Usage: /optimize <prompt>"
+                try:
+                    from agent.skill_commands import (
+                        get_skill_commands,
+                        build_skill_invocation_message,
+                        resolve_skill_command_key,
+                    )
+                    skill_cmds = get_skill_commands()
+                    cmd_key = resolve_skill_command_key("prompt-optimizer")
+                    if cmd_key is None:
+                        return "The prompt-optimizer skill is not installed."
+                    msg = build_skill_invocation_message(
+                        cmd_key, optimize_text, task_id=_quick_key
+                    )
+                    if msg:
+                        event.text = msg
+                        _cmd_def_inner = None  # Prevent catch-all rejection below
+                    else:
+                        return "Failed to load the prompt-optimizer skill."
+                except Exception as exc:
+                    logger.warning("Optimize handler failed for session %s: %s", _quick_key, exc)
+                    return f"⚠️ Optimize failed: {exc}"
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles

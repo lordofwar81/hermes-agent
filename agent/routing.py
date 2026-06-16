@@ -95,9 +95,33 @@ class TaskClassifier:
         "debug", "debugging", "implement", "implementation", "patch",
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
         "script", "server", "test", "security", "deploy", "compile",
-        "refactor", "rewrite", "rework",
+        "refactor", "rewrite", "rework", "design",
         "continue", "proceed", "go ahead", "keep going", "next step",
         "do it", "go on", "move on", "move forward",
+    })
+
+    # Multi-word CODE keywords that use word boundaries (not substring)
+    _CODE_PHRASES = frozenset({
+        "go ahead", "keep going", "next step",
+        "do it", "go on", "move on", "move forward",
+    })
+
+    # Single-word CODE keywords requiring word boundaries
+    _CODE_BOUNDARY_KW = frozenset({
+        "debug", "debugging", "implement", "implementation", "patch",
+        "traceback", "stacktrace", "exception", "fix", "bug", "module",
+        "script", "server", "test", "security", "deploy", "compile",
+        "refactor", "rewrite", "rework", "design",
+        "continue", "proceed",
+    })
+
+    # ANALYSIS keywords strong enough to override CODE keywords.
+    # "compare test results" → ANALYSIS (compare overrides test),
+    # but "security audit needed" → CODE (audit is NOT in this set).
+    _ANALYSIS_OVERRIDE_KW = frozenset({
+        "analyze", "analysis", "compare", "contrast", "evaluate",
+        "performance", "metrics", "benchmark",
+        "teardown", "cost-benefit", "roi",
     })
 
     _ANALYSIS_KW = frozenset({
@@ -122,23 +146,52 @@ class TaskClassifier:
         "implement a complete", "end-to-end", "full system",
         "architect a", "architect the",
         "build a complete", "build an entire", "comprehensive system",
-        "from scratch", "production-ready", "multi-region",
+        "from scratch", "production-ready", "production ready", "multi-region",
         "system design", "system architecture",
     ]
+
+    # Pre-compiled regex: single-word CODE keywords joined with \| for
+    # a single word-boundary match. Avoids per-keyword re.search calls.
+    _CODE_BOUNDARY_RE = re.compile(
+        r'\b(?:' + '|'.join(re.escape(kw) for kw in {
+            "debug", "debugging", "implement", "implementation", "patch",
+            "traceback", "stacktrace", "exception", "fix", "bug", "module",
+            "script", "server", "test", "security", "deploy", "compile",
+            "refactor", "rewrite", "rework", "design",
+            "continue", "proceed",
+        }) + r')\b'
+    )
+
+    @classmethod
+    def _has_code_keyword(cls, text_lower: str) -> bool:
+        """Check for code keywords using word boundaries for single words.
+
+        Single-word keywords use a pre-compiled regex with \\b boundaries
+        so 'fix' doesn't match 'fixed'. Multi-word phrases use substring match.
+        """
+        # Fast path: single compiled regex for all single-word keywords
+        if cls._CODE_BOUNDARY_RE.search(text_lower):
+            return True
+        # Slow path: multi-word phrases (only 8 items)
+        for kw in cls._CODE_PHRASES:
+            if kw in text_lower:
+                return True
+        return False
 
     @classmethod
     def classify(cls, message: str) -> Category:
         text = (message or "").strip()
         text_lower = text.lower()
 
-        # Code: code blocks or code keywords (checked BEFORE greeting)
+        # Code: code blocks (checked BEFORE greeting)
         if "```" in text or "`" in text:
             return Category.CODE
 
         # Greeting: short message with greeting keyword, but NOT if it contains
-        # code or expert intent (e.g., "ok, deploy it" is CODE, not GREETING).
+        # code intent (e.g., "ok, deploy it" is CODE, not GREETING).
+        # Uses word-boundary matching so 'fix' doesn't block 'fixed' greetings.
         if len(text) <= 25:
-            if not any(kw in text_lower for kw in cls._CODE_KW):
+            if not cls._has_code_keyword(text_lower):
                 for g in cls._GREETING_KW:
                     if len(g.split()) == 1:
                         if re.search(r'\b' + re.escape(g) + r'\b', text_lower):
@@ -156,11 +209,17 @@ class TaskClassifier:
         if any(kw in text_lower for kw in cls._REASONING_KW):
             return Category.REASONING
 
+        # Analysis override: when analysis keywords co-occur with code keywords,
+        # analysis wins (e.g., "compare test results" → ANALYSIS, not CODE).
+        # Only checked if at least one analysis keyword is present.
+        if any(kw in text_lower for kw in cls._ANALYSIS_OVERRIDE_KW):
+            return Category.ANALYSIS
+
         # Code: code keywords
-        if any(kw in text_lower for kw in cls._CODE_KW):
+        if cls._has_code_keyword(text_lower):
             return Category.CODE
 
-        # Analysis: comparison/evaluation
+        # Analysis: comparison/evaluation (non-override path, no code kw overlap)
         if any(kw in text_lower for kw in cls._ANALYSIS_KW):
             return Category.ANALYSIS
 

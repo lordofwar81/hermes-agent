@@ -212,6 +212,36 @@ class TestTaskClassifier:
         for msg, expected in messages:
             assert TaskClassifier.classify(msg) == expected, f"{msg} should be {expected}"
 
+    # ── Edge case fixes (hydra/classifier-edge-case-fixes) ──────────
+
+    def test_word_boundary_fix_vs_fixed(self):
+        """'fix' should not match 'fixed' as substring (word boundary)."""
+        # 'fix' as standalone word → CODE
+        assert TaskClassifier.classify("fix this bug") == Category.CODE
+        # 'fixed' past tense in greeting → GREETING (not CODE)
+        assert TaskClassifier.classify("thanks that fixed it") == Category.GREETING
+
+    def test_analysis_overrides_code_keywords(self):
+        """Strong analysis keywords should override weak code keywords."""
+        assert TaskClassifier.classify("compare test results") == Category.ANALYSIS
+        assert TaskClassifier.classify("evaluate the test output") == Category.ANALYSIS
+
+    def test_code_keyword_not_overridden_by_weak_analysis(self):
+        """'audit' alone doesn't override 'security' (code keyword)."""
+        assert TaskClassifier.classify("security audit needed") == Category.CODE
+
+    def test_design_as_code_keyword(self):
+        """'design' (without 'a system/architecture') routes to CODE."""
+        assert TaskClassifier.classify("design the login page") == Category.CODE
+        assert TaskClassifier.classify("design a new feature") == Category.CODE
+        assert TaskClassifier.classify("design a user flow") == Category.CODE
+
+    def test_production_ready_no_hyphen(self):
+        """Both 'production-ready' and 'production ready' should map to EXPERT."""
+        assert TaskClassifier.classify("make it production-ready") == Category.EXPERT
+        assert TaskClassifier.classify("make it production ready") == Category.EXPERT
+        assert TaskClassifier.classify("production ready code") == Category.EXPERT
+
 
 # ─── CircuitBreaker Tests ────────────────────────────────────────────────
 

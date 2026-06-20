@@ -44,6 +44,14 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from gateway.gateway_timing import _format_duration, _coerce_gateway_timestamp
+from gateway.gateway_transcript import (
+    _AUTO_CONTINUE_NOTE_PREFIX,
+    _AUTO_CONTINUE_FALLBACK_PREFIX,
+    _is_interrupted_tool_result,
+    _strip_interrupted_tool_tails,
+    _is_auto_continue_noise,
+    _strip_auto_continue_noise,
+)
 from gateway.gateway_response import (
     _GATEWAY_PROVIDER_POLICY_RE,
     _GATEWAY_AUTH_ERROR_RE,
@@ -605,97 +613,6 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 }
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
-
-def _is_interrupted_tool_result(content: Any) -> bool:
-    """Return True if a tool result indicates the tool was interrupted."""
-    if not isinstance(content, str):
-        return False
-    lowered = content.lower()
-    if "[command interrupted]" in lowered:
-        return True
-    if "exit_code" in lowered and ("130" in lowered or "-1" in lowered):
-        return "interrupt" in lowered
-    return False
-
-
-def _strip_interrupted_tool_tails(
-    agent_history: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Strip interrupted assistant→tool sequences from replay history.
-
-    Older interrupted gateway turns can be followed by a queued real user
-    message, so the interrupted assistant/tool block is not necessarily the
-    final tail by the time we rebuild replay history.  Remove any contiguous
-    assistant(tool_calls) + tool-result block that contains an interrupted tool
-    result, while preserving successful tool-call sequences intact.
-    """
-    if not agent_history:
-        return agent_history
-
-    cleaned: List[Dict[str, Any]] = []
-    i = 0
-    n = len(agent_history)
-    while i < n:
-        msg = agent_history[i]
-        if msg.get("role") == "assistant" and "tool_calls" in msg:
-            j = i + 1
-            tool_results: List[Dict[str, Any]] = []
-            while j < n and agent_history[j].get("role") == "tool":
-                tool_results.append(agent_history[j])
-                j += 1
-            if tool_results and any(
-                _is_interrupted_tool_result(m.get("content", ""))
-                for m in tool_results
-            ):
-                logger.debug(
-                    "Stripping interrupted assistant→tool replay block "
-                    "(indices %d–%d, tool_results=%d)",
-                    i, j - 1, len(tool_results),
-                )
-                i = j
-                continue
-        if msg.get("role") == "tool" and _is_interrupted_tool_result(msg.get("content", "")):
-            logger.debug("Stripping orphan interrupted tool result from replay history")
-            i += 1
-            continue
-        cleaned.append(msg)
-        i += 1
-
-    return cleaned
-
-
-_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
-_AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
-
-
-def _is_auto_continue_noise(content: Any) -> bool:
-    """Return True if this user-message content is a gateway-injected
-    auto-continue note that should NOT be replayed as a real user turn."""
-    if not isinstance(content, str):
-        return False
-    return (
-        content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
-        or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
-    )
-
-
-def _strip_auto_continue_noise(content: Any) -> Any:
-    """Remove persisted gateway auto-continue note prefix from user text.
-
-    Older gateway builds prepended the recovery note directly to the user
-    message, so the transcript row can contain both the synthetic note and
-    the user's real question.  Strip one or more leading synthetic notes while
-    preserving any real text that follows.
-    """
-    if not _is_auto_continue_noise(content):
-        return content
-    text = str(content)
-    while _is_auto_continue_noise(text):
-        end = text.find("]")
-        if end < 0:
-            return ""
-        text = text[end + 1 :].lstrip()
-    return text
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate

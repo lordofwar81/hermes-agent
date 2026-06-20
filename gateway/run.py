@@ -43,6 +43,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
+from gateway.gateway_timing import _format_duration, _coerce_gateway_timestamp
 from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -452,40 +453,6 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
-
-
-def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
-    """Best-effort conversion of stored gateway timestamps to epoch seconds.
-
-    Missing/unparseable timestamps return None so legacy transcripts keep the
-    historical auto-continue behaviour instead of being silently dropped.
-    Accepts: datetime, epoch seconds (int/float), epoch milliseconds (when
-    the magnitude exceeds year-2286), ISO-8601 strings (with or without a
-    trailing ``Z``), and numeric strings.
-    """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.timestamp()
-    if isinstance(value, bool):  # bool is a subclass of int — skip it
-        return None
-    if isinstance(value, (int, float)):
-        # Some platform events use milliseconds; Hermes state rows use seconds.
-        return float(value) / 1000.0 if float(value) > 10_000_000_000 else float(value)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            numeric = float(text)
-            return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
-        except ValueError:
-            pass
-        try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    return None
 
 
 def _auto_continue_freshness_window() -> float:
@@ -1572,17 +1539,6 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     )
 
 
-def _format_duration(seconds: float) -> str:
-    total = int(round(seconds))
-    if total < 0:
-        total = 0
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
 async def _probe_audio_duration(path: str) -> Optional[str]:
     """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure."""
     ext = os.path.splitext(path)[1].lower()
@@ -2296,7 +2252,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # per-message AIAgent instances.
 
 
-
         # Ensure tirith security scanner is available (downloads if needed)
         try:
             from tools.tirith_security import ensure_installed
@@ -2478,7 +2433,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "This is fine if the model already emits host-visible paths, but MEDIA file delivery can fail "
             "for container-local paths like '/workspace/...' or '/output/...'."
         )
-
 
 
     # -- Setup skill availability ----------------------------------------
@@ -3044,10 +2998,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Consults the custom per-turn router (agent.routing) to pick an optimal
+        provider per message category; falls back to the session's primary
+        model/provider when routing is unavailable or returns no match. If
+        `/fast` is enabled and the model supports Priority Processing /
+        Anthropic fast mode, attach `request_overrides` so the API call is
+        marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -3061,6 +3017,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+
+        # Custom per-turn routing: classify the message and pick the optimal
+        # provider from the configured category chain. Returns None when the
+        # router isn't initialized or no chain matches — in that case we fall
+        # through to the session primary (the values already in model/runtime).
+        # Best-effort: any error degrades to primary-only, never blocks a turn.
+        try:
+            from agent.routing import route_turn
+            _primary_cfg = {
+                "model": model,
+                "base_url": runtime["base_url"],
+                "api_key": runtime["api_key"],
+                "provider": runtime["provider"],
+            }
+            _route = route_turn(user_message, _primary_cfg)
+            if _route is not None:
+                model = _route.model
+                runtime["base_url"] = _route.base_url
+                runtime["api_key"] = _route.api_key
+                runtime["provider"] = _route.provider
+        except Exception as _re:
+            logger.debug("Per-turn routing unavailable, using primary: %s", _re)
+
         route = {
             "model": model,
             "runtime": runtime,
@@ -4853,6 +4832,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
 
+        # Initialize the custom per-turn routing system. Best-effort: a
+        # routing-config problem must NOT block gateway startup — the gateway
+        # degrades to the primary-model path if routing is absent.
+        try:
+            from agent.routing import init_router
+            from hermes_cli.config import read_raw_config
+            _raw_cfg = read_raw_config()
+            _router = init_router(_raw_cfg)
+            logger.info(
+                "Custom routing initialized: %d providers, chains=%s",
+                len(_router._registry.all_providers()),
+                list((_raw_cfg.get("routing", {}) or {}).get("chains", {}).keys()),
+            )
+        except Exception as _re:
+            logger.warning("Routing init failed (degrading to primary-only): %s", _re)
+
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running
         # ``hermes setup``, their unit file may still encode the old
@@ -6615,9 +6610,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return YuanbaoAdapter(config)
 
         return None
-
-
-
 
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
@@ -9559,8 +9551,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "\n".join(lines)
 
 
-
-
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -9604,11 +9594,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
 
-
-
-
-
-
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
         """Find running-agent keys for OTHER participants in the same thread.
 
@@ -9647,8 +9632,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if key == prefix or key.startswith(prefix + ":"):
                 matches.append(key)
         return matches
-
-
 
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
@@ -9699,13 +9682,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if time.time() - requested_at > 300:
                 return False
         return event.platform_update_id <= recorded_uid
-
-
-
-
-
-
-
 
 
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
@@ -9818,7 +9794,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
-
 
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
@@ -9951,7 +9926,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
-
 
 
     @staticmethod
@@ -10420,7 +10394,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Post-stream media extraction failed: %s", e)
 
 
-
     async def _run_background_task(
         self,
         prompt: str,
@@ -10622,11 +10595,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 pass
-
-
-
-
-
 
 
     async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
@@ -11053,11 +11021,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return response
 
 
-
-
-
-
-
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -11163,7 +11126,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return t("gateway.reload_mcp.failed", error=e)
-
 
 
     # ------------------------------------------------------------------
@@ -11442,7 +11404,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
-
     # Built-in messaging platforms where the ``/update`` command is allowed.
     # ACP, API server, and webhooks are programmatic interfaces that should
     # not trigger system updates.  Plugin-migrated platforms (discord,
@@ -11455,7 +11416,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
-
 
 
     def _schedule_update_notification_watch(self) -> None:

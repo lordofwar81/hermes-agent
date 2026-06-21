@@ -1053,6 +1053,7 @@ from gateway.session_expiry_mixin import SessionExpiryMixin
 from gateway.teams_docker_media_mixin import TeamsDockerMediaMixin
 from gateway.turn_agent_config_mixin import TurnAgentConfigMixin
 from gateway.platform_reconnect_mixin import PlatformReconnectMixin
+from gateway.async_delegation_mixin import AsyncDelegationMixin
 from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1642,7 +1643,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin, AsyncDelegationMixin):
     """
     Main gateway controller.
 
@@ -6121,52 +6122,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-    async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
-        """Drain async-delegation completions and inject them as new turns.
-
-        Background subagents (``delegate_task(background=true)``) run on the
-        async-delegation daemon executor — they have no per-process watcher
-        task, so their completion events would only be seen by the post-turn
-        queue drain. This watcher covers the IDLE case: when a background
-        subagent finishes while no agent turn is running, its result still
-        re-enters the originating session promptly.
-
-        Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
-        queue has nothing for us; ignores non-async event types (those are
-        handled by ``_run_process_watcher`` / the post-turn drain).
-        """
-        await asyncio.sleep(3)  # let platforms finish connecting
-        from tools.process_registry import process_registry as _pr
-        while self._running:
-            try:
-                # Peek the queue for async-delegation events. We must NOT
-                # consume watch/completion events here (other drains own them),
-                # so requeue anything that isn't ours.
-                requeue = []
-                async_events = []
-                while not _pr.completion_queue.empty():
-                    try:
-                        evt = _pr.completion_queue.get_nowait()
-                    except Exception:
-                        break
-                    if evt.get("type") == "async_delegation":
-                        async_events.append(evt)
-                    else:
-                        requeue.append(evt)
-                for evt in requeue:
-                    _pr.completion_queue.put(evt)
-                for evt in async_events:
-                    _enrich_async_delegation_routing(evt)
-                    synth_text = _format_gateway_process_notification(evt)
-                    if not synth_text:
-                        continue
-                    try:
-                        await self._inject_watch_notification(synth_text, evt)
-                    except Exception as e:
-                        logger.error("Async delegation injection error: %s", e)
-            except Exception as e:
-                logger.debug("Async delegation watcher error: %s", e)
-            await asyncio.sleep(interval)
 
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
 

@@ -67,6 +67,13 @@ from gateway.gateway_gateway_env import (
     _has_setup_skill,
     _clear_session_env,
 )
+from gateway.gateway_events import (
+    _is_goal_continuation_event,
+    _parse_reasoning_command_args,
+    _agent_has_active_subagents,
+    _get_guild_id,
+    _init_cached_agent_for_turn,
+)
 from gateway.gateway_config_loaders import (
     _load_prefill_messages,
     _load_ephemeral_system_prompt,
@@ -2590,17 +2597,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
-    @staticmethod
-    def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """Return True for synthetic /goal continuation turns.
-
-        Goal continuations are normal queued user-role events, so pause/clear
-        must distinguish them from real user /queue messages before removing or
-        suppressing them.
-        """
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
-
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session.
 
@@ -2612,7 +2608,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
             pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
+            if _is_goal_continuation_event(pending_event):
                 pending_slot.pop(session_key, None)
                 removed += 1
 
@@ -2622,7 +2618,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if overflow:
                 kept = []
                 for queued_event in overflow:
-                    if self._is_goal_continuation_event(queued_event):
+                    if _is_goal_continuation_event(queued_event):
                         removed += 1
                     else:
                         kept.append(queued_event)
@@ -2743,32 +2739,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.info("%s resumed — retrying on next watcher tick", platform.value)
         return True
 
-    @staticmethod
-    def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
-        """Parse `/reasoning` args into `(value, persist_global)`.
-
-        `/reasoning <level>` is session-scoped by default. `--global` may be
-        supplied in any position to persist the change to config.yaml.
-        """
-        import shlex
-
-        text = str(raw_args or "").strip().replace("—", "--")
-        if not text:
-            return "", False
-        try:
-            tokens = shlex.split(text)
-        except ValueError:
-            tokens = text.split()
-
-        persist_global = False
-        value_tokens = []
-        for token in tokens:
-            if token == "--global":
-                persist_global = True
-            else:
-                value_tokens.append(token)
-        return " ".join(value_tokens).strip().lower(), persist_global
-
     def _resolve_session_reasoning_config(
         self,
         *,
@@ -2862,44 +2832,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
             return None, None
-
-    @staticmethod
-    def _agent_has_active_subagents(running_agent: Any) -> bool:
-        """Return True when *running_agent* is currently driving subagents
-        via the ``delegate_task`` tool.
-
-        Background (#30170): ``AIAgent.interrupt()`` cascades through the
-        parent's ``_active_children`` list and calls ``interrupt()`` on
-        every child synchronously, which aborts in-flight subagent work
-        and produces a fallback cascade with no actionable signal.
-        Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
-        whenever this helper returns True protects subagent work from
-        conversational follow-ups while leaving the explicit ``/stop``
-        path (which goes through ``_interrupt_and_clear_session``)
-        untouched. Safe-by-default: returns False on any attribute or
-        lock error so a missing/broken parent never blocks the existing
-        interrupt path.
-        """
-        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
-            return False
-        children = getattr(running_agent, "_active_children", None)
-        # AIAgent always initialises this as a concrete list (see
-        # agent/agent_init.py). Reject anything that isn't a real
-        # collection — this guards against ``MagicMock()._active_children``
-        # auto-creating a truthy stub in tests and triggering the demotion
-        # against an agent that doesn't actually have subagents.
-        if not isinstance(children, (list, tuple, set)):
-            return False
-        if not children:
-            return False
-        lock = getattr(running_agent, "_active_children_lock", None)
-        try:
-            if lock is not None:
-                with lock:
-                    return bool(children)
-            return bool(children)
-        except Exception:
-            return False
 
     # Hard cap on per-session pending follow-ups for busy_input_mode=queue
     # (and the draining/steer-fallback/subagent-demotion paths that share
@@ -3023,7 +2955,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # operator still has a way to force-cancel everything.
         demoted_for_subagents = (
             effective_mode == "interrupt"
-            and self._agent_has_active_subagents(running_agent)
+            and _agent_has_active_subagents(running_agent)
         )
         if demoted_for_subagents:
             logger.info(
@@ -6482,7 +6414,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # follow-up doesn't destroy minutes of subagent progress.
             # /stop reaches its dedicated handler above, so the operator
             # still has a clean escape hatch.
-            if self._agent_has_active_subagents(running_agent):
+            if _agent_has_active_subagents(running_agent):
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "
                     "because the running agent has active subagents (#30170)",
@@ -7993,7 +7925,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # -----------------------------------------------------------------
         if source.platform == Platform.DISCORD:
             adapter = self.adapters.get(Platform.DISCORD)
-            guild_id = self._get_guild_id(event)
+            guild_id = _get_guild_id(event)
             if guild_id and adapter and hasattr(adapter, "get_voice_channel_context"):
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
@@ -9078,28 +9010,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
 
-    @staticmethod
-    def _get_guild_id(event: MessageEvent) -> Optional[int]:
-        """Extract Discord guild_id from the raw message object."""
-        raw = getattr(event, "raw_message", None)
-        if raw is None:
-            return None
-        # Slash command interaction
-        if hasattr(raw, "guild_id") and raw.guild_id:
-            return int(raw.guild_id)
-        # Regular message
-        if hasattr(raw, "guild") and raw.guild:
-            return raw.guild.id
-        return None
-
-
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
 
-        guild_id = self._get_guild_id(event)
+        guild_id = _get_guild_id(event)
         if not guild_id:
             return "This command only works in a Discord server."
 
@@ -9153,7 +9070,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
-        guild_id = self._get_guild_id(event)
+        guild_id = _get_guild_id(event)
 
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
             return "Not in a voice channel."
@@ -9385,7 +9302,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter = self.adapters.get(event.source.platform)
 
             # If connected to a voice channel, play there instead of sending a file
-            guild_id = self._get_guild_id(event)
+            guild_id = _get_guild_id(event)
             if (guild_id
                     and hasattr(adapter, "play_in_voice_channel")
                     and hasattr(adapter, "is_in_voice_channel")
@@ -12047,30 +11964,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-    @staticmethod
-    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
-        """Reset per-turn state on a cached agent before a new turn starts.
-
-        Both _last_activity_ts and _last_activity_desc are only reset for
-        fresh external turns (depth 0); they are semantically paired —
-        desc describes the activity *at* ts, so updating one without the
-        other would make get_activity_summary() misleading.
-        For interrupt-recursive turns both are preserved so the inactivity
-        watchdog can accumulate stuck-turn idle time and fire the 30-min
-        timeout (#15654).  The depth-0 reset is still needed: a session
-        idle for 29 min would otherwise trip the watchdog before the new
-        turn makes its first API call (#9051).
-        """
-        if interrupt_depth == 0:
-            agent._last_activity_ts = time.time()
-            agent._last_activity_desc = "starting new turn (cached)"
-            # Reset the SessionDB flush cursor so the new turn's messages are
-            # fully persisted — a stale value from the previous turn would
-            # cause `_flush_messages_to_session_db` to skip new rows (#44327).
-            if hasattr(agent, "_last_flushed_db_idx"):
-                agent._last_flushed_db_idx = 0
-        agent._api_call_count = 0
-
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
 
@@ -13540,7 +13433,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _cache.move_to_end(session_key)
                                 except KeyError:
                                     pass
-                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            _init_cached_agent_for_turn(agent, _interrupt_depth)
                             logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -14892,7 +14785,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+                    if _is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",

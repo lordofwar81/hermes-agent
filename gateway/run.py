@@ -80,6 +80,10 @@ from gateway.gateway_lifecycle import (
     _launch_systemd_restart_shortcut,
     _is_stale_restart_redelivery,
 )
+from gateway.gateway_command_delegates import (
+    _handle_suggestions_command,
+    _handle_blueprint_command,
+)
 from gateway.gateway_config_loaders import (
     _load_prefill_messages,
     _load_ephemeral_system_prompt,
@@ -6380,10 +6384,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_kanban_command(event)
 
         if canonical == "suggestions":
-            return await self._handle_suggestions_command(event)
+            return await _handle_suggestions_command(event)
 
         if canonical == "blueprint":
-            _blueprint_result = await self._handle_blueprint_command(event)
+            _blueprint_result = await _handle_blueprint_command(event)
             _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
             if _blueprint_seed:
                 # Blueprint matched — rewrite the turn to the seed and fall
@@ -8480,71 +8484,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 matches.append(key)
         return matches
 
-
-    async def _handle_suggestions_command(self, event: MessageEvent) -> str:
-        """Handle /suggestions in the gateway.
-
-        Delegates to the shared handler so CLI and gateway never drift. The
-        origin is built from the event source so an accepted suggestion's job
-        delivers back to this chat/thread.
-        """
-        args = (event.get_command_args() or "").strip()
-        source = event.source
-        origin = None
-        try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
-            chat_id = getattr(source, "chat_id", None)
-            if platform and chat_id:
-                origin = {
-                    "platform": platform,
-                    "chat_id": str(chat_id),
-                    "chat_name": getattr(source, "chat_name", None),
-                    "thread_id": getattr(source, "thread_id", None),
-                }
-        except Exception:
-            origin = None
-        try:
-            from hermes_cli.suggestions_cmd import handle_suggestions_command
-
-            return handle_suggestions_command(args, origin=origin, surface="gateway")
-        except Exception as e:
-            logger.debug("suggestions command failed: %s", e)
-            return f"Suggestions command failed: {e}"
-
-    async def _handle_blueprint_command(self, event: MessageEvent):
-        """Handle /blueprint in the gateway.
-
-        Delegates to the shared handler so CLI, TUI, and gateway never drift.
-        Returns a BlueprintCommandResult: ``text`` is shown to the user, and if
-        ``agent_seed`` is set the dispatch site rewrites ``event.text`` to the
-        seed and falls through to the agent (the ``/steer`` pattern) so the
-        agent gathers the slot values conversationally. Origin is built from the
-        event source so a directly created blueprint job delivers back to this chat.
-        """
-        args = (event.get_command_args() or "").strip()
-        source = event.source
-        origin = None
-        try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
-            chat_id = getattr(source, "chat_id", None)
-            if platform and chat_id:
-                origin = {
-                    "platform": platform,
-                    "chat_id": str(chat_id),
-                    "chat_name": getattr(source, "chat_name", None),
-                    "thread_id": getattr(source, "thread_id", None),
-                }
-        except Exception:
-            origin = None
-        try:
-            from hermes_cli.blueprint_cmd import handle_blueprint_command
-
-            return handle_blueprint_command(args, origin=origin, surface="gateway")
-        except Exception as e:
-            logger.debug("blueprint command failed: %s", e)
-            from hermes_cli.blueprint_cmd import BlueprintCommandResult
-
-            return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

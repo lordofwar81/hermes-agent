@@ -1029,6 +1029,7 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
@@ -1617,7 +1618,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin):
     """
     Main gateway controller.
 
@@ -2595,37 +2596,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
-
-    def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
-        """Remove queued synthetic /goal continuations for one session.
-
-        User-issued /goal pause/clear can race with a continuation already
-        queued by the judge.  Remove only synthetic goal continuations while
-        preserving normal /queue and user follow-up events.
-        """
-        removed = 0
-        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if isinstance(pending_slot, dict):
-            pending_event = pending_slot.get(session_key)
-            if _is_goal_continuation_event(pending_event):
-                pending_slot.pop(session_key, None)
-                removed += 1
-
-        queued_events = getattr(self, "_queued_events", None)
-        if isinstance(queued_events, dict):
-            overflow = queued_events.get(session_key) or []
-            if overflow:
-                kept = []
-                for queued_event in overflow:
-                    if _is_goal_continuation_event(queued_event):
-                        removed += 1
-                    else:
-                        kept.append(queued_event)
-                if kept:
-                    queued_events[session_key] = kept
-                else:
-                    queued_events.pop(session_key, None)
-        return removed
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -8313,69 +8283,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
     # ────────────────────────────────────────────────────────────────
-    def _goal_max_turns_from_config(self) -> int:
-        """Resolve the configured /goal turn budget for gateway sessions.
-
-        GatewayRunner.config is a GatewayConfig dataclass, not the full
-        user config mapping. Top-level config blocks such as ``goals`` are
-        therefore only available through hermes_cli.config.load_config().
-        """
-        try:
-            goals_cfg = (
-                (self.config or {}).get("goals", {})
-                if isinstance(self.config, dict)
-                else getattr(self.config, "goals", {}) or {}
-            )
-            if not goals_cfg:
-                from hermes_cli.config import load_config
-
-                goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            return 20
-
-    def _get_goal_manager_for_event(self, event: "MessageEvent"):
-        """Return a GoalManager bound to the session for this gateway event.
-
-        Returns ``(manager, session_entry)`` or ``(None, None)`` if the
-        goals module can't be loaded.
-        """
-        try:
-            from hermes_cli.goals import GoalManager
-        except Exception as exc:
-            logger.debug("goal manager unavailable: %s", exc)
-            return None, None
-        try:
-            session_entry = self.session_store.get_or_create_session(event.source)
-        except Exception as exc:
-            logger.debug("goal manager: session lookup failed: %s", exc)
-            return None, None
-        sid = getattr(session_entry, "session_id", None) or ""
-        if not sid:
-            return None, None
-        max_turns = self._goal_max_turns_from_config()
-        return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
-
-
-    async def _send_goal_status_notice(self, source: Any, message: str) -> None:
-        """Send a /goal judge status line back to the originating chat/thread."""
-        adapter = self.adapters.get(source.platform)
-        if not adapter:
-            logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
-            return
-
-        try:
-            metadata = _thread_metadata_for_source(source)
-        except Exception:
-            metadata = None
-
-        result = await adapter.send(source.chat_id, message, metadata=metadata)
-        if result is not None and not getattr(result, "success", True):
-            logger.warning(
-                "goal continuation: status send failed: %s",
-                getattr(result, "error", "unknown error"),
-            )
-
     async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
         """Send a /goal status line after the main response is delivered.
 

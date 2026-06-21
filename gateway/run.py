@@ -87,6 +87,26 @@ from gateway.gateway_command_delegates import (
 from gateway.gateway_session_info import (
     _format_session_info,
 )
+from gateway.gateway_async_utils import (
+    _run_in_executor_with_context,
+    _safe_adapter_disconnect,
+    _connect_adapter_with_timeout,
+)
+from gateway.gateway_agent_mgmt import (
+    _finalize_shutdown_agents,
+    _release_evicted_agent_soft,
+    _bind_adapter_run_generation,
+    _update_platform_runtime_status,
+    _goal_still_active_for_session,
+)
+from gateway.gateway_message_pipeline import (
+    _decide_image_input_mode,
+    _enrich_message_with_vision,
+    _set_session_env,
+    _enrich_async_delegation_routing,
+    _read_user_config,
+    _thread_metadata_for_target,
+)
 from gateway.gateway_config_loaders import (
     _load_prefill_messages,
     _load_ephemeral_system_prompt,
@@ -2000,48 +2020,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
-    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
-        """Call adapter.disconnect() defensively, swallowing any error.
-
-        Used when adapter.connect() failed or raised — the adapter may
-        have allocated partial resources (aiohttp.ClientSession, poll
-        tasks, child subprocesses) that would otherwise leak and surface
-        as "Unclosed client session" warnings at process exit.
-
-        Must tolerate partial-init state and never raise, since callers
-        use it inside error-handling blocks.
-        """
-        timeout = _adapter_disconnect_timeout_secs()
-        try:
-            if timeout <= 0:
-                await adapter.disconnect()
-            else:
-                await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
-                timeout,
-                platform.value if platform is not None else "adapter",
-            )
-        except Exception as e:
-            logger.debug(
-                "Defensive %s disconnect after failed connect raised: %s",
-                platform.value if platform is not None else "adapter",
-                e,
-            )
-
-    async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
-        """Connect an adapter without allowing one platform to block others."""
-        timeout = _platform_connect_timeout_secs()
-        if timeout <= 0:
-            return await adapter.connect()
-        try:
-            return await asyncio.wait_for(adapter.connect(), timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                f"{platform.value} connect timed out after {timeout:g}s"
-            ) from exc
-
     @property
     def should_exit_cleanly(self) -> bool:
         return self._exit_cleanly
@@ -2465,7 +2443,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.fatal_error_code or "unknown",
             adapter.fatal_error_message or "unknown error",
         )
-        self._update_platform_runtime_status(
+        _update_platform_runtime_status(
             adapter.platform.value,
             platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
             error_code=adapter.fatal_error_code,
@@ -2641,17 +2619,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     queued_events.pop(session_key, None)
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
-        """Best-effort fresh DB check before running a queued continuation."""
-        if not session_id:
-            return False
-        try:
-            from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
-        except Exception as exc:
-            logger.debug("goal continuation: active-state recheck failed: %s", exc)
-            return False
-
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -2660,25 +2627,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exit_reason=exit_reason,
                 restart_requested=self._restart_requested,
                 active_agents=self._running_agent_count(),
-            )
-        except Exception:
-            pass
-
-    def _update_platform_runtime_status(
-        self,
-        platform: str,
-        *,
-        platform_state: Optional[str] = None,
-        error_code: Optional[str] = None,
-        error_message: Optional[str] = None,
-    ) -> None:
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(
-                platform=platform,
-                platform_state=platform_state,
-                error_code=error_code,
-                error_message=error_message,
             )
         except Exception:
             pass
@@ -2710,7 +2658,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # by a stale code path, the watcher won't fire on it.
         info["next_retry"] = float("inf")
         try:
-            self._update_platform_runtime_status(
+            _update_platform_runtime_status(
                 platform.value,
                 platform_state="paused",
                 error_code=None,
@@ -2741,7 +2689,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         info["attempts"] = 0
         info["next_retry"] = time.monotonic()  # retry on next watcher tick
         try:
-            self._update_platform_runtime_status(
+            _update_platform_runtime_status(
                 platform.value,
                 platform_state="retrying",
                 error_code=None,
@@ -3265,7 +3213,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
-                metadata = self._thread_metadata_for_target(
+                metadata = _thread_metadata_for_target(
                     platform,
                     chat_id,
                     thread_id,
@@ -3322,7 +3270,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             try:
-                metadata = self._thread_metadata_for_target(
+                metadata = _thread_metadata_for_target(
                     platform,
                     home.chat_id,
                     home.thread_id,
@@ -3354,20 +3302,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     e,
                 )
-
-    def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
-        for agent in active_agents.values():
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "on_session_finalize",
-                    session_id=getattr(agent, "session_id", None),
-                    platform="gateway",
-                    reason="shutdown",
-                )
-            except Exception:
-                pass
-            _cleanup_agent_resources(agent)
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -3995,19 +3929,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
-            self._update_platform_runtime_status(
+            _update_platform_runtime_status(
                 platform.value,
                 platform_state="connecting",
                 error_code=None,
                 error_message=None,
             )
             try:
-                success = await self._connect_adapter_with_timeout(adapter, platform)
+                success = await _connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
                     connected_count += 1
-                    self._update_platform_runtime_status(
+                    _update_platform_runtime_status(
                         platform.value,
                         platform_state="connected",
                         error_code=None,
@@ -4024,9 +3958,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # process exit. Adapter disconnect() implementations
                     # are expected to be idempotent and tolerate
                     # partial-init state.
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    await _safe_adapter_disconnect(adapter, platform)
                     if adapter.has_fatal_error:
-                        self._update_platform_runtime_status(
+                        _update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
                             error_code=adapter.fatal_error_code,
@@ -4048,7 +3982,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "next_retry": time.monotonic() + 30,
                             }
                     else:
-                        self._update_platform_runtime_status(
+                        _update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying",
                             error_code=None,
@@ -4068,8 +4002,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Same defensive cleanup path for exceptions — an adapter
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
-                await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
+                await _safe_adapter_disconnect(adapter, platform)
+                _update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
                     error_code=None,
@@ -4729,13 +4663,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
 
-                    success = await self._connect_adapter_with_timeout(adapter, platform)
+                    success = await _connect_adapter_with_timeout(adapter, platform)
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
-                        self._update_platform_runtime_status(
+                        _update_platform_runtime_status(
                             platform.value,
                             platform_state="connected",
                             error_code=None,
@@ -4766,7 +4700,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     # Check if the failure is non-retryable
                     elif adapter.has_fatal_error and not adapter.fatal_error_retryable:
-                        self._update_platform_runtime_status(
+                        _update_platform_runtime_status(
                             platform.value,
                             platform_state="fatal",
                             error_code=adapter.fatal_error_code,
@@ -4787,7 +4721,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _dispose_unused_adapter(adapter)
                         del self._failed_platforms[platform]
                     else:
-                        self._update_platform_runtime_status(
+                        _update_platform_runtime_status(
                             platform.value,
                             platform_state="retrying",
                             error_code=adapter.fatal_error_code,
@@ -4825,7 +4759,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # resources don't accumulate while the watcher
                         # keeps retrying.
                         await _dispose_unused_adapter(adapter)
-                    self._update_platform_runtime_status(
+                    _update_platform_runtime_status(
                         platform.value,
                         platform_state="retrying",
                         error_code=None,
@@ -5042,7 +4976,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
-            self._finalize_shutdown_agents(active_agents)
+            _finalize_shutdown_agents(active_agents)
 
             # Also shut down memory providers on idle cached agents.
             # _finalize_shutdown_agents only handles agents that were
@@ -6838,7 +6772,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
-                _img_mode = self._decide_image_input_mode()
+                _img_mode = _decide_image_input_mode()
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
                     pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -6855,7 +6789,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
                         _img_mode, len(image_paths),
                     )
-                    message_text = await self._enrich_message_with_vision(
+                    message_text = await _enrich_message_with_vision(
                         message_text,
                         image_paths,
                     )
@@ -7195,7 +7129,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         context = build_session_context(source, self.config, session_entry)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = _set_session_env(context)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -7726,7 +7660,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
-        self._bind_adapter_run_generation(
+        _bind_adapter_run_generation(
             self.adapters.get(source.platform),
             session_key,
             run_generation,
@@ -9059,7 +8993,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         image_paths.append(path)
                 if image_paths:
                     try:
-                        enriched_prompt = await self._enrich_message_with_vision(
+                        enriched_prompt = await _enrich_message_with_vision(
                             prompt, image_paths,
                         )
                     except Exception as e:
@@ -9103,7 +9037,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 finally:
                     _cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            result = await _run_in_executor_with_context(run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -9743,7 +9677,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Gate check.
         confirm_required = True
         try:
-            cfg = self._read_user_config()
+            cfg = _read_user_config()
             approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
             if isinstance(approvals, dict):
                 confirm_required = bool(approvals.get("destructive_slash_confirm", True))
@@ -9871,64 +9805,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Text fallback — return the prompt message as the direct reply.
         return message
 
-    def _read_user_config(self) -> Dict[str, Any]:
-        """Read the user's raw config.yaml (cached) for gate lookups.
-
-        Used by slash-confirm gates that must reflect on-disk state changes
-        (e.g. a prior "Always Approve" click) without a gateway restart.
-        """
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            return cfg if isinstance(cfg, dict) else {}
-        except Exception:
-            return {}
-
     def _thread_metadata_for_source(
         self,
         source,
         reply_to_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
-        return self._thread_metadata_for_target(
+        return _thread_metadata_for_target(
             getattr(source, "platform", None),
             getattr(source, "chat_id", None),
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
-
-    def _thread_metadata_for_target(
-        self,
-        platform: Optional[Platform],
-        chat_id: Optional[str],
-        thread_id: Optional[str],
-        *,
-        chat_type: Optional[str] = None,
-        reply_to_message_id: Optional[str] = None,
-        adapter: Optional[Any] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Build thread metadata for synthetic sends that only have routing state."""
-        if thread_id is None:
-            return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if _is_telegram_dm_topic_target(
-            platform,
-            chat_id,
-            thread_id,
-            chat_type=chat_type,
-            adapter=adapter,
-        ):
-            metadata["telegram_dm_topic_reply_fallback"] = True
-            # Telegram DM topic lanes need direct_messages_topic_id in metadata
-            # so synthetic/queued messages (goal continuations, status notices)
-            # route to the correct topic even when reply anchor is unavailable.
-            tid = str(thread_id)
-            if tid and tid not in {"", "1"}:
-                metadata["direct_messages_topic_id"] = tid
-            if reply_to_message_id is not None:
-                metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
-        return metadata
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -10011,7 +9900,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if platform_str and chat_id:
                         platform = Platform(platform_str)
                         adapter = self.adapters.get(platform)
-                        metadata = self._thread_metadata_for_target(
+                        metadata = _thread_metadata_for_target(
                             platform,
                             chat_id,
                             thread_id,
@@ -10270,7 +10159,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return False
 
             if adapter and chat_id:
-                metadata = self._thread_metadata_for_target(
+                metadata = _thread_metadata_for_target(
                     platform,
                     chat_id,
                     thread_id,
@@ -10343,7 +10232,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
-            metadata = self._thread_metadata_for_target(
+            metadata = _thread_metadata_for_target(
                 platform,
                 chat_id,
                 thread_id,
@@ -10414,7 +10303,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
 
             try:
-                metadata = self._thread_metadata_for_target(
+                metadata = _thread_metadata_for_target(
                     platform,
                     home.chat_id,
                     home.thread_id,
@@ -10448,125 +10337,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
-
-    def _set_session_env(self, context: SessionContext) -> list:
-        """Set session context variables for the current async task.
-
-        Uses ``contextvars`` instead of ``os.environ`` so that concurrent
-        gateway messages cannot overwrite each other's session state.
-
-        Returns a list of reset tokens; pass them to ``_clear_session_env``
-        in a ``finally`` block.
-        """
-        from gateway.session_context import set_session_vars
-        return set_session_vars(
-            platform=context.source.platform.value,
-            chat_id=context.source.chat_id,
-            chat_name=context.source.chat_name or "",
-            thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
-            session_key=context.session_key,
-            message_id=str(context.source.message_id) if context.source.message_id else "",
-        )
-
-    async def _run_in_executor_with_context(self, func, *args):
-        """Run blocking work in the thread pool while preserving session contextvars."""
-        loop = asyncio.get_running_loop()
-        ctx = copy_context()
-        return await loop.run_in_executor(None, ctx.run, func, *args)
-
-    def _decide_image_input_mode(self) -> str:
-        """Resolve the image-input routing for the currently active model.
-
-        Returns ``"native"`` (attach pixels on the user turn) or ``"text"``
-        (pre-analyze with vision_analyze and prepend the description). See
-        agent/image_routing.py for the full decision table.
-
-        The active provider/model are read from config.yaml so the decision
-        tracks ``/model`` switches automatically on the next message.
-        """
-        try:
-            from agent.image_routing import decide_image_input_mode
-            from agent.auxiliary_client import _read_main_model, _read_main_provider
-            from hermes_cli.config import load_config
-
-            cfg = load_config()
-            provider = _read_main_provider()
-            model = _read_main_model()
-            return decide_image_input_mode(provider, model, cfg)
-        except Exception as exc:
-            logger.debug("image_routing: decision failed, falling back to text — %s", exc)
-            return "text"
-
-    async def _enrich_message_with_vision(
-        self,
-        user_text: str,
-        image_paths: List[str],
-    ) -> str:
-        """
-        Auto-analyze user-attached images with the vision tool and prepend
-        the descriptions to the message text.
-
-        Each image is analyzed with a general-purpose prompt.  The resulting
-        description *and* the local cache path are injected so the model can:
-          1. Immediately understand what the user sent (no extra tool call).
-          2. Re-examine the image with vision_analyze if it needs more detail.
-
-        Args:
-            user_text:   The user's original caption / message text.
-            image_paths: List of local file paths to cached images.
-
-        Returns:
-            The enriched message string with vision descriptions prepended.
-        """
-        from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
-
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
-        )
-
-        enriched_parts = []
-        for path in image_paths:
-            try:
-                logger.debug("Auto-analyzing user image: %s", path)
-                result_json = await vision_analyze_tool(
-                    image_url=path,
-                    user_prompt=analysis_prompt,
-                )
-                result = json.loads(result_json)
-                if result.get("success"):
-                    description = result.get("analysis", "")
-                    description = sanitize_context(description)
-                    enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
-                    )
-                else:
-                    enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
-                    )
-            except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
-                enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
-                )
-
-        # Combine: vision descriptions first, then the user's original text
-        if enriched_parts:
-            prefix = "\n\n".join(enriched_parts)
-            if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
-        return user_text
 
     async def _enrich_message_with_transcription(
         self,
@@ -10846,27 +10616,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
 
-    def _enrich_async_delegation_routing(self, evt: dict) -> None:
-        """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
-
-        Async-delegation completion events only carry ``session_key`` (the
-        daemon worker has no access to the per-message routing metadata the
-        terminal background watcher captures at spawn time). Parse the
-        session_key into the routing fields ``_build_process_event_source``
-        expects. Best-effort: a CLI-origin event (empty session_key) is left
-        as-is and simply won't route on the gateway.
-        """
-        if evt.get("platform"):
-            return  # already enriched
-        parsed = _parse_session_key(evt.get("session_key", "") or "")
-        if not parsed:
-            return
-        evt["platform"] = parsed.get("platform", "")
-        evt["chat_type"] = parsed.get("chat_type", "")
-        evt["chat_id"] = parsed.get("chat_id", "")
-        if parsed.get("thread_id"):
-            evt["thread_id"] = parsed["thread_id"]
-
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns.
 
@@ -10902,7 +10651,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
                 for evt in async_events:
-                    self._enrich_async_delegation_routing(evt)
+                    _enrich_async_delegation_routing(evt)
                     synth_text = _format_gateway_process_notification(evt)
                     if not synth_text:
                         continue
@@ -11346,22 +11095,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         generations = self.__dict__.get("_session_run_generation") or {}
         return int(generations.get(session_key, 0)) == int(generation)
 
-    def _bind_adapter_run_generation(
-        self,
-        adapter: Any,
-        session_key: str,
-        generation: int | None,
-    ) -> None:
-        """Bind a gateway run generation to the adapter's active-session event."""
-        if not adapter or not session_key or generation is None:
-            return
-        try:
-            interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
-            if interrupt_event is not None:
-                setattr(interrupt_event, "_hermes_run_generation", int(generation))
-        except Exception:
-            pass
-
     async def _interrupt_and_clear_session(
         self,
         session_key: str,
@@ -11497,38 +11230,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If we can't spawn a thread (interpreter shutdown), release
             # inline as a best-effort fallback.
             try:
-                self._release_evicted_agent_soft(agent)
+                _release_evicted_agent_soft(agent)
             except Exception:
                 pass
-
-    def _release_evicted_agent_soft(self, agent: Any) -> None:
-        """Soft cleanup for cache-evicted agents — preserves session tool state.
-
-        Called from _enforce_agent_cache_cap and _sweep_idle_cached_agents.
-        Distinct from _cleanup_agent_resources (full teardown) because a
-        cache-evicted session may resume at any time — its terminal
-        sandbox, browser daemon, and tracked bg processes must outlive
-        the Python AIAgent instance so the next agent built for the
-        same task_id inherits them.
-        """
-        if agent is None:
-            return
-        try:
-            if hasattr(agent, "release_clients"):
-                agent.release_clients()
-            else:
-                # Older agent instance (shouldn't happen in practice) —
-                # fall back to the legacy full-close path.
-                _cleanup_agent_resources(agent)
-        except Exception:
-            pass
-        # Free conversation history memory — can be tens of MB with tool
-        # outputs (file reads, terminal output, search results) on heavy
-        # 100+-tool-call sessions. release_clients() deliberately preserves
-        # session tool state for resume, but the message list is rebuilt from
-        # persisted session JSON on the next turn, so dropping it here is safe.
-        if hasattr(agent, "_session_messages"):
-            agent._session_messages = []
 
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
@@ -13927,7 +13631,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
             _executor_task = asyncio.ensure_future(
-                self._run_in_executor_with_context(run_sync)
+                _run_in_executor_with_context(run_sync)
             )
 
             _inactivity_timeout = False
@@ -14322,7 +14026,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if _is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+                    if _is_goal_continuation_event(pending_event) and not _goal_still_active_for_session(session_id):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",

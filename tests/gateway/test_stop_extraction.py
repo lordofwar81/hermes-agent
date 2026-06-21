@@ -19,7 +19,6 @@ Two contract guarantees of the extraction:
    the lift) would fail its canary.
 """
 
-import threading
 from pathlib import Path
 
 import pytest
@@ -65,10 +64,6 @@ async def test_stop_runs_all_teardown_phases(monkeypatch, tmp_path):
         tmp_path=tmp_path,
         adapters={Platform.TELEGRAM: adapter},
     )
-    # build_runner sets _agent_cache_lock to asyncio.Lock(); production uses
-    # threading.Lock() (stop() enters it via a sync `with`). Match production
-    # so the idle-cache teardown phase runs faithfully.
-    runner._agent_cache_lock = threading.Lock()
     # Zero drain timeout so _drain_active_agents returns immediately
     # (no running agents to wait on) — exercises the graceful path that
     # writes the .clean_shutdown marker.
@@ -122,7 +117,6 @@ async def test_stop_restart_branch_sets_flags(monkeypatch, tmp_path):
         tmp_path=tmp_path,
         adapters={Platform.TELEGRAM: adapter},
     )
-    runner._agent_cache_lock = threading.Lock()  # match production (sync Lock)
     runner._restart_drain_timeout = 0.0
 
     await runner.stop(restart=True, detached_restart=True, service_restart=False)

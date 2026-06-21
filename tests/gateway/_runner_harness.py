@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types
 from collections import OrderedDict
 from types import SimpleNamespace
@@ -177,7 +178,13 @@ def build_runner(
     runner._session_sources_max = 512
     runner._failed_platforms = {}
     runner._agent_cache = {}
-    runner._agent_cache_lock = asyncio.Lock()
+    # Match production (gateway/run.py __init__): _agent_cache_lock is a
+    # threading.Lock, entered via a sync `with`. Several mixins (stop_mixin,
+    # agent_cache_mixin) and the idle-cache teardown path use it sync-style;
+    # an asyncio.Lock here raises "does not support the context manager
+    # protocol" the first time a test exercises stop() or cache eviction
+    # end-to-end. threading.Lock is the faithful, drop-in choice.
+    runner._agent_cache_lock = threading.Lock()
     runner._active_session_leases = {}
     runner._startup_restore_in_progress = False
     runner._startup_restore_queue = []

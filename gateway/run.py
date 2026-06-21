@@ -1054,6 +1054,7 @@ from gateway.teams_docker_media_mixin import TeamsDockerMediaMixin
 from gateway.turn_agent_config_mixin import TurnAgentConfigMixin
 from gateway.platform_reconnect_mixin import PlatformReconnectMixin
 from gateway.async_delegation_mixin import AsyncDelegationMixin
+from gateway.slash_confirm_mixin import SlashConfirmMixin
 from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1643,7 +1644,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin, AsyncDelegationMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin, AsyncDelegationMixin, SlashConfirmMixin):
     """
     Main gateway controller.
 
@@ -6002,93 +6003,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     #      /cancel; the early intercept in ``_handle_message`` matches
     #      those replies against ``tools.slash_confirm.get_pending()``.
 
-    async def _maybe_confirm_destructive_slash(
-        self,
-        *,
-        event: MessageEvent,
-        command: str,
-        title: str,
-        detail: str,
-        execute,
-    ) -> Union[str, "EphemeralReply", None]:
-        """Gate a destructive session slash command (/new, /reset, /undo).
-
-        ``execute`` is an async callable ``execute() -> str | EphemeralReply``
-        that performs the destructive action.  If the
-        ``approvals.destructive_slash_confirm`` config gate is off, ``execute``
-        runs immediately (returning its result).  Otherwise this routes
-        through ``_request_slash_confirm`` — native yes/no buttons on
-        Telegram/Discord/Slack, text fallback elsewhere.
-
-        Three-option resolution:
-
-          - ``once``  — run ``execute`` and return its result
-          - ``always`` — persist ``approvals.destructive_slash_confirm: false``,
-                        then run ``execute``
-          - ``cancel`` — return a "cancelled" message; do not run ``execute``
-        """
-        # Gate check.
-        confirm_required = True
-        try:
-            cfg = _read_user_config()
-            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
-            if isinstance(approvals, dict):
-                confirm_required = bool(approvals.get("destructive_slash_confirm", True))
-        except Exception:
-            pass
-
-        if not confirm_required:
-            return await execute()
-
-        session_key = self._session_key_for_source(event.source)
-
-        async def _on_confirm(choice: str):
-            if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
-            if choice == "always":
-                try:
-                    from cli import save_config_value
-                    save_config_value("approvals.destructive_slash_confirm", False)
-                    logger.info(
-                        "User opted out of destructive slash confirm (session=%s)",
-                        session_key,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to persist destructive_slash_confirm=false: %s", exc,
-                    )
-            result = await execute()
-            if choice == "always":
-                note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
-                )
-                if isinstance(result, str):
-                    return result + note
-                # EphemeralReply or other — leave untouched; the opt-out note
-                # would otherwise mangle structured replies.  The persist itself
-                # already happened above; user gets the same UX next time.
-                return result
-            return result
-
-        _p = self._typed_command_prefix_for(event.source.platform)
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
-        )
-        return await self._request_slash_confirm(
-            event=event,
-            command=command,
-            title=title,
-            message=prompt_message,
-            handler=_on_confirm,
-        )
 
 
 

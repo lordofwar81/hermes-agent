@@ -54,6 +54,19 @@ from gateway.gateway_telegram_topics import (
 from gateway.gateway_agent_cache import (
     _agent_config_signature,
 )
+from gateway.gateway_voice import (
+    _voice_key,
+    _set_adapter_auto_tts_enabled,
+    _set_adapter_auto_tts_disabled,
+)
+from gateway.gateway_gateway_env import (
+    _adapter_disconnect_timeout_secs,
+    _platform_connect_timeout_secs,
+    _get_proxy_url,
+    _active_profile_name,
+    _has_setup_skill,
+    _clear_session_env,
+)
 from gateway.gateway_config_loaders import (
     _load_prefill_messages,
     _load_ephemeral_system_prompt,
@@ -1696,7 +1709,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-        self._kanban_notifier_profile = self._active_profile_name()
+        self._kanban_notifier_profile = _active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -1910,21 +1923,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     # -- Setup skill availability ----------------------------------------
 
-    def _has_setup_skill(self) -> bool:
-        """Check if the hermes-agent-setup skill is installed."""
-        try:
-            from tools.skill_manager_tool import _find_skill
-            return _find_skill("hermes-agent-setup") is not None
-        except Exception:
-            return False
-
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
-
-    def _voice_key(self, platform: Platform, chat_id: str) -> str:
-        """Return a platform-namespaced key for voice mode state."""
-        return f"{platform.value}:{chat_id}"
 
     def _save_voice_modes(self) -> None:
         try:
@@ -1934,38 +1935,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
-
-    def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
-        """Update an adapter's in-memory auto-TTS suppression set if present."""
-        disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
-        if not isinstance(disabled_chats, set):
-            return
-        if disabled:
-            disabled_chats.add(chat_id)
-            # ``/voice off`` also clears any explicit enable — it's a hard override.
-            enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-            if isinstance(enabled_chats, set):
-                enabled_chats.discard(chat_id)
-        else:
-            disabled_chats.discard(chat_id)
-
-    def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
-        """Update an adapter's per-chat auto-TTS opt-in set if present.
-
-        Used for ``/voice on``/``/voice tts`` where the user explicitly wants
-        auto-TTS even when ``voice.auto_tts`` is False globally.
-        """
-        enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-        if not isinstance(enabled_chats, set):
-            return
-        if enabled:
-            enabled_chats.add(chat_id)
-            # An explicit opt-in clears any stale /voice off for this chat.
-            disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
-            if isinstance(disabled_chats, set):
-                disabled_chats.discard(chat_id)
-        else:
-            enabled_chats.discard(chat_id)
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live platform adapter.
@@ -2022,7 +1991,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Must tolerate partial-init state and never raise, since callers
         use it inside error-handling blocks.
         """
-        timeout = self._adapter_disconnect_timeout_secs()
+        timeout = _adapter_disconnect_timeout_secs()
         try:
             if timeout <= 0:
                 await adapter.disconnect()
@@ -2041,39 +2010,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 e,
             )
 
-    def _adapter_disconnect_timeout_secs(self) -> float:
-        """Return the per-adapter disconnect timeout used during shutdown."""
-        raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
-        if raw:
-            try:
-                timeout = float(raw)
-            except ValueError:
-                logger.warning(
-                    "Ignoring invalid HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT=%r",
-                    raw,
-                )
-            else:
-                return max(0.0, timeout)
-        return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
-
-    def _platform_connect_timeout_secs(self) -> float:
-        """Return the per-platform connect timeout used during startup/retry."""
-        raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
-        if raw:
-            try:
-                timeout = float(raw)
-            except ValueError:
-                logger.warning(
-                    "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
-                    raw,
-                )
-            else:
-                return max(0.0, timeout)
-        return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
-
     async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect an adapter without allowing one platform to block others."""
-        timeout = self._platform_connect_timeout_secs()
+        timeout = _platform_connect_timeout_secs()
         if timeout <= 0:
             return await adapter.connect()
         try:
@@ -5017,14 +4956,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
                 await asyncio.sleep(1)
 
-    def _active_profile_name(self) -> str:
-        """Return the profile name this gateway represents."""
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            return get_active_profile_name() or "default"
-        except Exception:
-            return "default"
-
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in
     # GatewayKanbanWatchersMixin (gateway/kanban_watchers.py). They use only
@@ -7268,7 +7199,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "and set `stt.enabled: true` in config.yaml, "
                                 "then /restart the gateway."
                             )
-                            if self._has_setup_skill():
+                            if _has_setup_skill():
                                 _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
                             await _stt_adapter.send(
                                 source.chat_id,
@@ -8648,7 +8579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         finally:
             # Restore session context variables to their pre-handler state
-            self._clear_session_env(_session_env_tokens)
+            _clear_session_env(_session_env_tokens)
 
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
@@ -9188,7 +9119,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # doesn't disconnect a deliberately text-only (/voice off) session.
         if hasattr(adapter, "_voice_mode_getter"):
             adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
-                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+                _voice_key(Platform.DISCORD, str(chat_id)), "off"
             )
 
         try:
@@ -9208,9 +9139,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+            self._voice_mode[_voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
-            self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            _set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
@@ -9235,9 +9166,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
-        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
+        self._voice_mode[_voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
-        self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+        _set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
         return "Left voice channel."
@@ -9247,10 +9178,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         Cleans up runner-side voice_mode state that the adapter cannot reach.
         """
-        self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
+        self._voice_mode[_voice_key(Platform.DISCORD, chat_id)] = "off"
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
-        self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        _set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -9383,7 +9314,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_mode = self._voice_mode.get(_voice_key(event.source.platform, chat_id), "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
@@ -11085,11 +11016,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 
-    def _clear_session_env(self, tokens: list) -> None:
-        """Restore session context variables to their pre-handler values."""
-        from gateway.session_context import clear_session_vars
-        clear_session_vars(tokens)
-
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
@@ -11258,7 +11184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "A direct message has already been sent to the user "
                             "with setup instructions."
                         )
-                        if self._has_setup_skill():
+                        if _has_setup_skill():
                             _no_stt_note += (
                                 " You have a skill called hermes-agent-setup "
                                 "that can help users configure Hermes features "
@@ -12303,21 +12229,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Proxy mode: forward messages to a remote Hermes API server
     # ------------------------------------------------------------------
 
-    def _get_proxy_url(self) -> Optional[str]:
-        """Return the proxy URL if proxy mode is configured, else None.
-
-        Checks GATEWAY_PROXY_URL env var first (convenient for Docker),
-        then ``gateway.proxy_url`` in config.yaml.
-        """
-        url = os.getenv("GATEWAY_PROXY_URL", "").strip()
-        if url:
-            return url.rstrip("/")
-        cfg = _load_gateway_config()
-        url = (cfg.get("gateway") or {}).get("proxy_url", "").strip()
-        if url:
-            return url.rstrip("/")
-        return None
-
     async def _run_agent_via_proxy(
         self,
         message: str,
@@ -12351,7 +12262,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "tools": [],
             }
 
-        proxy_url = self._get_proxy_url()
+        proxy_url = _get_proxy_url()
         if not proxy_url:
             return {
                 "final_response": "⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
@@ -12630,7 +12541,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Supports interruption via new messages.
         """
         # ---- Proxy mode: delegate to remote API server ----
-        if self._get_proxy_url():
+        if _get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,

@@ -1042,6 +1042,7 @@ from gateway.agent_cache_mixin import GatewayAgentCacheMixin
 from gateway.update_progress_mixin import GatewayUpdateProgressMixin
 from gateway.drain_queue_mixin import GatewayDrainQueueMixin
 from gateway.transcription_mixin import GatewayTranscriptionMixin
+from gateway.platform_failover_mixin import GatewayPlatformFailoverMixin
 from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1631,7 +1632,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin):
     """
     Main gateway controller.
 
@@ -2073,72 +2074,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         route["request_overrides"] = overrides or {}
         return route
 
-    async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
-        """React to an adapter failure after startup.
-
-        If the error is retryable (e.g. network blip, DNS failure), queue the
-        platform for background reconnection instead of giving up permanently.
-        """
-        logger.error(
-            "Fatal %s adapter error (%s): %s",
-            adapter.platform.value,
-            adapter.fatal_error_code or "unknown",
-            adapter.fatal_error_message or "unknown error",
-        )
-        _update_platform_runtime_status(
-            adapter.platform.value,
-            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
-            error_code=adapter.fatal_error_code,
-            error_message=adapter.fatal_error_message,
-        )
-
-        existing = self.adapters.get(adapter.platform)
-        if existing is adapter:
-            try:
-                await adapter.disconnect()
-            finally:
-                self.adapters.pop(adapter.platform, None)
-                self.delivery_router.adapters = self.adapters
-
-        # Queue retryable failures for background reconnection
-        if adapter.fatal_error_retryable:
-            platform_config = self.config.platforms.get(adapter.platform)
-            if platform_config and adapter.platform not in self._failed_platforms:
-                self._failed_platforms[adapter.platform] = {
-                    "config": platform_config,
-                    "attempts": 0,
-                    "next_retry": time.monotonic() + 30,
-                }
-                logger.info(
-                    "%s queued for background reconnection",
-                    adapter.platform.value,
-                )
-
-        if not self.adapters and not self._failed_platforms:
-            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
-            if adapter.fatal_error_retryable:
-                self._exit_with_failure = True
-                logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
-            else:
-                logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
-            await self.stop()
-        elif not self.adapters and self._failed_platforms:
-            # All platforms are down and queued for background reconnection.
-            # Keep the gateway alive so:
-            #   • cron jobs still run
-            #   • the reconnect watcher can recover platforms when the
-            #     underlying problem clears (proxy comes back, user runs
-            #     `hermes whatsapp`, etc.)
-            # We used to exit-with-failure here to trigger systemd restart,
-            # but that converted a transient outage into a restart loop and
-            # killed in-process state every time. The reconnect watcher
-            # already handles long-running recovery — let it do its job.
-            logger.warning(
-                "No connected messaging platforms remain, but %d platform(s) "
-                "queued for reconnection — gateway staying alive, watcher will "
-                "retry in background.",
-                len(self._failed_platforms),
-            )
 
 
 
@@ -2158,86 +2093,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-    def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
-        try:
-            from gateway.status import write_runtime_status
-            write_runtime_status(
-                gateway_state=gateway_state,
-                exit_reason=exit_reason,
-                restart_requested=self._restart_requested,
-                active_agents=self._running_agent_count(),
-            )
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
     # watcher when a retryable failure recurs past a threshold, and by the
     # /platform pause|resume slash command for manual control.
     # ------------------------------------------------------------------
-    def _pause_failed_platform(self, platform, *, reason: str = "") -> None:
-        """Mark a queued platform as paused — keep it in ``_failed_platforms``
-        but stop the reconnect watcher from hammering it.
 
-        Used by ``/platform pause <name>`` for manual operator intervention.
-        Paused platforms are surfaced in ``/platform list`` and resumed with
-        ``/platform resume <name>``.  Note: the reconnect watcher does NOT
-        auto-pause — retryable (network/DNS) failures keep retrying at the
-        backoff cap indefinitely so a transient outage self-heals without
-        manual intervention.
-        """
-        info = getattr(self, "_failed_platforms", {}).get(platform)
-        if info is None:
-            return
-        if info.get("paused"):
-            return
-        info["paused"] = True
-        info["pause_reason"] = reason or "auto-paused after repeated failures"
-        # Push next_retry far enough out that even if "paused" is missed
-        # by a stale code path, the watcher won't fire on it.
-        info["next_retry"] = float("inf")
-        try:
-            _update_platform_runtime_status(
-                platform.value,
-                platform_state="paused",
-                error_code=None,
-                error_message=info["pause_reason"],
-            )
-        except Exception:
-            pass
-        logger.warning(
-            "%s paused after %d consecutive failures (%s) — "
-            "fix the underlying issue then run `/platform resume %s` "
-            "to retry, or `hermes gateway restart` to restart the gateway.",
-            platform.value, info.get("attempts", 0),
-            info["pause_reason"], platform.value,
-        )
-
-    def _resume_paused_platform(self, platform) -> bool:
-        """Unpause a platform — reset its attempt counter and schedule an
-        immediate retry.  Returns True if the platform was paused and is
-        now queued; False if it wasn't paused (or wasn't in the queue).
-        """
-        info = getattr(self, "_failed_platforms", {}).get(platform)
-        if info is None:
-            return False
-        if not info.get("paused"):
-            return False
-        info["paused"] = False
-        info.pop("pause_reason", None)
-        info["attempts"] = 0
-        info["next_retry"] = time.monotonic()  # retry on next watcher tick
-        try:
-            _update_platform_runtime_status(
-                platform.value,
-                platform_state="retrying",
-                error_code=None,
-                error_message=None,
-            )
-        except Exception:
-            pass
-        logger.info("%s resumed — retrying on next watcher tick", platform.value)
-        return True
 
     def _resolve_session_reasoning_config(
         self,
@@ -4025,36 +3887,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return None
 
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
-        """Deliver a setup/operational notice using platform-specific privacy rules."""
-        adapter = self.adapters.get(source.platform)
-        if not adapter:
-            return
-
-        config = getattr(self, "config", None)
-        notice_delivery = "public"
-        if config and hasattr(config, "get_notice_delivery"):
-            notice_delivery = config.get_notice_delivery(source.platform)
-
-        metadata = _thread_metadata_for_source(source)
-        if notice_delivery == "private" and getattr(source, "user_id", None):
-            try:
-                result = await adapter.send_private_notice(
-                    source.chat_id,
-                    source.user_id,
-                    content,
-                    metadata=metadata,
-                )
-                if getattr(result, "success", False):
-                    return
-            except Exception:
-                logger.debug(
-                    "[%s] send_private_notice failed, falling back to public",
-                    getattr(source, "platform", "?"),
-                    exc_info=True,
-                )
-
-        await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """

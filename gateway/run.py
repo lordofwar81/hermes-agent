@@ -3044,10 +3044,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Consults the custom per-turn router (agent.routing) to pick an optimal
+        provider per message category; falls back to the session's primary
+        model/provider when routing is unavailable or returns no match. If
+        `/fast` is enabled and the model supports Priority Processing /
+        Anthropic fast mode, attach `request_overrides` so the API call is
+        marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -3061,6 +3063,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
+
+        # Custom per-turn routing: classify the message and pick the optimal
+        # provider from the configured category chain. Returns None when the
+        # router isn't initialized or no chain matches — in that case we fall
+        # through to the session primary (the values already in model/runtime).
+        # Best-effort: any error degrades to primary-only, never blocks a turn.
+        try:
+            from agent.routing import route_turn
+            _primary_cfg = {
+                "model": model,
+                "base_url": runtime["base_url"],
+                "api_key": runtime["api_key"],
+                "provider": runtime["provider"],
+            }
+            _route = route_turn(user_message, _primary_cfg)
+            if _route is not None:
+                model = _route.model
+                runtime["base_url"] = _route.base_url
+                runtime["api_key"] = _route.api_key
+                runtime["provider"] = _route.provider
+        except Exception as _re:
+            logger.debug("Per-turn routing unavailable, using primary: %s", _re)
+
         route = {
             "model": model,
             "runtime": runtime,
@@ -4852,6 +4877,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except RuntimeError:
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Initialize the custom per-turn routing system. Best-effort: a
+        # routing-config problem must NOT block gateway startup — the gateway
+        # degrades to the primary-model path if routing is absent.
+        try:
+            from agent.routing import init_router
+            from hermes_cli.config import read_raw_config
+            _raw_cfg = read_raw_config()
+            _router = init_router(_raw_cfg)
+            logger.info(
+                "Custom routing initialized: %d providers, chains=%s",
+                len(_router._registry.all_providers()),
+                list((_raw_cfg.get("routing", {}) or {}).get("chains", {}).keys()),
+            )
+        except Exception as _re:
+            logger.warning("Routing init failed (degrading to primary-only): %s", _re)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running

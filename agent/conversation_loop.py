@@ -956,6 +956,14 @@ def run_conversation(
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
                         if agent._try_activate_fallback():
+                            # Record the failure so the routing circuit breaker can
+                            # trip this provider after repeated failures. Mirrors
+                            # the record_routing_success() call on the success path.
+                            try:
+                                from agent.routing import record_routing_failure
+                                record_routing_failure(agent.provider)
+                            except Exception:
+                                pass
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -1281,6 +1289,12 @@ def run_conversation(
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
                     if agent._try_activate_fallback():
+                        # Record the failure for the routing circuit breaker.
+                        try:
+                            from agent.routing import record_routing_failure
+                            record_routing_failure(agent.provider)
+                        except Exception:
+                            pass
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False

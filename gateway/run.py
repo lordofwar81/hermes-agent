@@ -44,6 +44,13 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
 from gateway.gateway_timing import _format_duration, _coerce_gateway_timestamp
+from gateway.gateway_telegram_topics import (
+    _is_telegram_dm_topic_target,
+    _telegram_topic_root_lobby_message,
+    _telegram_topic_root_new_message,
+    _sanitize_telegram_topic_title,
+    _telegram_topic_help_text,
+)
 from gateway.gateway_config_loaders import (
     _load_prefill_messages,
     _load_ephemeral_system_prompt,
@@ -2171,24 +2178,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         self._telegram_lobby_reminder_ts[chat_id] = now
         return True
-
-    def _telegram_topic_root_lobby_message(self) -> str:
-        return (
-            "This main chat is reserved for system commands.\n\n"
-            "To start a new Hermes chat, open the All Messages topic at the top "
-            "of this bot interface and send any message there. Telegram will "
-            "create a new topic for that message; each topic works as an "
-            "independent Hermes session."
-        )
-
-    def _telegram_topic_root_new_message(self) -> str:
-        return (
-            "To start a new parallel Hermes chat, open the All Messages topic "
-            "at the top of this bot interface and send any message there. "
-            "Telegram will create a new topic for it.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside an "
-            "existing topic only if you want to replace that topic's current session."
-        )
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
@@ -6678,7 +6667,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "new":
             if self._is_telegram_topic_root_lobby(source):
-                return self._telegram_topic_root_new_message()
+                return _telegram_topic_root_new_message()
             async def _do_reset():
                 return await self._handle_reset_command(event)
             return await self._maybe_confirm_destructive_slash(
@@ -7069,7 +7058,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Debounce the lobby reminder so a user who forgets about
             # topic mode and fires ten prompts doesn't get ten copies.
             if self._should_send_telegram_lobby_reminder(source):
-                return self._telegram_topic_root_lobby_message()
+                return _telegram_topic_root_lobby_message()
             return None
 
         # ── Claim this session before any await ───────────────────────
@@ -9911,17 +9900,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to send Telegram topic setup image", exc_info=True)
 
-    def _sanitize_telegram_topic_title(self, title: str) -> str:
-        """Return a Bot API-safe forum topic name from a generated session title."""
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
-        if not cleaned:
-            return "Hermes Chat"
-        # Telegram forum topic names are short (currently 1-128 chars). Keep
-        # extra room for multi-byte titles and avoid trailing ellipsis churn.
-        if len(cleaned) > 120:
-            cleaned = cleaned[:117].rstrip() + "..."
-        return cleaned
-
     async def _rename_telegram_topic_for_session_title(
         self,
         source: SessionSource,
@@ -9975,7 +9953,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if adapter is None:
             return
-        topic_name = self._sanitize_telegram_topic_title(title)
+        topic_name = _sanitize_telegram_topic_title(title)
         try:
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:
@@ -10087,28 +10065,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         self._telegram_capability_hint_ts[chat_id] = now
         return True
-
-    def _telegram_topic_help_text(self) -> str:
-        return (
-            "/topic — enable multi-session DM mode (one bot, many parallel chats)\n"
-            "\n"
-            "Usage:\n"
-            "  /topic             Enable topic mode, or show status if already on\n"
-            "  /topic help        Show this message\n"
-            "  /topic off         Disable topic mode and clear topic bindings\n"
-            "  /topic <id>        Inside a topic: restore a previous session by ID\n"
-            "\n"
-            "How it works:\n"
-            "1. Run /topic once in this DM — Hermes checks BotFather Threads\n"
-            "   Settings are enabled and flips on multi-session mode.\n"
-            "2. Tap All Messages at the top of the bot and send any message.\n"
-            "   Telegram creates a new topic for that message; each topic is\n"
-            "   an independent Hermes session (fresh history, fresh context).\n"
-            "3. The root DM becomes a system lobby — send /topic, /status,\n"
-            "   /help, /usage there. Normal prompts go in a topic.\n"
-            "4. /new inside a topic resets just that topic's session.\n"
-            "5. /topic <id> inside a topic restores an old session into it."
-        )
 
     def _disable_telegram_topic_mode_for_chat(self, source: SessionSource) -> str:
         """Cleanly disable topic mode for a chat via /topic off."""
@@ -10568,7 +10524,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if self._is_telegram_dm_topic_target(
+        if _is_telegram_dm_topic_target(
             platform,
             chat_id,
             thread_id,
@@ -10585,38 +10541,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
         return metadata
-
-    @staticmethod
-    def _is_telegram_dm_topic_target(
-        platform: Optional[Platform],
-        chat_id: Optional[str],
-        thread_id: Optional[str],
-        *,
-        chat_type: Optional[str] = None,
-        adapter: Optional[Any] = None,
-    ) -> bool:
-        """Return True when a target is a Telegram private DM topic lane."""
-        if platform != Platform.TELEGRAM or thread_id is None:
-            return False
-        if chat_type == "dm":
-            return True
-        # Inspect operator-declared DM topics via the adapter's lookup. Resolve
-        # the method on the CLASS, not the instance: getattr() on a MagicMock
-        # auto-creates a callable child for any attribute, so an instance-level
-        # lookup would report a DM topic for every test double. Only a
-        # dict-shaped return counts as an operator-declared topic — a bare
-        # MagicMock or other sentinel must not. Mirrors the guard in
-        # _rename_telegram_topic_for_session_title.
-        if adapter is not None and chat_id:
-            get_dm_topic_info = getattr(type(adapter), "_get_dm_topic_info", None)
-            if callable(get_dm_topic_info):
-                try:
-                    topic_info = get_dm_topic_info(adapter, str(chat_id), str(thread_id))
-                except Exception:
-                    logger.debug("Failed to inspect Telegram DM topic metadata", exc_info=True)
-                else:
-                    return isinstance(topic_info, dict)
-        return False
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:

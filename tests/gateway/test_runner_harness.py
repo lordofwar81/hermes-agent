@@ -10,6 +10,7 @@ import asyncio
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import GatewayRunner
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -33,10 +34,12 @@ def test_build_runner_produces_usable_instance(tmp_path):
     assert runner._agent_cache == {}
     assert runner.config is not None
     # Methods resolve through MRO (the object.__new__ bypass must not
-    # break class-level dispatch)
+    # break class-level dispatch). After the god-file decomposition (R47-R57),
+    # _handle_message lives on HandleMessageMixin — qualname no longer starts
+    # with "Gateway", but MRO resolution is the real invariant.
     assert callable(runner._handle_message)
     assert callable(runner._session_key_for_source)
-    assert runner._handle_message.__qualname__.startswith("Gateway")
+    assert type(runner)._handle_message is GatewayRunner._handle_message
 
 
 def test_build_runner_accepts_overrides(tmp_path):

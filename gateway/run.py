@@ -1029,6 +1029,7 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.running_mixin import GatewayRunningMixin
 from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1618,7 +1619,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin):
     """
     Main gateway controller.
 
@@ -2512,9 +2513,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_reason = reason
         self._shutdown_event.set()
 
-    def _running_agent_count(self) -> int:
-        return len(self._running_agents)
-
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
 
@@ -2712,13 +2710,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
-    def _snapshot_running_agents(self) -> Dict[str, Any]:
-        return {
-            session_key: agent
-            for session_key, agent in self._running_agents.items()
-            if agent is not _AGENT_PENDING_SENTINEL
-        }
-
     def _get_max_concurrent_sessions(self) -> Optional[int]:
         """Return the configured active chat session cap, if enabled."""
         try:
@@ -2727,21 +2718,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return resolve_max_concurrent_sessions(getattr(self, "config", None))
         except Exception:
             return None
-
-    def _active_session_limit_message(self, session_key: str) -> Optional[str]:
-        """Return a user-facing rejection when starting a new session exceeds the cap."""
-        max_sessions = self._get_max_concurrent_sessions()
-        if max_sessions is None:
-            return None
-        if session_key in getattr(self, "_running_agents", {}):
-            return None
-        active_count = len(getattr(self, "_running_agents", {}))
-        if active_count < max_sessions:
-            return None
-        return (
-            f"Hermes is at the active session limit ({active_count}/{max_sessions}). "
-            "Try again when another session finishes."
-        )
 
     def _claim_active_session_slot(
         self,

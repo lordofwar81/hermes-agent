@@ -1029,6 +1029,7 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.session_cache_mixin import GatewaySessionCacheMixin
 from gateway.process_mixin import GatewayProcessMixin
 from gateway.telegram_topics_mixin import GatewayTelegramTopicsMixin
 from gateway.voice_mixin import GatewayVoiceMixin
@@ -1623,7 +1624,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin):
     """
     Main gateway controller.
 
@@ -6410,41 +6411,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return []
         return list(pending_native.pop(session_key, []) or [])
 
-    def _cache_session_source(self, session_key: str, source) -> None:
-        if not session_key or source is None:
-            return
-        cached_sources = getattr(self, "_session_sources", None)
-        if cached_sources is None:
-            cached_sources = OrderedDict()
-            self._session_sources = cached_sources
-        try:
-            cached_sources[session_key] = dataclasses.replace(source)
-        except Exception:
-            logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
-            return
-        # LRU: mark as most-recently-used and trim to max size.
-        try:
-            cached_sources.move_to_end(session_key)
-            max_size = getattr(self, "_session_sources_max", 512)
-            while len(cached_sources) > max_size:
-                cached_sources.popitem(last=False)
-        except Exception:
-            pass
-
-    def _get_cached_session_source(self, session_key: str):
-        if not session_key:
-            return None
-        cached_sources = getattr(self, "_session_sources", None)
-        if not cached_sources:
-            return None
-        source = cached_sources.get(session_key)
-        if source is not None:
-            try:
-                cached_sources.move_to_end(session_key)
-            except Exception:
-                pass
-        return source
-
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -9360,43 +9326,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 e,
             )
-
-    def _begin_session_run_generation(self, session_key: str) -> int:
-        """Claim a fresh run generation token for ``session_key``.
-
-        Every top-level gateway turn gets a monotonically increasing token.
-        If a later command like /stop or /new invalidates that token while the
-        old worker is still unwinding, the late result can be recognized and
-        dropped instead of bleeding into the fresh session.
-        """
-        if not session_key:
-            return 0
-        generations = self.__dict__.get("_session_run_generation")
-        if generations is None:
-            generations = {}
-            self._session_run_generation = generations
-        next_generation = int(generations.get(session_key, 0)) + 1
-        generations[session_key] = next_generation
-        return next_generation
-
-    def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
-        """Invalidate any in-flight run token for ``session_key``."""
-        generation = self._begin_session_run_generation(session_key)
-        if reason:
-            logger.info(
-                "Invalidated run generation for %s → %d (%s)",
-                session_key,
-                generation,
-                reason,
-            )
-        return generation
-
-    def _is_session_run_current(self, session_key: str, generation: int) -> bool:
-        """Return True when ``generation`` is still current for ``session_key``."""
-        if not session_key:
-            return True
-        generations = self.__dict__.get("_session_run_generation") or {}
-        return int(generations.get(session_key, 0)) == int(generation)
 
     async def _interrupt_and_clear_session(
         self,

@@ -155,6 +155,20 @@ def _enrich_async_delegation_routing(evt: dict) -> None:
         evt["thread_id"] = parsed["thread_id"]
 
 
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the metadata dict platforms need for thread-aware replies."""
+    return _thread_metadata_for_target(
+        getattr(source, "platform", None),
+        getattr(source, "chat_id", None),
+        getattr(source, "thread_id", None),
+        chat_type=getattr(source, "chat_type", None),
+        reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
+    )
+
+
 def _read_user_config() -> Dict[str, Any]:
     """Read the user's raw config.yaml (cached) for gate lookups.
 

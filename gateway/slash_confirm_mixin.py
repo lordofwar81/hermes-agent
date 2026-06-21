@@ -20,10 +20,11 @@ lift matching the existing mixin pattern.
 ``gateway.run`` module-level runtime global (``logger``) is
 lazy-imported at the top of the method body to avoid the circular import
 (``gateway.run`` imports this mixin at module top). Stdlib typing symbol
-(``Union``) and the non-circular module symbols ``MessageEvent`` and
-``_read_user_config`` (from gateway.platforms.base and
-gateway.gateway_message_pipeline respectively) are imported at module
-top. ``save_config_value`` is imported in-body within the ``always``
+(``Union``) and ``MessageEvent`` are imported at module top.
+``_read_user_config`` is reached via ``self._read_user_config`` (the R48
+staticmethod binding on GatewayRunner) so tests can override the config by
+patching the instance; ``slash_commands.py`` uses the same pattern.
+``save_config_value`` is imported in-body within the ``always``
 branch (already lazy in source, inside a try/except) and kept verbatim.
 """
 
@@ -32,7 +33,6 @@ from __future__ import annotations
 from typing import Union
 
 from gateway.platforms.base import MessageEvent
-from gateway.gateway_message_pipeline import _read_user_config
 
 
 class SlashConfirmMixin:
@@ -63,10 +63,12 @@ class SlashConfirmMixin:
         """
         from gateway.run import logger
 
-        # Gate check.
+        # Gate check. Read via self._read_user_config (the R48 staticmethod
+        # binding on GatewayRunner) so tests can override the config by
+        # patching the instance; slash_commands.py uses the same pattern.
         confirm_required = True
         try:
-            cfg = _read_user_config()
+            cfg = self._read_user_config()
             approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
             if isinstance(approvals, dict):
                 confirm_required = bool(approvals.get("destructive_slash_confirm", True))

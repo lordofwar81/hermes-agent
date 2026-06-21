@@ -1035,6 +1035,7 @@ from gateway.telegram_topics_mixin import GatewayTelegramTopicsMixin
 from gateway.voice_mixin import GatewayVoiceMixin
 from gateway.startup_mixin import GatewayStartupMixin
 from gateway.running_mixin import GatewayRunningMixin
+from gateway.exit_request_mixin import GatewayExitRequestMixin
 from gateway.goals_mixin import GatewayGoalsMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
@@ -1624,7 +1625,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin):
     """
     Main gateway controller.
 
@@ -1982,21 +1983,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
-    @property
-    def should_exit_cleanly(self) -> bool:
-        return self._exit_cleanly
 
-    @property
-    def should_exit_with_failure(self) -> bool:
-        return self._exit_with_failure
 
-    @property
-    def exit_reason(self) -> Optional[str]:
-        return self._exit_reason
 
-    @property
-    def exit_code(self) -> Optional[int]:
-        return self._exit_code
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
@@ -2295,10 +2284,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 len(self._failed_platforms),
             )
 
-    def _request_clean_exit(self, reason: str) -> None:
-        self._exit_cleanly = True
-        self._exit_reason = reason
-        self._shutdown_event.set()
 
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
@@ -3144,22 +3129,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
-        if self._restart_task_started:
-            return False
-        self._restart_requested = True
-        self._restart_detached = detached
-        self._restart_via_service = via_service
-        self._restart_task_started = True
-
-        async def _run_restart() -> None:
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
-
-        task = asyncio.create_task(_run_restart())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return True
 
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
@@ -8356,73 +8325,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             handler=_on_confirm,
         )
 
-    async def _request_slash_confirm(
-        self,
-        *,
-        event: MessageEvent,
-        command: str,
-        title: str,
-        message: str,
-        handler,
-    ) -> Optional[str]:
-        """Ask the user to confirm an expensive slash command.
-
-        ``handler`` is an async callable ``handler(choice: str) -> str``
-        where ``choice`` is ``"once"``, ``"always"``, or ``"cancel"``.
-        The handler runs on the event loop when the user responds; its
-        return value is sent back as a gateway message.
-
-        Returns a short acknowledgment string to send immediately (before
-        the user's response).  If buttons rendered successfully the ack
-        is ``None`` (buttons are self-explanatory); if we fell back to
-        text the message itself IS the ack.
-        """
-        from tools import slash_confirm as _slash_confirm_mod
-
-        source = event.source
-        session_key = self._session_key_for_source(source)
-        # Bare-runner test harnesses (object.__new__(GatewayRunner)) skip
-        # __init__ and don't have the counter attribute — fall back to a
-        # local counter so tests don't AttributeError.  Real runs always
-        # have the instance attribute.
-        counter = getattr(self, "_slash_confirm_counter", None)
-        if counter is None:
-            import itertools as _itertools
-            counter = _itertools.count(1)
-            self._slash_confirm_counter = counter
-        confirm_id = f"{next(counter)}"
-
-        # Register the pending confirm FIRST so a super-fast button click
-        # cannot race the send_slash_confirm return.
-        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
-
-        adapter = self.adapters.get(source.platform)
-        metadata = _thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-
-        used_buttons = False
-        if adapter is not None:
-            try:
-                button_result = await adapter.send_slash_confirm(
-                    chat_id=source.chat_id,
-                    title=title,
-                    message=message,
-                    session_key=session_key,
-                    confirm_id=confirm_id,
-                    metadata=metadata,
-                )
-                if button_result and getattr(button_result, "success", False):
-                    used_buttons = True
-            except Exception as exc:
-                logger.debug(
-                    "send_slash_confirm failed for %s on %s: %s",
-                    command, source.platform, exc,
-                )
-
-        if used_buttons:
-            # Buttons rendered — no redundant text ack.
-            return None
-        # Text fallback — return the prompt message as the direct reply.
-        return message
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:

@@ -280,6 +280,7 @@ class TestExtractCacheBustingConfig:
     def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
         """Non-Honcho gateways must not read/parse honcho.json on every message."""
         from gateway.run import GatewayRunner
+        from gateway import gateway_cache_busting
 
         called = False
 
@@ -288,7 +289,10 @@ class TestExtractCacheBustingConfig:
             called = True
             raise AssertionError("should not read Honcho config")
 
-        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _boom)
+        # _extract_cache_busting_config calls the module-level honcho extractor
+        # directly (R15 moved it out of the class), so patch the module global,
+        # not the class binding.
+        monkeypatch.setattr(gateway_cache_busting, "_extract_honcho_cache_busting_config", _boom)
 
         out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
 
@@ -298,6 +302,7 @@ class TestExtractCacheBustingConfig:
 
     def test_reads_honcho_config_only_when_provider_is_honcho(self, monkeypatch):
         from gateway.run import GatewayRunner
+        from gateway import gateway_cache_busting
 
         calls = []
 
@@ -311,7 +316,7 @@ class TestExtractCacheBustingConfig:
                 "honcho.user_peer_aliases": [("123", "eri")],
             }
 
-        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+        monkeypatch.setattr(gateway_cache_busting, "_extract_honcho_cache_busting_config", _fake)
 
         out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
@@ -324,13 +329,14 @@ class TestExtractCacheBustingConfig:
         signature, so the agent is rebuilt when a user swaps providers
         mid-gateway (independent of the honcho.json identity keys)."""
         from gateway.run import GatewayRunner
+        from gateway import gateway_cache_busting
 
         # Neutralize honcho.json reads so the only varying input is the
-        # provider value itself.
+        # provider value itself. Patch the module global the extractor calls.
         monkeypatch.setattr(
-            GatewayRunner,
+            gateway_cache_busting,
             "_extract_honcho_cache_busting_config",
-            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+            gateway_cache_busting._empty_honcho_cache_busting_config,
         )
 
         sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
@@ -344,6 +350,7 @@ class TestExtractCacheBustingConfig:
         """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
         from types import SimpleNamespace
         from gateway.run import GatewayRunner
+        from gateway import gateway_cache_busting
 
         config_path = tmp_path / "honcho.json"
         config_path.write_text("{}")
@@ -366,7 +373,9 @@ class TestExtractCacheBustingConfig:
             resolve_config_path=lambda: config_path,
         )
         monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
-        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+        # Memoization state lives at module scope since R15 (was cls-level).
+        # Patch the module global that _extract_honcho_cache_busting_config reads.
+        monkeypatch.setattr(gateway_cache_busting, "_HONCHO_CACHE_BUSTING_MEMO", {})
 
         first = GatewayRunner._extract_honcho_cache_busting_config()
         second = GatewayRunner._extract_honcho_cache_busting_config()
@@ -1348,7 +1357,7 @@ class TestCachedAgentInactivityReset:
         agent = self._fake_agent(stale_seconds=1800.0)
         old_ts = agent._last_activity_ts
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("gateway.gateway_events.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -1365,7 +1374,7 @@ class TestCachedAgentInactivityReset:
 
         agent = self._fake_agent()
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("gateway.gateway_events.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -1418,7 +1427,7 @@ class TestCachedAgentInactivityReset:
         agent = self._fake_agent()
         agent._last_flushed_db_idx = 42  # stale from previous turn
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("gateway.gateway_events.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
@@ -1449,7 +1458,7 @@ class TestCachedAgentInactivityReset:
         agent_fresh = self._fake_agent()
         agent_interrupted = self._fake_agent()
 
-        with patch("gateway.run.time") as mock_time:
+        with patch("gateway.gateway_events.time") as mock_time:
             mock_time.time.return_value = _FAKE_NOW
             GatewayRunner._init_cached_agent_for_turn(agent_fresh, interrupt_depth=0)
         GatewayRunner._init_cached_agent_for_turn(agent_interrupted, interrupt_depth=1)

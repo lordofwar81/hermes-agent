@@ -52,6 +52,7 @@ from gateway.gateway_telegram_topics import (
     _telegram_topic_help_text,
 )
 from gateway.gateway_cache_busting import (
+    _CACHE_BUSTING_CONFIG_KEYS,
     _extract_cache_busting_config,
     _extract_honcho_cache_busting_config,
     _empty_honcho_cache_busting_config,
@@ -1688,6 +1689,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _load_busy_input_mode = staticmethod(_load_busy_input_mode)
     _load_busy_text_mode = staticmethod(_load_busy_text_mode)
     _load_restart_drain_timeout = staticmethod(_load_restart_drain_timeout)
+
+    # R48: re-bind the remaining module-extracted helpers (rounds 8-28) that
+    # tests still reach via ``GatewayRunner.X`` / ``patch(...GatewayRunner.X)``.
+    # Same root cause as R47 — these were classmethods/methods hoisted to module
+    # functions; the class bindings were never re-added. All are stateless (no
+    # ``self``); ``_CACHE_BUSTING_CONFIG_KEYS`` is an immutable module constant,
+    # so it is assigned directly rather than wrapped in staticmethod.
+    _CACHE_BUSTING_CONFIG_KEYS = _CACHE_BUSTING_CONFIG_KEYS
+    _agent_config_signature = staticmethod(_agent_config_signature)
+    _agent_has_active_subagents = staticmethod(_agent_has_active_subagents)
+    _bind_adapter_run_generation = staticmethod(_bind_adapter_run_generation)
+    _enrich_message_with_vision = staticmethod(_enrich_message_with_vision)
+    _extract_cache_busting_config = staticmethod(_extract_cache_busting_config)
+    _extract_honcho_cache_busting_config = staticmethod(_extract_honcho_cache_busting_config)
+    _format_session_info = staticmethod(_format_session_info)
+    _init_cached_agent_for_turn = staticmethod(_init_cached_agent_for_turn)
+    _load_background_notifications_mode = staticmethod(_load_background_notifications_mode)
+    _load_fallback_model = staticmethod(_load_fallback_model)
+    _load_prefill_messages = staticmethod(_load_prefill_messages)
+    _load_reasoning_config = staticmethod(_load_reasoning_config)
+    _load_show_reasoning = staticmethod(_load_show_reasoning)
+    _load_voice_modes = staticmethod(_load_voice_modes)
+    _parse_reasoning_command_args = staticmethod(_parse_reasoning_command_args)
+    _thread_metadata_for_source = staticmethod(_thread_metadata_for_source)
+    # Additional module helpers surfaced via parametrised / indirect test
+    # references (not in the literal scan that drove this round).
+    _load_ephemeral_system_prompt = staticmethod(_load_ephemeral_system_prompt)
+    _load_service_tier = staticmethod(_load_service_tier)
+    _voice_key = staticmethod(_voice_key)
+
+    # R48 batch 2: additional module helpers surfaced by scanning BOTH prod
+    # source (mixins/slash_commands self.X refs) AND test source (runner.X /
+    # self.X / GatewayRunner.X refs) for module-fn names never re-bound on
+    # the class. Same root cause as batch 1; these fail either at runtime in
+    # production code paths or in test fixtures built via object.__new__.
+    _active_profile_name = staticmethod(_active_profile_name)
+    _clear_session_env = staticmethod(_clear_session_env)
+    _connect_adapter_with_timeout = staticmethod(_connect_adapter_with_timeout)
+    _decide_image_input_mode = staticmethod(_decide_image_input_mode)
+    _get_guild_id = staticmethod(_get_guild_id)
+    _get_proxy_url = staticmethod(_get_proxy_url)
+    _has_setup_skill = staticmethod(_has_setup_skill)
+    _read_user_config = staticmethod(_read_user_config)
+    _release_evicted_agent_soft = staticmethod(_release_evicted_agent_soft)
+    _run_in_executor_with_context = staticmethod(_run_in_executor_with_context)
+    _safe_adapter_disconnect = staticmethod(_safe_adapter_disconnect)
+    _set_adapter_auto_tts_disabled = staticmethod(_set_adapter_auto_tts_disabled)
+    _set_adapter_auto_tts_enabled = staticmethod(_set_adapter_auto_tts_enabled)
+    _set_session_env = staticmethod(_set_session_env)
+    _telegram_topic_help_text = staticmethod(_telegram_topic_help_text)
+    _update_platform_runtime_status = staticmethod(_update_platform_runtime_status)
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref

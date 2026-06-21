@@ -1674,6 +1674,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
 
+    # Re-bind module-level helpers extracted in earlier decomposition rounds
+    # (gateway_lifecycle / gateway_agent_mgmt / gateway_config_loaders) back
+    # onto the class so legacy ``self.X`` call sites in slash_commands.py and
+    # ``GatewayRunner.X`` / ``patch("gateway.run.GatewayRunner.X")`` test
+    # references keep resolving. The functions are stateless (no ``self``),
+    # so staticmethod preserves their original call signature verbatim.
+    _cleanup_agent_resources = staticmethod(_cleanup_agent_resources)
+    _finalize_shutdown_agents = staticmethod(_finalize_shutdown_agents)
+    _is_stale_restart_redelivery = staticmethod(_is_stale_restart_redelivery)
+    _launch_detached_restart_command = staticmethod(_launch_detached_restart_command)
+    _launch_systemd_restart_shortcut = staticmethod(_launch_systemd_restart_shortcut)
+    _load_busy_input_mode = staticmethod(_load_busy_input_mode)
+    _load_busy_text_mode = staticmethod(_load_busy_text_mode)
+    _load_restart_drain_timeout = staticmethod(_load_restart_drain_timeout)
+
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
@@ -2692,7 +2707,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
             if self._restart_requested and self._restart_via_service:
-                _launch_systemd_restart_shortcut()
+                self._launch_systemd_restart_shortcut()
                 # systemd units use Restart=always, so a planned restart should
                 # exit cleanly and still be relaunched.  Using TEMPFAIL here
                 # makes systemd treat the operator-requested restart as a

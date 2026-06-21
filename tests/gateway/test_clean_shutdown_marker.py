@@ -117,7 +117,7 @@ class TestCleanShutdownMarker:
         runner.config = GatewayConfig()
 
         # Mock heavy dependencies
-        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=([], False)), \
+        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=({}, False)), \
              patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
              patch("gateway.run.GatewayRunner._update_runtime_status"), \
              patch("gateway.status.remove_pid_file"), \
@@ -210,7 +210,7 @@ class TestCleanShutdownMarker:
         runner.adapters = {}
         runner.config = GatewayConfig()
 
-        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=([], False)), \
+        with patch("gateway.run.GatewayRunner._drain_active_agents", new_callable=AsyncMock, return_value=({}, False)), \
              patch("gateway.run.GatewayRunner._finalize_shutdown_agents"), \
              patch("gateway.run.GatewayRunner._update_runtime_status"), \
              patch("gateway.status.remove_pid_file"), \

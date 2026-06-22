@@ -225,11 +225,25 @@ class Crawl4AIWebSearchProvider(WebSearchProvider):
                 )
                 continue
 
-            # Choose content by format
+            # Choose content by format. Crawl4AI's /crawl response may nest
+            # markdown/html under a dict (`item["markdown"]["raw_markdown"]`) or
+            # under `item["content"]` as a dict. Normalize to a flat string.
+            def _flatten(field_name: str) -> str:
+                val = item.get(field_name)
+                if isinstance(val, dict):
+                    keys = ["raw_markdown", "markdown_with_citations", "fit_markdown", "markdown"] \
+                        if field_name in ("markdown", "content") else \
+                        ["fit_html", "cleaned_html", "html"]
+                    return next((val.get(k) for k in keys if val.get(k)), "") or ""
+                return val or ""
+
+            md_val = _flatten("markdown") or _flatten("content")
+            html_val = _flatten("html") or _flatten("cleaned_html") or md_val
+
             if format_kw == "html":
-                content = item.get("html") or item.get("cleaned_html") or item.get("markdown") or ""
+                content = html_val
             else:
-                content = item.get("markdown") or item.get("html") or ""
+                content = md_val
 
             results.append(
                 {

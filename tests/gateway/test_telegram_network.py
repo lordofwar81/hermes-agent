@@ -43,6 +43,8 @@ class FakeTransport(httpx.AsyncBaseTransport):
             }
         )
         action = self.behavior.get(request.url.host, "ok")
+        if isinstance(action, BaseException):
+            raise action
         if action == "timeout":
             raise httpx.ConnectTimeout("timed out")
         if action == "connect_error":

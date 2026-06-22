@@ -260,5 +260,10 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    """Return True for transient network errors where retrying on another IP is safe."""
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout))
+    """Return True for transient network errors where retrying on another IP is safe.
+
+    ReadTimeout is excluded: the connection was already established (the TCP
+    handshake succeeded), so switching to a different IP will not help.  Only
+    connection-level failures (no route, refused, DNS) are retryable.
+    """
+    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))

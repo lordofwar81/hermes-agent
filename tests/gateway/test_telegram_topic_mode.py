@@ -1431,6 +1431,6 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     # Confirm _thread_metadata_for_source now returns non-None.
     runner.config = _make_runner(session_db=db).config
     runner.adapters = _make_runner(session_db=db).adapters
-    meta = GatewayRunner._thread_metadata_for_source(runner, source)
+    meta = GatewayRunner._thread_metadata_for_source(source)
     assert meta is not None
     assert meta["thread_id"] == "17585"

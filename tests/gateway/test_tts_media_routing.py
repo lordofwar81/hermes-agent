@@ -156,7 +156,11 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path=str(media_file),
-        metadata={"thread_id": "topic-1"},
+        metadata={
+            "thread_id": "topic-1",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "topic-1",
+        },
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -186,7 +190,11 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
         file_path=str(media_file),
-        metadata={"thread_id": "topic-1"},
+        metadata={
+            "thread_id": "topic-1",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "topic-1",
+        },
     )
     adapter.send_voice.assert_not_awaited()
 
@@ -218,7 +226,11 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path=str(media_file),
-        metadata={"thread_id": "topic-1"},
+        metadata={
+            "thread_id": "topic-1",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "topic-1",
+        },
     )
     adapter.send_document.assert_not_awaited()
 

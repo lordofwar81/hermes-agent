@@ -155,7 +155,7 @@ class TestHandleVoiceCommand:
     @pytest.mark.asyncio
     async def test_persistence_loaded(self, runner):
         runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:456": "all"}))
-        loaded = runner._load_voice_modes()
+        loaded = runner._load_voice_modes(runner._VOICE_MODE_PATH)
         assert loaded == {"telegram:456": "all"}
 
     @pytest.mark.asyncio
@@ -229,7 +229,7 @@ class TestHandleVoiceCommand:
         runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:123": "off"}))
 
         restored_runner = _make_runner(tmp_path)
-        restored_runner._voice_mode = restored_runner._load_voice_modes()
+        restored_runner._voice_mode = restored_runner._load_voice_modes(restored_runner._VOICE_MODE_PATH)
         adapter = SimpleNamespace(
             _auto_tts_disabled_chats=set(),
             platform=Platform.TELEGRAM,

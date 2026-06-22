@@ -22,7 +22,7 @@ def gateway_runner():
     from gateway.run import GatewayRunner
 
     class _Stub:
-        _enrich_message_with_vision = GatewayRunner._enrich_message_with_vision
+        _enrich_message_with_vision = staticmethod(GatewayRunner._enrich_message_with_vision)
 
     return _Stub()
 

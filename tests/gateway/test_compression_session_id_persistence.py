@@ -25,7 +25,17 @@ import textwrap
 from unittest.mock import MagicMock, call
 
 from gateway import run as gateway_run
+from gateway.handle_message_with_agent_mixin import HandleMessageWithAgentMixin
 from gateway.session_context import set_current_session_id, get_session_env
+
+
+# Modules that may host ``session_entry.session_id = ...`` assignments after a
+# compression rotation. The assignments lived inline in ``gateway/run.py``
+# inside ``_handle_message_with_agent`` until R51 lifted that method verbatim
+# into ``HandleMessageWithAgentMixin``. The walker checks both so the
+# "every assignment is followed by _save()" invariant survives further
+# decomposition — wherever the code lands, every mutation must still persist.
+_SESSION_ID_HOST_MODULES = [gateway_run, HandleMessageWithAgentMixin]
 
 
 def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, bool]]:
@@ -92,24 +102,32 @@ def _session_id_assignments_followed_by_save(source: str) -> list[tuple[int, boo
 
 
 def test_every_post_compression_session_id_assignment_persists():
-    """Every ``session_entry.session_id = ...`` in gateway/run.py must be
-    followed by a ``session_store._save()`` call within the same block.
+    """Every ``session_entry.session_id = ...`` assignment must be followed by a
+    ``session_store._save()`` call within the same block.
 
     Regression for #29335 — the assignment at the end of
     ``_handle_message_with_agent`` used to skip ``_save()`` while two sibling
     sites (hygiene rewrite, manual /compress) already persisted. The agent
     would compress correctly, the gateway would update its in-memory
     session_id, then drop it on next gateway restart.
+
+    Walks every module in ``_SESSION_ID_HOST_MODULES`` so the invariant holds
+    after the assignment sites move between files during decomposition (R51
+    lifted ``_handle_message_with_agent`` into
+    ``HandleMessageWithAgentMixin``).
     """
-    source = inspect.getsource(gateway_run)
-    assignments = _session_id_assignments_followed_by_save(source)
+    assignments: list[tuple[int, bool]] = []
+    for host_module in _SESSION_ID_HOST_MODULES:
+        source = inspect.getsource(host_module)
+        assignments.extend(_session_id_assignments_followed_by_save(source))
     assert assignments, (
-        "No ``session_entry.session_id = ...`` assignments found in gateway/run.py — "
-        "either the structure changed or the AST walker is broken."
+        "No ``session_entry.session_id = ...`` assignments found across "
+        f"{[m.__name__ for m in _SESSION_ID_HOST_MODULES]} — either the structure "
+        "changed or the AST walker is broken."
     )
     missing = [lineno for lineno, saved in assignments if not saved]
     assert not missing, (
-        f"{len(missing)} ``session_entry.session_id = ...`` site(s) in gateway/run.py "
+        f"{len(missing)} ``session_entry.session_id = ...`` site(s) "
         f"are not followed by ``session_store._save()`` within the same block "
         f"(lines: {missing}). Every post-compression session_id update must persist "
         f"or the next turn loads the pre-compression transcript and triggers an "

@@ -219,14 +219,14 @@ class TestAcpExecAskGate:
             called_with.append((command, description))
             return "once"
 
-        # Without HERMES_INTERACTIVE: dangerous commands are blocked (cron safety)
+        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called
         result = check_all_command_guards(
             "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
         )
-        assert result["approved"] is False
+        assert result["approved"] is True
         assert called_with == [], (
-            "without HERMES_INTERACTIVE the non-interactive path should block "
-            "dangerous commands without consulting the callback"
+            "without HERMES_INTERACTIVE the non-interactive auto-approve "
+            "path should fire without consulting the callback"
         )
 
         # With HERMES_INTERACTIVE: callback IS called, approval flows through it

@@ -440,6 +440,13 @@ class ChatCompletionsTransport(ProviderTransport):
             if thinking_config:
                 extra_body["thinking_config"] = thinking_config
 
+        # Qwen3.x models dump chain-of-thought tokens into the content field
+        # by default. Suppress thinking for non-reasoning tasks to avoid
+        # verbose output, inflated token usage, and eval failures.
+        _model_lower = model.lower() if model else ""
+        if "qwen3" in _model_lower:
+            extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
+
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")
         if additions:
@@ -565,6 +572,11 @@ class ChatCompletionsTransport(ProviderTransport):
         additions = params.get("extra_body_additions")
         if additions:
             extra_body.update(additions)
+
+        # Qwen3.x: suppress thinking tokens in content field
+        _model_lower = model.lower() if model else ""
+        if "qwen3" in _model_lower:
+            extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = False
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")

@@ -81,8 +81,8 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(legacy_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                with patch("gateway.voice_state.logger") as mock_logger:
-                    result = runner._load_voice_modes()
+                with patch("gateway.gateway_config_loaders.logger") as mock_logger:
+                    result = runner._load_voice_modes(voice_path)
 
             # Legacy keys without ':' should be skipped
             assert "123" not in result
@@ -109,7 +109,7 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(persisted_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                result = runner._load_voice_modes()
+                result = runner._load_voice_modes(voice_path)
 
         assert result.get("telegram:123") == "all"
         assert result.get("slack:456") == "voice_only"
@@ -130,7 +130,7 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                result = runner._load_voice_modes()
+                result = runner._load_voice_modes(voice_path)
 
         assert result.get("telegram:123") == "all"
         assert "telegram:456" not in result

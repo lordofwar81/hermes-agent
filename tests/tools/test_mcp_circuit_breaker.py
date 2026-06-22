@@ -11,6 +11,7 @@ tripped for the lifetime of the process. These tests lock in the
 half-open / cooldown / reconnect-resets-breaker behavior that fixes
 that.
 """
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -25,20 +26,40 @@ pytest.importorskip("mcp.client.auth.oauth2")
 # ---------------------------------------------------------------------------
 
 
-def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
+def _install_stub_server(mcp_tool_module, name: str, call_tool_impl,
+                        liveness_ok: bool = True):
     """Install a fake MCP server in the module's registry.
 
     ``call_tool_impl`` is an async function stored at ``session.call_tool``
     (it's what the tool handler invokes).
+
+    ``liveness_ok`` controls whether the session mock responds to
+    ``initialize()`` — True (default) makes the liveness probe succeed,
+    False makes it raise so the probe fails.
     """
     server = MagicMock()
     server.name = name
     session = MagicMock()
     session.call_tool = call_tool_impl
+
+    if liveness_ok:
+        async def _init_ok(*a, **kw):
+            return MagicMock()
+        session.initialize = _init_ok
+    else:
+        async def _init_fails(*a, **kw):
+            raise ConnectionError("probe fails")
+        session.initialize = _init_fails
+
     server.session = session
     server._reconnect_event = MagicMock()
     server._ready = MagicMock()
     server._ready.is_set.return_value = True
+
+    # Use a real asyncio.Lock so ``async with server._rpc_lock:`` works
+    # correctly with _run_on_mcp_loop (MagicMock doesn't support the
+    # async context manager descriptor protocol reliably).
+    server._rpc_lock = asyncio.Lock()
 
     mcp_tool_module._servers[name] = server
     mcp_tool_module._server_error_counts.pop(name, None)
@@ -81,7 +102,7 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         result.structuredContent = None
         return result
 
-    _install_stub_server(mcp_tool, "srv", _call_tool_success)
+    _install_stub_server(mcp_tool, "srv", _call_tool_success, liveness_ok=True)
     mcp_tool._ensure_mcp_loop()
 
     try:
@@ -94,10 +115,6 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
             return fake_now[0]
 
         monkeypatch.setattr(mcp_tool.time, "monotonic", _fake_monotonic)
-        # The breaker-open timestamp dict is introduced by the fix; on
-        # a pre-fix build it won't exist, which will cause the test to
-        # fail at the .get() inside the gate (correct — the fix is
-        # required for this state to be tracked at all).
         if hasattr(mcp_tool, "_server_breaker_opened_at"):
             mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
         cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
@@ -113,16 +130,17 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
             "breaker should short-circuit before cooldown elapses"
         )
 
-        # Advance past cooldown → next call is a half-open probe that
-        # actually hits the session.
+        # Advance past cooldown → liveness probe fires first.
+        # With liveness_ok=True, the probe succeeds, breaker resets,
+        # then the actual tool call goes through.
         fake_now[0] += cooldown + 1.0
 
         result = handler({})
         parsed = json.loads(result)
         assert parsed.get("result") == "ok", parsed
-        assert call_count["n"] == 1, "half-open probe should invoke session"
+        assert call_count["n"] == 1, "actual tool call should proceed after probe success"
 
-        # On probe success the breaker must close (count reset to 0).
+        # On success the breaker must be fully closed (count reset to 0).
         assert mcp_tool._server_error_counts.get("srv", 0) == 0
     finally:
         _cleanup(mcp_tool, "srv")
@@ -143,7 +161,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         call_count["n"] += 1
         raise RuntimeError("still broken")
 
-    _install_stub_server(mcp_tool, "srv", _call_tool_fails)
+    _install_stub_server(mcp_tool, "srv", _call_tool_fails, liveness_ok=False)
     mcp_tool._ensure_mcp_loop()
 
     try:
@@ -160,20 +178,25 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
 
-        # Advance past cooldown, run probe, expect failure.
+        # Advance past cooldown, run liveness probe — it fails because
+        # liveness_ok=False. The breaker re-arms the cooldown and
+        # returns an error — the actual tool call is never attempted.
         fake_now[0] += cooldown + 1.0
         result = handler({})
         parsed = json.loads(result)
         assert "error" in parsed
-        assert call_count["n"] == 1, "probe should invoke session once"
+        assert "liveness probe" in parsed["error"].lower()
+        assert call_count["n"] == 0, (
+            "liveness probe failure should prevent the actual tool call"
+        )
 
-        # The probe failure must have re-armed the cooldown — another
-        # immediate call should short-circuit, not invoke session again.
+        # Another immediate call should still short-circuit (cooldown
+        # was re-armed by the failed probe).
         result = handler({})
         parsed = json.loads(result)
         assert "unreachable" in parsed.get("error", "").lower()
-        assert call_count["n"] == 1, (
-            "breaker should re-open and block further calls after probe failure"
+        assert call_count["n"] == 0, (
+            "breaker should block calls after probe failure re-armed cooldown"
         )
     finally:
         _cleanup(mcp_tool, "srv")

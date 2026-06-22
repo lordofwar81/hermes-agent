@@ -366,9 +366,42 @@ class MemoryStore:
             # Compute neural embedding (async-safe, graceful on failure)
             self._compute_neural_embed(fact_id, content)
 
+            # Dual-mode fan-out: mirror the fact into the LanceDB vector store so
+            # dense-vector semantic retrieval (vector_memory + BM25) can also find
+            # it. Best-effort: a vector-store/embedding failure must NEVER break
+            # the primary fact write above, which already succeeded.
+            try:
+                self._fan_out_to_vector_store(fact_id, content, category, tags)
+            except Exception as exc:  # noqa: BLE001 - intentional broad guard
+                _log.debug("Vector-memory fan-out failed for fact %s: %s", fact_id, exc)
+
             self._rebuild_bank(category)
 
             return fact_id
+
+    def _fan_out_to_vector_store(
+        self, fact_id: int, content: str, category: str, tags: str
+    ) -> None:
+        """Mirror a fact into the LanceDB vector store (dual-mode memory).
+
+        Only called for newly-inserted facts (add_fact returns early on duplicate
+        content via the UNIQUE constraint), so re-mirging the same fact cannot
+        happen. Failure here is non-fatal — callers wrap this in try/except.
+        Imports lazily so the holographic store keeps working even if
+        vector_memory / LanceDB is unavailable.
+        """
+        source_tag = f"holographic#{fact_id}"
+        from tools.vector_memory import VectorMemoryStore
+
+        store = VectorMemoryStore()
+        store.add_memory(
+            text=content,
+            source=source_tag,
+            memory_type=category,
+            epistemic_status="stated",
+            confidence=float(self.default_trust),
+            keywords=[t for t in tags.split(",") if t] if tags else None,
+        )
 
     def search_facts(
         self,

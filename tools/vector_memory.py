@@ -156,13 +156,26 @@ class VectorMemoryStore:
 
             self.db = lancedb.connect(str(self.db_path))
 
-            # Check if table exists
+            # Check if table exists. list_tables() return shape varies across
+            # lancedb versions: plain list[str], a ListTablesResponse with a
+            # .tables attr, or (in some versions) a list of (key, value) tuples
+            # like [('tables', ['memory_vectors']), ('page_token', None)].
             tables = self.db.list_tables()
-            # Handle both ListTablesResponse object and plain list
             if hasattr(tables, "tables"):
                 actual_tables = tables.tables
             else:
                 actual_tables = tables
+            # Normalize: if it's a list of tuples, pull out the name list
+            # from the ('tables', [...]) pair.
+            if actual_tables and isinstance(actual_tables[0], tuple):
+                for key, val in actual_tables:
+                    if key == "tables" and isinstance(val, list):
+                        actual_tables = val
+                        break
+            # Also accept a dict-like response.
+            if isinstance(actual_tables, dict):
+                actual_tables = actual_tables.get("tables", list(actual_tables.keys()))
+
             if "memory_vectors" in actual_tables:
                 self.table = self.db.open_table("memory_vectors")
                 logger.debug(f"Opened existing table 'memory_vectors'")

@@ -38,40 +38,55 @@ import inspect
 
 from gateway import run as gateway_run
 from gateway.config import GatewayConfig, Platform
+from gateway.handle_message_with_agent_mixin import HandleMessageWithAgentMixin
 from gateway.session import SessionSource, SessionStore
 from hermes_state import SessionDB
+
+
+# Modules that may host the compression-exhausted auto-reset block. The
+# block lived inline in ``gateway/run.py`` until R51, when
+# ``_handle_message_with_agent`` was lifted verbatim into
+# ``HandleMessageWithAgentMixin``. The walker checks both so the invariant
+# survives further decomposition — wherever the code lands, the reset block
+# must capture ``reset_session``'s return and re-sync the topic binding.
+_AUTORESET_HOST_MODULES = [gateway_run, HandleMessageWithAgentMixin]
 
 
 # ---------------------------------------------------------------------------
 # AST invariant: the auto-reset block re-syncs the topic binding
 # ---------------------------------------------------------------------------
 def _find_compression_exhausted_reset_block() -> ast.If:
-    """Return the ``if agent_result.get('compression_exhausted') ...`` block."""
-    tree = ast.parse(inspect.getsource(gateway_run))
+    """Return the ``if agent_result.get('compression_exhausted') ...`` block.
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.If):
-            continue
-        consts = [
-            n.value
-            for n in ast.walk(node.test)
-            if isinstance(n, ast.Constant) and isinstance(n.value, str)
-        ]
-        # Identify the auto-reset branch by the literal passed to .get(...).
-        if "compression_exhausted" in consts:
-            # Only the branch that actually performs the reset, not the
-            # earlier classifier that merely reads the flag into a bool.
-            calls = {
-                sub.func.attr
-                for sub in ast.walk(node)
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-            }
-            if "reset_session" in calls:
-                return node
+    Searched across every module in ``_AUTORESET_HOST_MODULES`` so the
+    invariant holds after the block moves between files during decomposition.
+    """
+    for host_module in _AUTORESET_HOST_MODULES:
+        tree = ast.parse(inspect.getsource(host_module))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            consts = [
+                n.value
+                for n in ast.walk(node.test)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            ]
+            # Identify the auto-reset branch by the literal passed to .get(...).
+            if "compression_exhausted" in consts:
+                # Only the branch that actually performs the reset, not the
+                # earlier classifier that merely reads the flag into a bool.
+                calls = {
+                    sub.func.attr
+                    for sub in ast.walk(node)
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                }
+                if "reset_session" in calls:
+                    return node
     raise AssertionError(
         "Could not locate the compression-exhausted auto-reset block "
         "(if agent_result.get('compression_exhausted') ... reset_session) "
-        "in gateway/run.py — the structure changed or the AST walker is stale."
+        f"across {[m.__name__ for m in _AUTORESET_HOST_MODULES]} — the structure "
+        "changed or the AST walker is stale."
     )
 
 

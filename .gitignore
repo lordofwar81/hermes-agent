@@ -139,4 +139,3 @@ RELEASE_v*.md
 apps/desktop/demo/
 venv
 hermes_state.db
-plugins/web/crawl4ai/

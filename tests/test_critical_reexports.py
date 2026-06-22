@@ -99,9 +99,19 @@ class TestGatewayCustomHandlers:
         )
 
     def test_optimize_handler_count(self):
-        """There should be at least 2 /optimize dispatch blocks in gateway/run.py."""
-        with open("gateway/run.py", "r") as f:
-            content = f.read()
+        """There should be at least 1 /optimize dispatch block.
+
+        Refactored layout (R55): _handle_message was extracted from
+        gateway/run.py to gateway/handle_message_mixin.py. Check both
+        locations so the test survives either layout.
+        """
+        content = ""
+        for path in ("gateway/handle_message_mixin.py", "gateway/run.py"):
+            try:
+                with open(path, "r") as f:
+                    content += f.read()
+            except FileNotFoundError:
+                pass
         # Both forms: canonical == "optimize" and .name == "optimize"
         canonical_count = content.count('canonical == "optimize"')
         name_count = content.count('.name == "optimize"')

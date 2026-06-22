@@ -23,6 +23,7 @@ import hashlib
 import logging
 import struct
 import math
+from functools import lru_cache
 
 try:
     import numpy as np
@@ -40,10 +41,17 @@ def _require_numpy() -> None:
         raise RuntimeError("numpy is required for holographic operations")
 
 
+@lru_cache(maxsize=8192)
 def encode_atom(word: str, dim: int = 1024) -> "np.ndarray":
     """Deterministic phase vector via SHA-256 counter blocks.
 
     Uses hashlib (not numpy RNG) for cross-platform reproducibility.
+
+    Memoized: pure function of (word, dim), so identical calls return the same
+    array object. All HRR operations (bind/unbind/bundle/similarity) produce new
+    arrays via arithmetic and never mutate inputs, so sharing the cached object
+    is safe. If a future caller needs in-place mutation, call .copy() at the
+    call site.
 
     Algorithm:
     - Generate enough SHA-256 blocks by hashing f"{word}:{i}" for i=0,1,2,...

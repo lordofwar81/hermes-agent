@@ -2125,6 +2125,109 @@ def _reset_server_error(server_name: str) -> None:
     _server_breaker_opened_at.pop(server_name, None)
 
 # ---------------------------------------------------------------------------
+# Liveness probe — lightweight check before reporting server unreachable
+# ---------------------------------------------------------------------------
+
+
+def _probe_server_liveness(server_name: str, timeout: float = 5.0) -> bool:
+    """Attempt a lightweight RPC to verify the MCP server session is alive.
+
+    Tries ``session.initialize()`` first (cheapest, no data transfer). If
+    the session lacks an initialize method or that fails with a non-transport
+    error, falls back to ``session.list_tools()`` which most servers support.
+
+    Returns True if the probe succeeded (server is alive), False otherwise.
+    On success the caller should call ``_reset_server_error(server_name)``.
+    """
+    with _lock:
+        server = _servers.get(server_name)
+    if not server or not server.session:
+        return False
+
+    async def _probe():
+        try:
+            async with server._rpc_lock:
+                # initialize() is the cheapest possible RPC — no data
+                # transfer, just protocol handshake.  Most servers will
+                # return a cached result immediately.
+                if hasattr(server.session, "initialize"):
+                    await server.session.initialize()
+                    return True
+                # Fallback: list_tools() is universally supported and
+                # lightweight (just returns schema, no computation).
+                await server.session.list_tools()
+                return True
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "MCP liveness probe for '%s' failed: %s",
+                server_name, exc,
+            )
+            return False
+
+    try:
+        return _run_on_mcp_loop(_probe, timeout=timeout)
+    except (InterruptedError, Exception):
+        return False
+
+
+def _check_breaker_with_probe(server_name: str) -> Optional[str]:
+    """Circuit breaker gate with inline liveness probe.
+
+    Call this at the top of every MCP handler.  Returns an error JSON
+    string if the breaker is open *and* a live probe confirms the server
+    is still down.  Returns ``None`` to let the call through.
+
+    This replaces the raw ``if count >= threshold`` check in individual
+    handlers — it adds a cheap probe after cooldown elapses so we never
+    report "unreachable" when the server has already recovered silently.
+    """
+    count = _server_error_counts.get(server_name, 0)
+    if count < _CIRCUIT_BREAKER_THRESHOLD:
+        return None  # breaker closed — proceed
+
+    opened_at = _server_breaker_opened_at.get(server_name, 0.0)
+    age = time.monotonic() - opened_at
+
+    if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
+        # Still in cooldown — short-circuit without probing.
+        remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+        return json.dumps({
+            "error": (
+                f"MCP server '{server_name}' is unreachable after "
+                f"{count} consecutive failures. Auto-retry available in "
+                f"~{remaining}s. Do NOT retry this tool yet — use "
+                f"alternative approaches or ask the user to check the "
+                f"MCP server."
+            )
+        }, ensure_ascii=False)
+
+    # Cooldown elapsed — probe the server before falling through.
+    if _probe_server_liveness(server_name):
+        logger.info(
+            "MCP liveness probe succeeded for '%s' — resetting breaker "
+            "(was open with %d failures).",
+            server_name, count,
+        )
+        _reset_server_error(server_name)
+        return None  # server recovered — proceed with the actual call
+
+    # Probe confirmed the server is actually down — re-arm the cooldown.
+    _bump_server_error(server_name)
+    return json.dumps({
+        "error": (
+            f"MCP server '{server_name}' is unreachable after "
+            f"{count} consecutive failures. A liveness probe also "
+            f"failed. Auto-retry available in "
+            f"~{_CIRCUIT_BREAKER_COOLDOWN_SEC}s. Do NOT retry this "
+            f"tool yet — use alternative approaches or ask the user "
+            f"to check the MCP server."
+        )
+    }, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
 
@@ -2772,31 +2875,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
-        # Circuit breaker: if this server has failed too many times
-        # consecutively, short-circuit with a clear message so the model
-        # stops retrying and uses alternative approaches (#10447).
-        #
-        # Once the cooldown elapses, the breaker transitions to
-        # half-open: we let the *next* call through as a probe. On
-        # success the success-path below resets the breaker; on
-        # failure the error paths below bump the count again, which
-        # re-stamps the open-time via _bump_server_error (re-arming
-        # the cooldown).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
-            opened_at = _server_breaker_opened_at.get(server_name, 0.0)
-            age = time.monotonic() - opened_at
-            if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
-                remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
-                return json.dumps({
-                    "error": (
-                        f"MCP server '{server_name}' is unreachable after "
-                        f"{_server_error_counts[server_name]} consecutive "
-                        f"failures. Auto-retry available in ~{remaining}s. "
-                        f"Do NOT retry this tool yet — use alternative "
-                        f"approaches or ask the user to check the MCP server."
-                    )
-                }, ensure_ascii=False)
-            # Cooldown elapsed → fall through as a half-open probe.
+        # Circuit breaker with liveness probe: checks failure count and,
+        # if the breaker is open, performs a lightweight RPC probe to
+        # verify whether the server has actually recovered before
+        # reporting an error.  This eliminates false "unreachable" reports
+        # caused by stale connection pools.  See #10447, #13383.
+        breaker_result = _check_breaker_with_probe(server_name)
+        if breaker_result is not None:
+            return breaker_result
 
         with _lock:
             server = _servers.get(server_name)
@@ -2912,9 +2998,14 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        breaker_result = _check_breaker_with_probe(server_name)
+        if breaker_result is not None:
+            return breaker_result
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -2972,9 +3063,14 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
+        breaker_result = _check_breaker_with_probe(server_name)
+        if breaker_result is not None:
+            return breaker_result
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3030,9 +3126,14 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        breaker_result = _check_breaker_with_probe(server_name)
+        if breaker_result is not None:
+            return breaker_result
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3095,9 +3196,14 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         from tools.registry import tool_error
 
+        breaker_result = _check_breaker_with_probe(server_name)
+        if breaker_result is not None:
+            return breaker_result
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)

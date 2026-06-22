@@ -42,50 +42,45 @@ logger = logging.getLogger(__name__)
 # Default SQLite database path
 DEFAULT_DB_PATH = Path.home() / ".hermes" / "vector_memory" / "bm25_store.db"
 
-# Stopwords (common English)
+# Stopwords (common English) — expanded from NLTK English + domain-specific
+# additions.  Larger stopword set reduces noise in BM25 ranking by filtering
+# tokens that carry no discriminative signal for memory retrieval.
 STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "has",
-    "he",
-    "in",
-    "is",
-    "it",
-    "its",
-    "of",
-    "on",
-    "that",
-    "the",
-    "to",
-    "was",
-    "were",
-    "will",
-    "with",
-    "i",
-    "you",
-    "we",
-    "they",
-    "this",
-    "that",
-    "these",
-    "those",
-    "my",
-    "your",
-    "our",
-    "their",
-    "me",
-    "him",
-    "her",
-    "us",
-    "them",
+    # Articles / determiners
+    "a", "an", "the", "this", "that", "these", "those",
+    # Pronouns
+    "i", "me", "my", "mine", "myself",
+    "you", "your", "yours", "yourself", "yourselves",
+    "he", "him", "his", "himself",
+    "she", "her", "hers", "herself",
+    "it", "its", "itself",
+    "we", "us", "our", "ours", "ourselves",
+    "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "whose",
+    # Prepositions
+    "about", "above", "across", "after", "against", "along", "among",
+    "around", "at", "before", "behind", "below", "beneath", "beside",
+    "between", "beyond", "by", "down", "during", "except", "for", "from",
+    "in", "inside", "into", "near", "of", "off", "on", "onto", "out",
+    "outside", "over", "past", "since", "through", "throughout", "to",
+    "toward", "towards", "under", "underneath", "until", "up", "upon",
+    "with", "within", "without",
+    # Conjunctions
+    "and", "but", "or", "nor", "so", "yet", "for",
+    # Auxiliary / modal verbs
+    "is", "am", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "having",
+    "do", "does", "did", "doing",
+    "will", "would", "shall", "should",
+    "can", "could", "may", "might", "must",
+    # Adverbs / common modifiers with low discriminative value
+    "not", "no", "nor", "very", "just", "also", "only",
+    "still", "already", "even", "again", "further", "then", "once",
+    "here", "there", "when", "where", "why", "how",
+    "all", "each", "every", "both", "few", "more", "most",
+    "other", "some", "such",
+    # Copular / existential
+    "if", "than", "too", "same", "any",
 }
 
 # Minimum keyword length

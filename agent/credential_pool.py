@@ -435,6 +435,16 @@ def get_pool_strategy(provider: str) -> str:
 
     strategies = config.get("credential_pool_strategies")
     if not isinstance(strategies, dict):
+        # Silently dropping bare-string or malformed config (audit C3 / H6):
+        # every pool would then run as FILL_FIRST regardless of intent.
+        # Surface the issue so operators see the misconfiguration in the
+        # gateway log instead of finding out at runtime via missing rotation.
+        logger.warning(
+            "credential_pool_strategies in config is %s (expected dict keyed "
+            "by provider); all pools will run as %s",
+            type(strategies).__name__,
+            STRATEGY_FILL_FIRST,
+        )
         return STRATEGY_FILL_FIRST
 
     strategy = str(strategies.get(provider, "") or "").strip().lower()

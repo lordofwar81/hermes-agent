@@ -2186,8 +2186,13 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_list_prompts_disconnected(self):
-        from tools.mcp_tool import _make_list_prompts_handler, _servers
+        from tools.mcp_tool import (
+            _make_list_prompts_handler, _servers,
+            _server_error_counts, _server_breaker_opened_at,
+        )
         _servers.pop("ghost", None)
+        _server_error_counts.pop("ghost", None)
+        _server_breaker_opened_at.pop("ghost", None)
         handler = _make_list_prompts_handler("ghost", 120)
         result = json.loads(handler({}))
         assert "error" in result
@@ -2238,8 +2243,13 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_get_prompt_disconnected(self):
-        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        from tools.mcp_tool import (
+            _make_get_prompt_handler, _servers,
+            _server_error_counts, _server_breaker_opened_at,
+        )
         _servers.pop("ghost", None)
+        _server_error_counts.pop("ghost", None)
+        _server_breaker_opened_at.pop("ghost", None)
         handler = _make_get_prompt_handler("ghost", 120)
         result = json.loads(handler({"name": "test"}))
         assert "error" in result

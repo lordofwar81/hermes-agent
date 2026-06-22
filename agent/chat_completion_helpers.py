@@ -547,7 +547,27 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 pass
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
+        # Surface provider failures to the routing system so the circuit
+        # breaker actually opens. Without this, breaker state stays at zero
+        # failures forever and is_provider_blocked() always returns False.
+        try:
+            from agent.routing import record_routing_failure
+            _failed_provider = (
+                (getattr(agent, "provider", "") or "").strip().lower()
+            )
+            if _failed_provider:
+                record_routing_failure(_failed_provider)
+        except ImportError:
+            pass
         raise result["error"]
+    # Successful API call — clear any prior failure count for this provider.
+    try:
+        from agent.routing import record_routing_success
+        _ok_provider = (getattr(agent, "provider", "") or "").strip().lower()
+        if _ok_provider:
+            record_routing_success(_ok_provider)
+    except ImportError:
+        pass
     return result["response"]
 
 
@@ -1106,7 +1126,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # same failing backend.  Graceful degradation: if the router hasn't
     # been initialised (no gateway context) the check returns False.
     try:
-        from agent.routing import is_provider_blocked
+        from agent.routing import is_provider_blocked, record_routing_failure
         if is_provider_blocked(fb_provider):
             logger.warning(
                 "Fallback skip: %s is circuit-broken (180s cooldown) — "
@@ -1315,6 +1335,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return True
     except Exception as e:
+        # Tell the routing system this provider just failed — without this,
+        # the circuit breaker never opens and the same broken backend keeps
+        # getting retried. _try_activate_fallback has already advanced the
+        # chain index, so this records against the failed slot, not the next
+        # one the agent is about to try.
+        try:
+            from agent.routing import record_routing_failure
+            current_provider = (
+                (getattr(agent, "provider", "") or "").strip().lower()
+                or (fb.get("provider") or "").strip().lower()
+            )
+            if current_provider:
+                record_routing_failure(current_provider)
+        except ImportError:
+            pass
         logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback()  # try next in chain
 

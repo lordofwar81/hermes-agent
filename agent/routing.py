@@ -91,29 +91,28 @@ class RouteResult:
 class TaskClassifier:
     """Deterministic, zero-dependency message classifier."""
 
-    _CODE_KW = frozenset({
-        "debug", "debugging", "implement", "implementation", "patch",
-        "traceback", "stacktrace", "exception", "fix", "bug", "module",
-        "script", "server", "test", "security", "deploy", "compile",
-        "refactor", "rewrite", "rework", "design",
-        "continue", "proceed", "go ahead", "keep going", "next step",
-        "do it", "go on", "move on", "move forward",
-    })
-
-    # Multi-word CODE keywords that use word boundaries (not substring)
-    _CODE_PHRASES = frozenset({
-        "go ahead", "keep going", "next step",
-        "do it", "go on", "move on", "move forward",
-    })
-
-    # Single-word CODE keywords requiring word boundaries
-    _CODE_BOUNDARY_KW = frozenset({
+    # ── Single source of truth for CODE keywords ──────────────────────────
+    # Define each word/phrase ONCE; derive the boundary regex, the single-word
+    # set, and the multi-word phrase set from these. Previously the same words
+    # were duplicated across _CODE_KW, _CODE_BOUNDARY_KW, and the _CODE_BOUNDARY_RE
+    # regex literal — easy to drift apart (3 prior "edge case fix" commits).
+    _CODE_SINGLE_WORDS = frozenset({
         "debug", "debugging", "implement", "implementation", "patch",
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
         "script", "server", "test", "security", "deploy", "compile",
         "refactor", "rewrite", "rework", "design",
         "continue", "proceed",
     })
+
+    _CODE_MULTIWORD_PHRASES = frozenset({
+        "go ahead", "keep going", "next step",
+        "do it", "go on", "move on", "move forward",
+    })
+
+    # Derived (do not edit — regenerate from the two sets above if changed)
+    _CODE_BOUNDARY_KW = _CODE_SINGLE_WORDS
+    _CODE_PHRASES = _CODE_MULTIWORD_PHRASES
+    _CODE_KW = _CODE_SINGLE_WORDS | _CODE_MULTIWORD_PHRASES
 
     # ANALYSIS keywords strong enough to override CODE keywords.
     # "compare test results" → ANALYSIS (compare overrides test),
@@ -151,15 +150,10 @@ class TaskClassifier:
     ]
 
     # Pre-compiled regex: single-word CODE keywords joined with \| for
-    # a single word-boundary match. Avoids per-keyword re.search calls.
+    # a single word-boundary match. Derived from _CODE_SINGLE_WORDS so it
+    # cannot drift from the frozenset above.
     _CODE_BOUNDARY_RE = re.compile(
-        r'\b(?:' + '|'.join(re.escape(kw) for kw in {
-            "debug", "debugging", "implement", "implementation", "patch",
-            "traceback", "stacktrace", "exception", "fix", "bug", "module",
-            "script", "server", "test", "security", "deploy", "compile",
-            "refactor", "rewrite", "rework", "design",
-            "continue", "proceed",
-        }) + r')\b'
+        r'\b(?:' + '|'.join(re.escape(kw) for kw in sorted(_CODE_SINGLE_WORDS)) + r')\b'
     )
 
     @classmethod
@@ -317,7 +311,11 @@ class BudgetTracker:
 
     @staticmethod
     def _now_pst() -> datetime:
-        return datetime.now(timezone(timedelta(hours=-8)))
+        # Use America/Los_Angeles for correct DST handling (PST/PDT). The old
+        # fixed UTC-8 offset was wrong during summer (off by an hour, straddling
+        # the budget day boundary). Name kept for backward compat.
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Los_Angeles"))
 
 
 # ─── Provider Registry ───────────────────────────────────────────────────
@@ -356,7 +354,9 @@ class ProviderRegistry:
                     cost_per_1k_input=entry.get("cost_input", 0.0),
                     cost_per_1k_output=entry.get("cost_output", 0.0),
                 )
-                if slot.api_key:  # skip providers with no resolved key
+                if slot.api_key or slot.is_local:
+                    # Local/no-auth servers (e.g. vLLM without --api-key) are
+                    # allowed with an empty key. Remote providers require a key.
                     self._providers[slot.id] = slot
                 else:
                     logger.warning("No API key resolved for provider %s — skipping", slot.id)

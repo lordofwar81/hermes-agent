@@ -92,7 +92,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:
                             self._sticky_ip = ip
-                            logger.warning(
+                            # Normal self-healing: primary path was unreachable, a fallback
+                            # succeeded. Not operator-actionable — the transport recovered.
+                            logger.info(
                                 "[Telegram] Primary api.telegram.org path unreachable; using sticky fallback IP %s",
                                 ip,
                             )
@@ -105,18 +107,20 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     async with self._sticky_lock:
                         if self._sticky_ip == ip:
                             self._sticky_ip = None
-                            logger.warning(
+                            # Routine retry: sticky IP failed, reset and let the next
+                            # attempt re-resolve. The transport handles this transparently.
+                            logger.debug(
                                 "[Telegram] Sticky fallback IP %s failed; resetting to primary DNS path",
                                 ip,
                             )
                 if ip is None:
-                    logger.warning(
+                    logger.info(
                         "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",
                         exc,
                         ", ".join(self._fallback_ips),
                     )
                     continue
-                logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
+                logger.debug("[Telegram] Fallback IP %s failed: %s", ip, exc)
                 continue
 
         if last_error is None:

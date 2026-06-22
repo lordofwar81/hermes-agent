@@ -119,6 +119,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._config = config or _load_plugin_config()
         self._store = None
         self._retriever = None
+        self._vector_store = None  # dual-mode: LanceDB store for semantic recall
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
 
     @property
@@ -182,6 +183,17 @@ class HolographicMemoryProvider(MemoryProvider):
         )
         self._session_id = session_id
 
+        # Dual-mode: connect the LanceDB vector store for semantic recall alongside
+        # HRR. Best-effort — if LanceDB/embeddings are unavailable the provider
+        # degrades gracefully to HRR-only (prefetch handles a None vector_store).
+        try:
+            from tools.vector_memory import VectorMemoryStore
+            self._vector_store = VectorMemoryStore()
+            logger.debug("Holographic dual-mode: vector store connected")
+        except Exception as exc:
+            self._vector_store = None
+            logger.debug("Holographic dual-mode: vector store unavailable (%s)", exc)
+
     def system_prompt_block(self) -> str:
         if not self._store:
             return ""
@@ -209,17 +221,124 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            if not results:
+            # --- Unified retrieval: HRR + vector (semantic) + Memory Tree (episodic) ---
+            # RRF-fuse all three ranked lists so the agent sees the best facts from
+            # any modality. gbrain (knowledge graph) is intentionally NOT folded in
+            # here — it's an HTTP+OAuth MCP call (~150-500ms) too expensive for a
+            # per-turn prefetch. The agent can query gbrain on demand via MCP tools
+            # when it needs structured knowledge-graph recall.
+            limit = 5
+            hrr_results = self._retriever.search(
+                query, min_trust=self._min_trust, limit=limit
+            ) or []
+
+            vec_results = []
+            if self._vector_store is not None:
+                try:
+                    vec_results = self._vector_store.search(query, top_k=limit) or []
+                except Exception as ve:
+                    logger.debug("Vector prefetch failed: %s", ve)
+
+            tree_results = self._memory_tree_search(query, limit=limit)
+
+            fused = self._rrf_fuse(hrr_results, vec_results, tree_results, limit=limit)
+            if not fused:
                 return ""
             lines = []
-            for r in results:
-                trust = r.get("trust_score", r.get("trust", 0))
-                lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
+            for score, content, badge in fused:
+                lines.append(f"- [{score:.2f}{badge}] {content}")
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
             return ""
+
+    def _memory_tree_search(self, query: str, *, limit: int = 5) -> list[dict]:
+        """Lightweight Memory Tree content search (episodic chunks).
+
+        Direct SQLite LIKE query — same shape as MemoryTree.search_chunks but
+        without importing the full memory_tree package (keeps the provider
+        decoupled). Returns dicts with 'content' and 'score' for RRF fusion.
+        Sub-millisecond; safe for per-turn prefetch.
+        """
+        import sqlite3
+        from hermes_constants import get_hermes_home
+        db_path = get_hermes_home() / "memory_tree.db"
+        if not db_path.exists():
+            return []
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            # Search admitted/sealed chunks by keyword; rank by importance score.
+            rows = conn.execute(
+                """SELECT c.content_preview, sc.total as score
+                   FROM mem_tree_chunks c
+                   LEFT JOIN mem_tree_scores sc ON c.id = sc.chunk_id
+                   WHERE c.lifecycle_status IN ('admitted', 'buffered', 'sealed')
+                     AND (sc.dropped = 0 OR sc.dropped IS NULL)
+                     AND c.content_preview LIKE ?
+                   ORDER BY sc.total DESC LIMIT ?""",
+                (f"%{query}%", limit),
+            ).fetchall()
+            conn.close()
+            return [{"content": r["content_preview"], "score": float(r["score"] or 0)}
+                    for r in rows if r["content_preview"]]
+        except Exception as exc:
+            logger.debug("Memory Tree prefetch failed: %s", exc)
+            return []
+
+    @staticmethod
+    def _rrf_fuse(hrr_results: list, vec_results: list, tree_results: list | None = None,
+                  *, limit: int, k: int = 60):
+        """Reciprocal Rank Fusion of HRR + vector + Memory Tree results.
+
+        Returns a list of (fused_score, content, badge) tuples, de-duplicated by
+        normalized content. badge marks the contributing modality(ies). HRR
+        trust_score and Tree importance score are folded into the ranking as
+        tiebreaks so high-trust facts surface even when ranks are close.
+        """
+        scored: dict[str, dict] = {}
+
+        for rank, r in enumerate(hrr_results):
+            content = (r.get("content") or "").strip()
+            if not content:
+                continue
+            key = content.lower()[:200]
+            trust = float(r.get("trust_score", r.get("trust", 0)) or 0)
+            entry = scored.setdefault(key, {"content": content, "rrf": 0.0, "sources": set(), "trust": 0.0})
+            entry["rrf"] += 1.0 / (k + rank + 1)
+            entry["sources"].add("HRR")
+            entry["trust"] = max(entry["trust"], trust)
+
+        for rank, sr in enumerate(vec_results):
+            content = (getattr(sr, "text", "") or "").strip()
+            if not content:
+                continue
+            key = content.lower()[:200]
+            entry = scored.setdefault(key, {"content": content, "rrf": 0.0, "sources": set(), "trust": 0.0})
+            entry["rrf"] += 1.0 / (k + rank + 1)
+            entry["sources"].add("VEC")
+
+        for rank, r in enumerate(tree_results or []):
+            content = (r.get("content") or "").strip()
+            if not content:
+                continue
+            key = content.lower()[:200]
+            tree_score = float(r.get("score", 0) or 0)
+            entry = scored.setdefault(key, {"content": content, "rrf": 0.0, "sources": set(), "trust": 0.0})
+            entry["rrf"] += 1.0 / (k + rank + 1)
+            entry["sources"].add("TREE")
+            entry["trust"] = max(entry["trust"], tree_score)
+
+        ranked = sorted(
+            scored.values(),
+            key=lambda e: (e["rrf"] + e["trust"] * 0.01),
+            reverse=True,
+        )[:limit]
+        out = []
+        for e in ranked:
+            badge = " (" + "+".join(sorted(e["sources"])) + ")"
+            out.append((e["rrf"], e["content"], badge))
+        return out
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Holographic memory stores explicit facts via tools, not auto-sync.

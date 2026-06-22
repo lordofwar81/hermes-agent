@@ -1455,6 +1455,13 @@ class RunAgentMixin:
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 
+                # Redact credentials from the command before it goes into an
+                # approval prompt - the raw string would otherwise be echoed
+                # verbatim to the chat platform (#48456). Mirrors upstream
+                # gateway/run.py redaction at the equivalent call site.
+                from gateway.run import _redact_approval_command
+                cmd = _redact_approval_command(cmd)
+
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.

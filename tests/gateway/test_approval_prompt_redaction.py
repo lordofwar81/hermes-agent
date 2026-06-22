@@ -118,9 +118,12 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run as run
+        # Refactored layout: _approval_notify_sync was extracted from
+        # gateway/run.py to gateway/run_agent_mixin.py (R52). AST check
+        # targets the module where the function actually lives.
+        import gateway.run_agent_mixin as run_agent_mixin
 
-        self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
+        self._assert_redacts_then_uses(run_agent_mixin, "_approval_notify_sync", "send_exec_approval")
 
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server

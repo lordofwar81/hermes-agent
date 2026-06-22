@@ -325,6 +325,21 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     return False
 
 
+def _redact_approval_command(cmd: "str | None") -> str:
+    """Redact credentials from a command before it goes into an approval prompt.
+
+    Tirith's *findings* are already redacted, but the gateway approval prompt
+    is built from the raw command string, so a credential-shaped value Tirith
+    flagged would otherwise be echoed verbatim to the chat platform (#48456).
+    Uses ``redact_sensitive_text(force=True)`` - the same Tirith-grade redactor
+    - so the prompt honors redaction even when ``security.redact_secrets`` is
+    off. Module-level so the wiring is unit-testable.
+    """
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(str(cmd or ""), force=True)
+
+
 def _gateway_loop_exception_handler(
     loop: "asyncio.AbstractEventLoop", context: Dict[str, Any]
 ) -> None:

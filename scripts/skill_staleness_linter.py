@@ -89,6 +89,15 @@ PATTERNS: List[tuple] = [
     (r':8201\b', 'warn',
      'Port 8201 was a dead model port (removed from cluster)',
      'Remove 8201 references or update to active ports'),
+    (r':8102\b', 'warn',
+     'Port 8102 (Qwen3-VL-30B-A3B vision) is deprecated — Gemma-4-26B-A4B '
+     'on :8199 is natively multimodal (--mmproj) and serves vision directly',
+     'Point vision calls at :8199/gemma-4-26b-a4b, or use the auxiliary.vision '
+     'config block which already routes there'),
+    (r'\bqwen3-vl-30b-a3b\b', 'warn',
+     'Qwen3-VL-30B-A3B was replaced by Gemma-4-26B-A4B (natively multimodal, '
+     'served on :8199 with --mmproj)',
+     'Update to gemma-4-26b-a4b at http://127.0.0.1:8199/v1'),
 ]
 
 

@@ -3679,6 +3679,17 @@ def run_conversation(
         if response is None:
             _turn_exit_reason = "all_retries_exhausted_no_response"
             print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            # Record the provider failure for the circuit breaker. The
+            # fallback-activation path already records, but a provider that
+            # exhausts retries WITHOUT triggering a fallback would otherwise
+            # leave the breaker untouched — letting the router keep sending
+            # turns to a dead endpoint. Idempotent and safe if routing is
+            # not initialized (guarded inside).
+            try:
+                from agent.routing import record_routing_failure
+                record_routing_failure(getattr(agent, "provider", "unknown"))
+            except Exception:
+                pass
             agent._persist_session(messages, conversation_history)
             break
 

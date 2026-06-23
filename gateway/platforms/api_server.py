@@ -1069,6 +1069,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        user_message: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1098,6 +1099,30 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+
+        # Per-turn routing: when the caller provides a user_message, classify
+        # it and pick the optimal provider from the routing chain — same
+        # logic the gateway platform path uses (turn_agent_config_mixin).
+        # Without this, API server sessions always use the static default
+        # model, ignoring the routing engine entirely. Best-effort: any
+        # error degrades to the primary model, never blocks a turn.
+        if user_message:
+            try:
+                from agent.routing import route_turn
+                _primary_cfg = {
+                    "model": model,
+                    "base_url": runtime_kwargs.get("base_url"),
+                    "api_key": runtime_kwargs.get("api_key"),
+                    "provider": runtime_kwargs.get("provider"),
+                }
+                _route = route_turn(user_message, _primary_cfg)
+                if _route is not None:
+                    model = _route.model
+                    runtime_kwargs["base_url"] = _route.base_url
+                    runtime_kwargs["api_key"] = _route.api_key
+                    runtime_kwargs["provider"] = _route.provider
+            except Exception:
+                pass  # routing unavailable — use primary
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -3740,6 +3765,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    user_message=user_message,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -3959,6 +3985,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
+                    user_message=user_message,
                 )
                 self._active_run_agents[run_id] = agent
 

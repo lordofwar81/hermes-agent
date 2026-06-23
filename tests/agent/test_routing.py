@@ -148,6 +148,59 @@ class TestCircuitBreaker:
         assert cb.is_available("zai")
 
 
+# ── CircuitBreaker Persistence Tests ────────────────────────────────────
+
+
+class TestCircuitBreakerPersistence:
+    """Verify breaker state survives a reload — the core fix."""
+
+    def test_tripped_state_survives_reload(self, tmp_path):
+        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
+        state_file = tmp_path / "breaker.json"
+        cb1 = CircuitBreaker(state_file=state_file)
+        for _ in range(FAILURE_THRESHOLD):
+            cb1.record_failure("zai")
+        assert not cb1.is_available("zai")
+
+        # New instance, same file — should load the tripped state.
+        cb2 = CircuitBreaker(state_file=state_file)
+        assert not cb2.is_available("zai")
+        assert "zai" in cb2.blocked_providers()
+
+    def test_success_clears_persisted_state(self, tmp_path):
+        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
+        state_file = tmp_path / "breaker.json"
+        cb1 = CircuitBreaker(state_file=state_file)
+        for _ in range(FAILURE_THRESHOLD):
+            cb1.record_failure("strix")
+        cb1.record_success("strix")
+
+        cb2 = CircuitBreaker(state_file=state_file)
+        assert cb2.is_available("strix")
+
+    def test_expired_trip_dropped_on_load(self, tmp_path):
+        """A trip whose cooldown elapsed while down should not re-block."""
+        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
+        state_file = tmp_path / "breaker.json"
+        cb1 = CircuitBreaker(state_file=state_file)
+        for _ in range(FAILURE_THRESHOLD):
+            cb1.record_failure("venice")
+        # Backdate the trip deadline so it's already expired.
+        cb1._tripped_until["venice"] = time.time() - 1
+        cb1._save()
+
+        cb2 = CircuitBreaker(state_file=state_file)
+        assert cb2.is_available("venice")
+
+    def test_corrupt_state_file_does_not_crash(self, tmp_path):
+        """A malformed state file should be logged+ignored, not fatal."""
+        from agent.routing import CircuitBreaker
+        state_file = tmp_path / "breaker.json"
+        state_file.write_text("NOT VALID JSON {{{")
+        cb = CircuitBreaker(state_file=state_file)
+        assert cb.is_available("zai")  # clean state, no crash
+
+
 # ── BudgetTracker Tests ──────────────────────────────────────────────────
 
 
@@ -330,3 +383,59 @@ class TestGatewayInterface:
             assert result is None
         finally:
             m._instance = old
+
+
+# ── Routing Observability Tests ─────────────────────────────────────────
+
+
+class TestRoutingObservability:
+    """Verify routing decisions are recorded to routing_history.jsonl."""
+
+    def test_decision_recorded_on_success(self, tmp_path):
+        from agent.routing import Router
+        history_file = tmp_path / "routing_history.jsonl"
+        router = Router(SAMPLE_CONFIG)
+        router._history_file = history_file
+        primary = {"model": "glm-5-turbo", "base_url": "https://z.ai/v1",
+                   "api_key": "zai-key", "provider": "zai"}
+        router.route("fix this bug", primary)
+        assert history_file.exists()
+        lines = history_file.read_text().strip().split("\n")
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["category"] == "code"
+        assert entry["provider"] == "zai"
+        assert entry["model"] == "glm-5.1"
+        assert "fix this bug" in entry["message_preview"]
+
+    def test_decision_recorded_on_primary_fallback(self, tmp_path):
+        from agent.routing import Router
+        history_file = tmp_path / "routing_history.jsonl"
+        router = Router(SAMPLE_CONFIG)
+        router._history_file = history_file
+        primary = {"model": "glm-4.7", "base_url": "https://z.ai/v1",
+                   "api_key": "zai-key", "provider": "zai"}
+        # Break all providers → chain exhausts → primary fallback
+        for p in ["zai", "strix", "mac_studio", "venice"]:
+            for _ in range(3):
+                router.record_failure(p)
+        router.route("fix this bug", primary)
+        assert history_file.exists()
+        entry = json.loads(history_file.read_text().strip())
+        assert entry["provider"] == "zai"  # primary
+        assert entry["fallback_count"] >= 1
+
+    def test_no_history_file_no_crash(self, tmp_path):
+        """A read-only or unwritable path must never break routing."""
+        from agent.routing import Router
+        router = Router(SAMPLE_CONFIG)
+        # Point at an impossible path — routing must still succeed.
+        router._history_file = tmp_path / "nonexistent_dir" / "deep" / "x.jsonl"
+        primary = {"model": "m", "base_url": "", "api_key": "k", "provider": "zai"}
+        # Note: mkdir(parents=True) in _record_decision means this WILL create
+        # the dir. To truly test failure, point at a path under a file.
+        router._history_file = tmp_path / "blocker"  # tmp_path/blocker as a dir later
+        (tmp_path / "blocker").mkdir()
+        # Now _history_file is a directory — open() for write will fail.
+        result = router.route("fix this bug", primary)
+        assert result is not None  # routing succeeded despite log failure

@@ -599,8 +599,8 @@ class TestRouter:
     def test_local_health_check_skips_unhealthy(self):
         """Unhealthy local models should be skipped in chain."""
         router = self._make_router()
-        # Inject unhealthy local model
-        router._health._cache = {"strix": (False, time.time())}
+        # Inject unhealthy local model (cache keyed by base_url)
+        router._health._cache = {"http://192.168.1.229:8199/v1": (False, time.time())}
         # Route greeting → chain is [strix-local, zai-main]
         # strix is local and unhealthy, should fall to zai
         result = router.route("hello", self._primary_config())

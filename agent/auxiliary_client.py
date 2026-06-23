@@ -3866,6 +3866,15 @@ def resolve_provider_client(
             custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
+            # An explicit_base_url from the caller (e.g. a fallback chain
+            # entry with a per-model endpoint) takes priority over the
+            # provider-level default. Without this, a multi-endpoint
+            # provider like "strix" (:8199 + :8200) always resolves to
+            # the first custom_providers entry, sending every fallback
+            # model to the wrong port. See live failure-injection test
+            # 2026-06-22: gemma-4-12b was sent to :8199 instead of :8200.
+            if explicit_base_url:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = custom_entry.get("api_key", "").strip()
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:

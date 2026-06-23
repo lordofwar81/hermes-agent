@@ -244,11 +244,62 @@ class TaskClassifier:
 # ─── Circuit Breaker ─────────────────────────────────────────────────────
 
 class CircuitBreaker:
-    """Per-provider circuit breaker with automatic recovery."""
+    """Per-provider circuit breaker with automatic recovery.
 
-    def __init__(self):
+    State is persisted to ``~/.hermes/circuit_breaker.json`` so that a gateway
+    restart no longer wipes failure counts — a provider that was failing before
+    the restart stays blocked until it either recovers or the cooldown elapses.
+    Mirrors the BudgetTracker persistence pattern (see below).
+    """
+
+    def __init__(self, state_file: Optional[Path] = None):
         self._failures: Dict[str, int] = {}
         self._tripped_until: Dict[str, float] = {}
+        if state_file is not None:
+            self._state_file = state_file
+        else:
+            # Resolve via get_hermes_home() so HERMES_HOME overrides (tests,
+            # alternate profiles) are respected. Using Path.home()/".hermes"
+            # directly is a known bug pattern (see tests/conftest.py:372-373).
+            from hermes_constants import get_hermes_home
+            self._state_file = get_hermes_home() / "circuit_breaker.json"
+        self._load()
+
+    def _load(self) -> None:
+        """Restore failure counts and active trip windows from disk.
+
+        Expired trips are dropped on load (a restart shouldn't re-block a
+        provider whose cooldown already elapsed while the gateway was down).
+        Unexpired trips keep their absolute deadline.
+        """
+        if not self._state_file.exists():
+            return
+        try:
+            with open(self._state_file) as f:
+                data = json.load(f)
+            now = time.time()
+            for provider, count in data.get("failures", {}).items():
+                self._failures[provider] = int(count)
+            for provider, deadline in data.get("tripped_until", {}).items():
+                if float(deadline) > now:
+                    self._tripped_until[provider] = float(deadline)
+                else:
+                    # Cooldown elapsed while down — clear the failure count too.
+                    self._failures.pop(provider, None)
+        except Exception as exc:
+            logger.warning("Failed to load circuit breaker state: %s", exc)
+
+    def _save(self) -> None:
+        """Persist current state. Best-effort; never blocks routing."""
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._state_file, "w") as f:
+                json.dump({
+                    "failures": self._failures,
+                    "tripped_until": self._tripped_until,
+                }, f)
+        except Exception as exc:
+            logger.warning("Failed to persist circuit breaker state: %s", exc)
 
     def record_failure(self, provider: str) -> None:
         self._failures[provider] = self._failures.get(provider, 0) + 1
@@ -258,10 +309,12 @@ class CircuitBreaker:
                 "Circuit breaker TRIPPED: %s blocked for %ds",
                 provider, RECOVERY_TIMEOUT_SECONDS,
             )
+        self._save()
 
     def record_success(self, provider: str) -> None:
         self._failures[provider] = 0
         self._tripped_until.pop(provider, None)
+        self._save()
 
     def is_available(self, provider: str) -> bool:
         if provider not in self._tripped_until:
@@ -270,6 +323,7 @@ class CircuitBreaker:
             del self._tripped_until[provider]
             self._failures[provider] = 0
             logger.info("Circuit breaker RECOVERED: %s", provider)
+            self._save()
             return True
         return False
 
@@ -434,14 +488,18 @@ class HealthChecker:
     """Pre-flight health pings for local endpoints."""
 
     def __init__(self):
-        self._cache: Dict[str, tuple] = {}  # provider -> (ok, timestamp)
+        self._cache: Dict[str, tuple] = {}  # base_url -> (ok, timestamp)
 
     def check(self, slot: ProviderSlot) -> bool:
         if not slot.is_local:
             return True
 
         now = time.time()
-        cached = self._cache.get(slot.provider)
+        # Cache by base_url, not provider name: multiple endpoints can share
+        # a provider (e.g. strix serves :8199 and :8200) and have independent
+        # health. Keying by provider would mark all endpoints healthy if any
+        # one responds, masking a dead endpoint in the same provider group.
+        cached = self._cache.get(slot.base_url)
         if cached and (now - cached[1]) < HEALTH_CACHE_TTL:
             return cached[0]
 
@@ -455,7 +513,7 @@ class HealthChecker:
             ok = False
             logger.debug("Health check FAILED: %s at %s", slot.provider, slot.base_url)
 
-        self._cache[slot.provider] = (ok, now)
+        self._cache[slot.base_url] = (ok, now)
         return ok
 
 
@@ -471,6 +529,32 @@ class Router:
         self._budget = BudgetTracker(
             daily_limit=config.get("routing", {}).get("venice_daily_budget", 7.40),
         )
+        from hermes_constants import get_hermes_home
+        self._history_file = get_hermes_home() / "routing_history.jsonl"
+
+    def _record_decision(self, result: "RouteResult", message: str) -> None:
+        """Append a routing decision to routing_history.jsonl for observability.
+
+        Best-effort: never lets a logging failure break routing. Each line is
+        a JSON object so the file can be tailed, grepped, or analyzed offline
+        to verify routing is actually firing in production.
+        """
+        try:
+            self._history_file.parent.mkdir(parents=True, exist_ok=True)
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "category": result.category.value,
+                "provider": result.provider,
+                "model": result.model,
+                "is_local": result.is_local,
+                "fallback_count": result.fallback_count,
+                "suppress_tools": result.suppress_tools,
+                "message_preview": (message or "")[:120],
+            }
+            with open(self._history_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as exc:
+            logger.debug("Failed to record routing decision: %s", exc)
 
     def route(
         self,
@@ -495,7 +579,9 @@ class Router:
         chain = self._registry.chain(category)
         if not chain:
             logger.debug("No chain for %s — using primary", category.value)
-            return self._primary_route(primary_config, category)
+            result = self._primary_route(primary_config, category)
+            self._record_decision(result, message)
+            return result
 
         # Walk the chain, skip blocked/unhealthy/budget-exceeded
         fallback_count = 0
@@ -534,7 +620,7 @@ class Router:
                 slot.is_local, not suppress, fallback_count,
             )
 
-            return RouteResult(
+            result = RouteResult(
                 model=slot.model,
                 base_url=slot.base_url,
                 api_key=slot.api_key,
@@ -545,13 +631,17 @@ class Router:
                 label=f"{category.value} -> {slot.model}",
                 fallback_count=fallback_count,
             )
+            self._record_decision(result, message)
+            return result
 
         # All chain providers exhausted — fall to primary
         logger.warning(
             "Chain exhausted for %s (%d skipped) — falling to primary",
             category.value, fallback_count,
         )
-        return self._primary_route(primary_config, category, fallback_count)
+        result = self._primary_route(primary_config, category, fallback_count)
+        self._record_decision(result, message)
+        return result
 
     def _primary_route(
         self, primary_config: dict, category: Category, fallback_count: int = 0,

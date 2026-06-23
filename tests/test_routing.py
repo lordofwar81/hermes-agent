@@ -136,10 +136,30 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("security audit needed") == Category.CODE
 
     def test_code_continue_keyword(self):
-        assert TaskClassifier.classify("continue") == Category.CODE
+        assert TaskClassifier.classify("continue") == Category.SIMPLE
 
     def test_code_go_ahead_keyword(self):
-        assert TaskClassifier.classify("go ahead") == Category.CODE
+        assert TaskClassifier.classify("go ahead") == Category.SIMPLE
+
+    def test_code_continuation_with_code_keyword(self):
+        """Continuation phrases become CODE only when a real code keyword co-occurs."""
+        assert TaskClassifier.classify("continue with the refactor") == Category.CODE
+        assert TaskClassifier.classify("go ahead and fix the bug") == Category.CODE
+        assert TaskClassifier.classify("proceed with the implementation") == Category.CODE
+
+    def test_code_continuation_without_code_keyword(self):
+        """Continuation phrases alone (no code keyword) → SIMPLE."""
+        assert TaskClassifier.classify("continue the story") == Category.SIMPLE
+        assert TaskClassifier.classify("proceed with the plan") == Category.SIMPLE
+        assert TaskClassifier.classify("move forward with the discussion") == Category.SIMPLE
+        assert TaskClassifier.classify("keep going with the explanation") == Category.SIMPLE
+
+    def test_code_infrastructure_keywords(self):
+        """Infrastructure terms (cron, docker, container, pipeline) → CODE."""
+        assert TaskClassifier.classify("set up a cron job") == Category.CODE
+        assert TaskClassifier.classify("write a docker compose file") == Category.CODE
+        assert TaskClassifier.classify("create a container") == Category.CODE
+        assert TaskClassifier.classify("configure the ci pipeline") == Category.CODE
 
     def test_expert_system_design(self):
         assert TaskClassifier.classify("design a system for real-time analytics") == Category.EXPERT
@@ -515,7 +535,7 @@ class TestRouter:
     def test_simple_no_tool_suppression(self):
         router = self._make_router()
         result = router.route("what time is it", self._primary_config())
-        assert not result.suppress_tools
+        assert result.suppress_tools  # SIMPLE now suppresses tools too
 
     def test_tool_suppression_override(self):
         router = self._make_router()
@@ -585,6 +605,18 @@ class TestRouter:
         # strix is local and unhealthy, should fall to zai
         result = router.route("hello", self._primary_config())
         assert result.provider == "zai"
+
+    def test_venice_budget_gate_skips_provider(self):
+        """Venice providers should be skipped when daily budget is exhausted."""
+        router = self._make_router()
+        # Exhaust Venice budget
+        router._budget.record(router._budget._daily_limit)
+        router._budget._cache = None  # force reload
+        # Route code → chain is [zai-main, strix-local, venice-ds]
+        # venice should be skipped, zai is first so it wins
+        result = router.route("debug this code", self._primary_config())
+        assert result.provider == "zai"
+        assert result.model == "glm-5"
 
 
 # ─── Singleton Interface Tests ────────────────────────────────────────────

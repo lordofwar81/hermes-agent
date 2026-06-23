@@ -101,18 +101,25 @@ class TaskClassifier:
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
         "script", "server", "test", "security", "deploy", "compile",
         "refactor", "rewrite", "rework", "design",
-        "continue", "proceed",
+        "cron", "docker", "compose",
+        "container", "pipeline", "workflow",
     })
-
     _CODE_MULTIWORD_PHRASES = frozenset({
-        "go ahead", "keep going", "next step",
-        "do it", "go on", "move on", "move forward",
+        "next step",
+        "do it", "go on",
     })
-
     # Derived (do not edit — regenerate from the two sets above if changed)
+
     _CODE_BOUNDARY_KW = _CODE_SINGLE_WORDS
     _CODE_PHRASES = _CODE_MULTIWORD_PHRASES
     _CODE_KW = _CODE_SINGLE_WORDS | _CODE_MULTIWORD_PHRASES
+
+    # Standalone continuation phrases — CODE only with a code keyword present.
+    # These do NOT go into _CODE_KW; handled in classify() via _has_real_code_keyword.
+    _CONTINUATION_PHRASES = frozenset({
+        "continue", "proceed", "go ahead", "keep going",
+        "move on", "move forward",
+    })
 
     # ANALYSIS keywords strong enough to override CODE keywords.
     # "compare test results" → ANALYSIS (compare overrides test),
@@ -162,15 +169,17 @@ class TaskClassifier:
 
         Single-word keywords use a pre-compiled regex with \\b boundaries
         so 'fix' doesn't match 'fixed'. Multi-word phrases use substring match.
+        Does NOT include continuation phrases (those are checked separately).
         """
         # Fast path: single compiled regex for all single-word keywords
         if cls._CODE_BOUNDARY_RE.search(text_lower):
             return True
-        # Slow path: multi-word phrases (only 8 items)
+        # Slow path: multi-word phrases (only 3 items)
         for kw in cls._CODE_PHRASES:
             if kw in text_lower:
                 return True
         return False
+
 
     @classmethod
     def classify(cls, message: str) -> Category:
@@ -212,6 +221,17 @@ class TaskClassifier:
         # Code: code keywords
         if cls._has_code_keyword(text_lower):
             return Category.CODE
+
+        # Continuation phrases: "continue", "go ahead", "keep going", etc.
+        # These become CODE only when a real code keyword is also present.
+        # Standing alone (e.g., "continue the story", "proceed with the plan"),
+        # they fall through to SIMPLE.
+        if any(kw in text_lower for kw in cls._CONTINUATION_PHRASES):
+            # Check if there's a real code keyword co-occurring (not another
+            # continuation phrase). Use the word-boundary regex for speed.
+            if cls._CODE_BOUNDARY_RE.search(text_lower):
+                return Category.CODE
+            # No code keyword → SIMPLE (fall through)
 
         # Analysis: comparison/evaluation (non-override path, no code kw overlap)
         if any(kw in text_lower for kw in cls._ANALYSIS_KW):
@@ -503,7 +523,10 @@ class Router:
             # Found a valid provider
             suppress = suppress_tools_override
             if suppress is None:
-                suppress = category == Category.GREETING
+                # Suppress tools for GREETING and SIMPLE — saves ~2K tokens per
+                # turn on short queries (time checks, yes/no, etc.) routed to
+                # local models that don't need tool definitions.
+                suppress = category in (Category.GREETING, Category.SIMPLE)
 
             logger.info(
                 "Route: %s -> %s (%s, local=%s, tools=%s, fallbacks=%d)",

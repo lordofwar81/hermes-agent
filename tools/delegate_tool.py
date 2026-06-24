@@ -674,6 +674,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    persona: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -682,12 +683,38 @@ def _build_child_system_prompt(
     inspiration/openclaw/src/agents/subagent-system-prompt.ts:63-95).
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
+
+    When ``persona`` is set (and HERMES_PERSONAS_ENABLED), the persona's
+    prompt_prefix is prepended, giving the child a specialized identity
+    (coder/researcher/critic). See agent/personas.py.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts = []
+
+    # Phase 5: persona prefix injection (Gulli Ch7 Expert Teams).
+    persona_prefix = None
+    if persona:
+        try:
+            from agent.feature_flags import personas_enabled
+            if personas_enabled():
+                from agent.personas import get_persona
+                p = get_persona(persona)
+                if p:
+                    persona_prefix = p.prompt_prefix
+                    logger.debug("Delegate child using persona: %s", p.name)
+                else:
+                    logger.warning("Unknown persona %r — ignoring (no prefix)", persona)
+        except Exception:
+            pass  # flag/personas module unavailable → no prefix
+
+    if persona_prefix:
+        parts.append(persona_prefix.strip())
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+
+    parts.append("You are a focused subagent working on a specific delegated task.")
+    parts.append("")
+    parts.append(f"YOUR TASK:\n{goal}")
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1003,6 +1030,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Phase 5: persona for specialized subagents (coder/researcher/critic).
+    persona: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1090,6 +1119,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        persona=persona,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2085,6 +2115,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2116,6 +2147,9 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    # Phase 5: top-level persona (per-task can override). Not normalised —
+    # it's a free string resolved against the persona registry at build time.
+    top_persona = (persona or "").strip() or None
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch simply becomes N independent async dispatches: each
@@ -2187,7 +2221,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "persona": top_persona}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2250,6 +2284,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                persona=t.get("persona") or top_persona,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3098,6 +3133,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "persona": {
+                            "type": "string",
+                            "description": "Per-task persona override. See top-level 'persona'.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3110,6 +3149,19 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Optional persona for specialized subagents (Gulli Ch7). "
+                    "When set (and personas are enabled), the subagent gets a "
+                    "fixed system-prompt prefix defining its role. "
+                    "Available: 'coder' (writes/fixes/tests code), "
+                    "'researcher' (gathers/synthesizes info), "
+                    "'critic' (evaluates deliverables). "
+                    "Leave empty for a generic subagent. "
+                    "Persona is orthogonal to 'role' (leaf/orchestrator)."
+                ),
             },
             "background": {
                 "type": "boolean",

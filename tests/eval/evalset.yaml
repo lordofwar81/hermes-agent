@@ -1,0 +1,124 @@
+# Hermes TaskClassifier eval set — golden cases for the regression bar.
+#
+# Distinct from tests/test_routing.py (which asserts exact keyword→Category
+# mappings deterministically). This set measures classification *quality* on
+# realistic, ambiguous, conversational inputs — the kind real users send that
+# the keyword classifier struggles with. Phase 2's semantic classifier must
+# score >= this baseline before it can replace the keyword path.
+#
+# Each case:
+#   input:             the user message (realistic, not synthetic)
+#   expected_category: the Category enum value (greeting/simple/code/reasoning/analysis/expert)
+#   note:              why this case is interesting / what it stresses
+#
+# Coverage: >= 4 cases per category, ordered easiest→hardest within each.
+# Total: 30 cases. Ambiguous cases are marked and carry the reasoning for the
+# expected label so future reviewers can challenge the ground truth.
+
+cases:
+  # ── GREETING (4) ──────────────────────────────────────────────────────────
+  - input: "hey there"
+    expected_category: greeting
+    note: "bare greeting, trivial"
+  - input: "thanks, that worked perfectly"
+    expected_category: greeting
+    note: "gratitude with affirmation, no task"
+  - input: "got it, moving on"
+    expected_category: greeting
+    note: "short acknowledgment, continuation-adjacent"
+  - input: "morning! how are you today?"
+    expected_category: greeting
+    note: "social opener, question is rhetorical"
+
+  # ── SIMPLE (4) ────────────────────────────────────────────────────────────
+  - input: "what's the capital of Brazil?"
+    expected_category: simple
+    note: "factual recall, no tools/code needed"
+  - input: "how many ounces in a pound?"
+    expected_category: simple
+    note: "unit conversion trivia"
+  - input: "who wrote The Brothers Karamazov?"
+    expected_category: simple
+    note: "attribution question"
+  - input: "what does HTTP 404 mean?"
+    expected_category: simple
+    note: "tech factoid — NOT code (no implementation intent)"
+
+  # ── CODE (5) ──────────────────────────────────────────────────────────────
+  - input: "the function I wrote keeps throwing a KeyError on line 42"
+    expected_category: code
+    note: "debugging with traceback vocabulary"
+  - input: "add input validation to the signup form so emails are checked with regex"
+    expected_category: code
+    note: "implementation request with technical detail"
+  - input: "my pytest suite is failing on the CI but passing locally, likely an env issue"
+    expected_category: code
+    note: "test debugging, environment-scoped"
+  - input: "can you refactor this to use async/await instead of promises?"
+    expected_category: code
+    note: "explicit refactor request"
+  - input: "I need to write a script that backs up my Postgres DB to S3 nightly"
+    expected_category: code
+    note: "script authoring — 'script' is a code keyword"
+
+  # ── REASONING (4) ─────────────────────────────────────────────────────────
+  - input: "why does my React component re-render twice when the state hasn't changed?"
+    expected_category: reasoning
+    note: "explain-why with code context — reasoning wins over code vocab"
+  - input: "explain how JWT authentication actually works end to end"
+    expected_category: reasoning
+    note: "explain-how, conceptual"
+  - input: "what causes memory leaks in long-running Node processes and how do I spot them?"
+    expected_category: reasoning
+    note: "what-causes + explanation"
+  - input: "I keep getting race conditions — help me understand why two goroutines reading the same map is unsafe"
+    expected_category: reasoning
+    note: "understand-why, concurrency concept"
+
+  # ── ANALYSIS (4) ──────────────────────────────────────────────────────────
+  - input: "compare the performance of Postgres vs MongoDB for a read-heavy workload"
+    expected_category: analysis
+    note: "compare + performance — both analysis keywords"
+  - input: "evaluate whether switching from REST to GraphQL is worth it for our team"
+    expected_category: analysis
+    note: "evaluate + tradeoff reasoning"
+  - input: "here are last quarter's usage metrics — what's the trend and where are the bottlenecks?"
+    expected_category: analysis
+    note: "metrics + audit"
+  - input: "do a cost-benefit analysis of self-hosting vs managed Kubernetes"
+    expected_category: analysis
+    note: "explicit cost-benefit"
+
+  # ── EXPERT (5) ────────────────────────────────────────────────────────────
+  - input: "design a complete distributed system for real-time collaboration like Google Docs"
+    expected_category: expert
+    note: "design a complete system — canonical expert phrase"
+  - input: "I need to architect a multi-region, highly available API gateway from scratch"
+    expected_category: expert
+    note: "architect + multi-region + from scratch"
+  - input: "build an end-to-end ML pipeline: ingestion, training, eval, and deployment"
+    expected_category: expert
+    note: "end-to-end, multi-stage"
+  - input: "design the system architecture for a fintech platform handling payments and ledger"
+    expected_category: expert
+    note: "system design/architecture phrase"
+  - input: "create a production-ready microservices setup with auth, observability, and autoscaling"
+    expected_category: expert
+    note: "production-ready + comprehensive scope"
+
+  # ── AMBIGUOUS / ADVERSARIAL (4) ───────────────────────────────────────────
+  # These are the cases where the keyword classifier is most likely to be
+  # wrong. They are the real test of whether Phase 2's semantic classifier
+  # adds value. Ground-truth labels carry explicit justification.
+  - input: "can you look at this?"
+    expected_category: simple
+    note: "AMBIGUOUS — too vague to be code (no code vocab), not a greeting. Simplest label."
+  - input: "it broke again"
+    expected_category: code
+    note: "AMBIGUOUS — 'broke' implies debugging context but has no code keyword. Likely code in practice; keyword classifier will probably say SIMPLE (miss)."
+  - input: "is this the right way to do it or am I overcomplicating things?"
+    expected_category: reasoning
+    note: "AMBIGUOUS — seeking judgment/explanation, no code keywords. Keyword classifier will likely say SIMPLE (miss)."
+  - input: "walk me through your thought process on the last answer"
+    expected_category: reasoning
+    note: "AMBIGUOUS — meta-question about reasoning. No matching keywords; keyword classifier will likely say SIMPLE (miss)."

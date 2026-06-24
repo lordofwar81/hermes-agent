@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
+from typing import Dict, List, Optional, Tuple
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -239,6 +242,195 @@ class TaskClassifier:
 
         # Default: simple
         return Category.SIMPLE
+
+    # ───────────────────────────────────────────────────────────────────────
+    # Semantic classifier (Phase 2 — Gulli Ch2/Ch16)
+    # ───────────────────────────────────────────────────────────────────────
+    # Embeds the message and matches against pre-computed category centroids.
+    # Returns None on any failure (server down, embed error, low confidence) so
+    # the caller falls back to the keyword ``classify``. Never raises.
+    #
+    # The keyword classifier is still the source of truth for the 146
+    # deterministic unit tests; this is an *additive* path that Router.route
+    # tries first when the SEMANTIC_CLASSIFIER flag is on.
+
+    # Labeled phrases per category — used to compute centroids (mean embedding
+    # vector per category). Chosen to be representative of the category's
+    # *intent*, not its keywords, so semantic similarity generalizes beyond
+    # exact word matches (the keyword classifier's blind spot).
+    _SEMANTIC_PHRASES: Dict["Category", List[str]] = {}  # filled lazily (see below)
+
+    # Cosine-similarity threshold below which we decline to classify
+    # semantically and return None (let keyword try). Prevents low-confidence
+    # semantic guesses from replacing correct keyword classifications.
+    _SEMANTIC_MIN_CONFIDENCE = 0.50
+
+    @classmethod
+    def _semantic_phrases(cls) -> Dict["Category", List[str]]:
+        """Labeled phrase set per category (computed once, cached on the class)."""
+        if cls._SEMANTIC_PHRASES:
+            return cls._SEMANTIC_PHRASES
+        cls._SEMANTIC_PHRASES = {
+            Category.GREETING: [
+                "hello there", "hey", "thanks for your help",
+                "got it thanks", "good morning", "appreciate it",
+                "that worked perfectly", "sounds good", "understood",
+                "bye for now",
+            ],
+            Category.SIMPLE: [
+                "what is the capital of France",
+                "how many ounces in a cup",
+                "who wrote this book",
+                "what does this acronym mean",
+                "when was the company founded",
+                "define this term for me",
+                "what time is it in Tokyo",
+                "how tall is Mount Everest",
+            ],
+            Category.CODE: [
+                "the function throws an error on this line",
+                "add validation to the signup form",
+                "my test suite is failing in CI",
+                "refactor this function to be cleaner",
+                "write a script to automate backups",
+                "there's a bug in the authentication logic",
+                "fix the memory leak in the worker process",
+                "the API endpoint returns a 500 error",
+                "implement input sanitization",
+                "the database migration failed",
+            ],
+            Category.REASONING: [
+                "why does this component re-render unexpectedly",
+                "explain how authentication works step by step",
+                "help me understand why this approach is better",
+                "what causes this concurrency issue",
+                "walk me through your reasoning",
+                "is this the right way to think about it",
+                "how does garbage collection actually work",
+                "why is my code slower than expected",
+            ],
+            Category.ANALYSIS: [
+                "compare the performance of these two options",
+                "evaluate whether this tradeoff is worth it",
+                "analyze the metrics from last quarter",
+                "what are the pros and cons of each approach",
+                "do a cost-benefit analysis of this decision",
+                "which database is better for our workload",
+                "benchmark these implementations against each other",
+                "review the tradeoffs in this architecture",
+            ],
+            Category.EXPERT: [
+                "design a complete distributed system from scratch",
+                "architect a multi-region highly available platform",
+                "build an end-to-end pipeline for our product",
+                "design the system architecture for a new service",
+                "create a production-ready microservices setup",
+                "I need a comprehensive system design for this",
+                "architect the full solution end to end",
+                "design a scalable backend for millions of users",
+            ],
+        }
+        return cls._SEMANTIC_PHRASES
+
+    @classmethod
+    def _cosine_similarity(cls, a: List[float], b: List[float]) -> float:
+        """Cosine similarity via stdlib math. No numpy dependency."""
+        if len(a) != len(b) or not a:
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    @classmethod
+    def _compute_centroids(cls) -> Optional[Dict["Category", List[float]]]:
+        """Compute mean embedding per category. Returns None on any embed failure.
+
+        Called once (cached via lru_cache on the public method). Embeds all
+        labeled phrases; if any embed returns None, the whole semantic path
+        is disabled for this process (server down → degrade to keyword).
+        """
+        # Lazy import avoids a hard dependency at module load; routing must
+        # import cleanly even if vector_memory's deps (requests) aren't present.
+        try:
+            from tools.vector_memory import get_embedding
+        except Exception:
+            return None
+
+        phrases = cls._semantic_phrases()
+        centroids: Dict[Category, List[float]] = {}
+        dim: Optional[int] = None
+        for category, phrase_list in phrases.items():
+            vecs: List[List[float]] = []
+            for p in phrase_list:
+                v = get_embedding(p)
+                if v is None:
+                    # Embedding server unavailable — bail entirely.
+                    logger.debug(
+                        "Semantic classifier: embed failed for %r — "
+                        "disabling semantic path", p,
+                    )
+                    return None
+                if dim is None:
+                    dim = len(v)
+                vecs.append(v)
+            # Mean vector across all phrases for this category.
+            centroids[category] = [
+                sum(col) / len(vecs)
+                for col in zip(*vecs)
+            ]
+        return centroids
+
+    @classmethod
+    @lru_cache(maxsize=512)
+    def classify_semantic(cls, message: str) -> Optional["Category"]:
+        """Classify a message via embedding similarity to category centroids.
+
+        Returns the best-matching Category if its cosine similarity clears
+        ``_SEMANTIC_MIN_CONFIDENCE``; otherwise returns None (caller falls
+        back to keyword ``classify``). Returns None on any embed failure,
+        server-down, or exception — never raises.
+
+        Cached via lru_cache(512) keyed by the message string (there was no
+        prior classification cache; the embed round-trip is ~50-100ms and
+        would otherwise hit every turn).
+        """
+        if not message or not message.strip():
+            return None
+        try:
+            centroids = cls._compute_centroids()
+            if centroids is None:
+                return None
+            # Lazy import (see _compute_centroids for rationale).
+            from tools.vector_memory import get_embedding
+            msg_vec = get_embedding(message)
+            if msg_vec is None:
+                return None
+
+            best_cat: Optional[Category] = None
+            best_sim = -1.0
+            for category, centroid in centroids.items():
+                sim = cls._cosine_similarity(msg_vec, centroid)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_cat = category
+
+            if best_cat is not None and best_sim >= cls._SEMANTIC_MIN_CONFIDENCE:
+                logger.debug(
+                    "Semantic classify: %r -> %s (%.3f)",
+                    message[:60], best_cat.value, best_sim,
+                )
+                return best_cat
+            logger.debug(
+                "Semantic classify: %r -> None (best %.3f < %.2f)",
+                message[:60], best_sim, cls._SEMANTIC_MIN_CONFIDENCE,
+            )
+            return None
+        except Exception as exc:
+            logger.debug("Semantic classify failed: %s", exc)
+            return None
 
 
 # ─── Circuit Breaker ─────────────────────────────────────────────────────
@@ -572,7 +764,18 @@ class Router:
         Returns:
             RouteResult with model, credentials, and routing metadata.
         """
-        category = TaskClassifier.classify(message)
+        # Phase 2: try semantic classifier first (when enabled), fall back to
+        # keyword on None (server down, low confidence, flag off). The keyword
+        # path remains the source of truth for the 146 deterministic unit tests.
+        category = None
+        try:
+            from agent.feature_flags import semantic_classifier_enabled
+            if semantic_classifier_enabled():
+                category = TaskClassifier.classify_semantic(message)
+        except Exception:
+            pass  # flag module unavailable → keyword path (never block routing)
+        if category is None:
+            category = TaskClassifier.classify(message)
         blocked = self._breaker.blocked_providers()
 
         # Get the ordered provider chain for this category

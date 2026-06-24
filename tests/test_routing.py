@@ -678,109 +678,104 @@ class TestSingletonInterface:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 2: Semantic classifier (classify_semantic)
+# Phase 2: Semantic classifier (classify_semantic — LLM-based)
 # ─────────────────────────────────────────────────────────────────────────────
-# Tests mock the embedding endpoint — no network required. Verify:
-#   1. classify_semantic returns the right category on a good embed.
-#   2. Failure contract: embed None → classify_semantic None (never raises).
-#   3. Low-confidence message → None (threshold respected).
-#   4. The keyword classify() path is byte-identical (regression guard).
+# Tests mock call_llm — no network required. Verify:
+#   1. classify_semantic parses the LLM response into the right Category.
+#   2. Failure contract: exception/None/unparseable → classify_semantic None.
+#   3. The keyword classify() path is byte-identical (regression guard).
+#
+# Note: the embedding-centroid approach was built first and rejected —
+# Qwen3-Embedding-8B doesn't discriminate between the 6 intent categories
+# (same-cat ~0.948, diff-cat ~0.962). See tests/eval/diagnose.py for proof.
+# The LLM approach replaces it entirely.
+
+
+def _mock_llm_response(category_word: str):
+    """Build a fake call_llm return value whose .choices[0].message.content
+    is the given category word."""
+    mock_msg = MagicMock()
+    mock_msg.message.content = category_word
+    mock_choice = MagicMock()
+    mock_choice.message = mock_msg.message
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    return mock_resp
 
 
 class TestClassifySemantic:
-    """Embedding-based classifier — additive path, never breaks keyword classify."""
+    """LLM-based classifier — additive path, never breaks keyword classify."""
 
     @pytest.fixture(autouse=True)
     def _clear_semantic_cache(self):
-        """Clear lru_cache + class-level phrase cache between tests."""
+        """Clear lru_cache between tests so each gets a clean classify."""
         TaskClassifier.classify_semantic.cache_clear()
-        TaskClassifier._SEMANTIC_PHRASES = {}
         yield
         TaskClassifier.classify_semantic.cache_clear()
-        TaskClassifier._SEMANTIC_PHRASES = {}
-
-    def _fake_embed(self, mapping):
-        """Build a mock get_embedding that returns preset vectors by text match.
-
-        Vectors are simple and distinct per category so cosine similarity is
-        deterministic and meaningful without a real embedding model.
-        """
-        # Base vectors (8-dim for test speed; real ones are 4096 but the math
-        # is identical). Each category gets a distinct direction.
-        bases = {
-            "greeting":  [1, 0, 0, 0, 0, 0, 0, 0],
-            "simple":    [0, 1, 0, 0, 0, 0, 0, 0],
-            "code":      [0, 0, 1, 0, 0, 0, 0, 0],
-            "reasoning": [0, 0, 0, 1, 0, 0, 0, 0],
-            "analysis":  [0, 0, 0, 0, 1, 0, 0, 0],
-            "expert":    [0, 0, 0, 0, 0, 1, 0, 0],
-        }
-        # All phrase-set texts map to their category's base vector.
-        phrases = TaskClassifier._semantic_phrases()
-        full_map = {}
-        for cat, phrase_list in phrases.items():
-            for p in phrase_list:
-                full_map[p] = bases[cat.value]
-        # Overlay caller-provided message→vector mappings.
-        full_map.update(mapping)
-
-        def _mock(text):
-            return full_map.get(text)
-        return _mock
 
     def test_returns_none_on_empty_message(self):
         assert TaskClassifier.classify_semantic("") is None
         assert TaskClassifier.classify_semantic("   ") is None
 
-    def test_returns_none_when_embed_server_down(self):
-        """Embedding returns None (server down) → classify_semantic returns None."""
-        with patch("tools.vector_memory.get_embedding", return_value=None):
+    def test_returns_none_on_llm_exception(self):
+        """call_llm raises → classify_semantic returns None, never raises."""
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("network down")):
             result = TaskClassifier.classify_semantic("fix this bug")
         assert result is None
 
     def test_returns_none_on_import_failure(self):
-        """If vector_memory can't be imported → None, never raises."""
-        with patch("tools.vector_memory.get_embedding", side_effect=ImportError("no module")):
+        """auxiliary_client can't be imported → None, never raises."""
+        with patch("agent.auxiliary_client.call_llm", side_effect=ImportError("no module")):
             result = TaskClassifier.classify_semantic("fix this bug")
         assert result is None
 
-    def test_returns_none_on_unexpected_exception(self):
-        with patch("tools.vector_memory.get_embedding", side_effect=RuntimeError("boom")):
+    def test_returns_none_on_unparseable_response(self):
+        """LLM returns gibberish → None (caller falls back to keyword)."""
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("banana")):
             result = TaskClassifier.classify_semantic("fix this bug")
         assert result is None
 
-    def test_classifies_code_message_semantically(self):
-        """A message matching the code centroid → CODE."""
-        msg_vec = [0, 0, 1, 0, 0, 0, 0, 0]  # exactly the code direction
-        embed_mock = self._fake_embed({"the function throws an error": msg_vec})
-        with patch("tools.vector_memory.get_embedding", side_effect=embed_mock):
-            result = TaskClassifier.classify_semantic("the function throws an error")
+    def test_returns_none_on_empty_response(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("")):
+            result = TaskClassifier.classify_semantic("fix this bug")
+        assert result is None
+
+    def test_classifies_code_message(self):
+        """LLM says 'code' → CODE."""
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("code")):
+            result = TaskClassifier.classify_semantic("the function throws KeyError")
         assert result == Category.CODE
 
-    def test_classifies_reasoning_message_semantically(self):
-        """A message matching the reasoning centroid → REASONING."""
-        msg_vec = [0, 0, 0, 1, 0, 0, 0, 0]
-        embed_mock = self._fake_embed({"why does this happen": msg_vec})
-        with patch("tools.vector_memory.get_embedding", side_effect=embed_mock):
+    def test_classifies_reasoning_message(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("reasoning")):
             result = TaskClassifier.classify_semantic("why does this happen")
         assert result == Category.REASONING
 
-    def test_classifies_greeting_message_semantically(self):
-        msg_vec = [1, 0, 0, 0, 0, 0, 0, 0]
-        embed_mock = self._fake_embed({"thanks that worked": msg_vec})
-        with patch("tools.vector_memory.get_embedding", side_effect=embed_mock):
+    def test_classifies_greeting_message(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("greeting")):
             result = TaskClassifier.classify_semantic("thanks that worked")
         assert result == Category.GREETING
 
-    def test_returns_none_on_low_confidence(self):
-        """A message equidistant from all categories → below threshold → None."""
-        # Equal component on all 6 active dims → cosine sim ~0.41 to each
-        # (1/sqrt(6) ≈ 0.408), below _SEMANTIC_MIN_CONFIDENCE (0.50).
-        msg_vec = [1, 1, 1, 1, 1, 1, 0, 0]
-        embed_mock = self._fake_embed({"ambiguous message": msg_vec})
-        with patch("tools.vector_memory.get_embedding", side_effect=embed_mock):
-            result = TaskClassifier.classify_semantic("ambiguous message")
-        assert result is None
+    def test_classifies_expert_message(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("expert")):
+            result = TaskClassifier.classify_semantic("design a distributed system")
+        assert result == Category.EXPERT
+
+    def test_classifies_analysis_message(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("analysis")):
+            result = TaskClassifier.classify_semantic("compare these options")
+        assert result == Category.ANALYSIS
+
+    def test_parses_response_with_extra_text(self):
+        """LLM wraps the word ('The answer is: code.') → still parsed."""
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("The category is: code.")):
+            result = TaskClassifier.classify_semantic("fix the bug")
+        assert result == Category.CODE
+
+    def test_parses_response_with_trailing_punctuation(self):
+        with patch("agent.auxiliary_client.call_llm", return_value=_mock_llm_response("reasoning.")):
+            result = TaskClassifier.classify_semantic("explain why")
+        assert result == Category.REASONING
 
     def test_keyword_classify_unchanged(self):
         """Regression guard: the keyword path still works identically.
@@ -793,23 +788,14 @@ class TestClassifySemantic:
         assert TaskClassifier.classify("design a complete system") != Category.GREETING
         assert TaskClassifier.classify("compare the performance") == Category.ANALYSIS
 
-    def test_centroids_computed_once(self):
-        """_compute_centroids embeds each phrase exactly once per process."""
-        call_count = {"n": 0}
+    def test_parse_llm_category_all_six(self):
+        """_parse_llm_category handles all 6 category values."""
+        for cat in Category:
+            assert TaskClassifier._parse_llm_category(cat.value) == cat
 
-        def counting_embed(text):
-            call_count["n"] += 1
-            return [1, 0, 0, 0, 0, 0, 0, 0]  # any non-None
+    def test_parse_llm_category_none_on_garbage(self):
+        assert TaskClassifier._parse_llm_category("xyzzy") is None
+        assert TaskClassifier._parse_llm_category("") is None
+        assert TaskClassifier._parse_llm_category(None) is None
 
-        with patch("tools.vector_memory.get_embedding", side_effect=counting_embed):
-            TaskClassifier._compute_centroids()
-            first_calls = call_count["n"]
-            # Call again — should hit the same cache, no new embeds.
-            TaskClassifier._compute_centroids()
-            second_calls = call_count["n"]
-
-        # _compute_centroids itself isn't lru_cached (the cache lives in the
-        # public classify_semantic), so it re-embeds. This test documents that
-        # behavior. The real caching is at classify_semantic level.
-        assert first_calls > 0  # at least the phrase set was embedded
 

@@ -23,14 +23,13 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -244,193 +243,140 @@ class TaskClassifier:
         return Category.SIMPLE
 
     # ───────────────────────────────────────────────────────────────────────
-    # Semantic classifier (Phase 2 — Gulli Ch2/Ch16)
+    # Semantic classifier (Phase 2 — Gulli Ch2/Ch16, LLM-based)
     # ───────────────────────────────────────────────────────────────────────
-    # Embeds the message and matches against pre-computed category centroids.
-    # Returns None on any failure (server down, embed error, low confidence) so
-    # the caller falls back to the keyword ``classify``. Never raises.
+    # Uses the cheap aux model (glm-4.5-flash) to classify message intent.
+    # Returns None on any failure (network error, unparseable response, flag
+    # off) so the caller falls back to the keyword ``classify``. Never raises.
     #
-    # The keyword classifier is still the source of truth for the 146
-    # deterministic unit tests; this is an *additive* path that Router.route
-    # tries first when the SEMANTIC_CLASSIFIER flag is on.
+    # Design note: an embedding-centroid approach was tried first and rejected
+    # — Qwen3-Embedding-8B does not discriminate between the 6 intent
+    # categories (same-category pairs scored ~0.948, different-category pairs
+    # ~0.962; the signal wasn't there). LLM classification is the tool for
+    # intent understanding. See evalset.yaml + tests/eval/diagnose.py for the
+    # proof. The keyword classifier remains the deterministic source of truth.
 
-    # Labeled phrases per category — used to compute centroids (mean embedding
-    # vector per category). Chosen to be representative of the category's
-    # *intent*, not its keywords, so semantic similarity generalizes beyond
-    # exact word matches (the keyword classifier's blind spot).
-    _SEMANTIC_PHRASES: Dict["Category", List[str]] = {}  # filled lazily (see below)
-
-    # Cosine-similarity threshold below which we decline to classify
-    # semantically and return None (let keyword try). Prevents low-confidence
-    # semantic guesses from replacing correct keyword classifications.
-    _SEMANTIC_MIN_CONFIDENCE = 0.50
-
-    @classmethod
-    def _semantic_phrases(cls) -> Dict["Category", List[str]]:
-        """Labeled phrase set per category (computed once, cached on the class)."""
-        if cls._SEMANTIC_PHRASES:
-            return cls._SEMANTIC_PHRASES
-        cls._SEMANTIC_PHRASES = {
-            Category.GREETING: [
-                "hello there", "hey", "thanks for your help",
-                "got it thanks", "good morning", "appreciate it",
-                "that worked perfectly", "sounds good", "understood",
-                "bye for now",
-            ],
-            Category.SIMPLE: [
-                "what is the capital of France",
-                "how many ounces in a cup",
-                "who wrote this book",
-                "what does this acronym mean",
-                "when was the company founded",
-                "define this term for me",
-                "what time is it in Tokyo",
-                "how tall is Mount Everest",
-            ],
-            Category.CODE: [
-                "the function throws an error on this line",
-                "add validation to the signup form",
-                "my test suite is failing in CI",
-                "refactor this function to be cleaner",
-                "write a script to automate backups",
-                "there's a bug in the authentication logic",
-                "fix the memory leak in the worker process",
-                "the API endpoint returns a 500 error",
-                "implement input sanitization",
-                "the database migration failed",
-            ],
-            Category.REASONING: [
-                "why does this component re-render unexpectedly",
-                "explain how authentication works step by step",
-                "help me understand why this approach is better",
-                "what causes this concurrency issue",
-                "walk me through your reasoning",
-                "is this the right way to think about it",
-                "how does garbage collection actually work",
-                "why is my code slower than expected",
-            ],
-            Category.ANALYSIS: [
-                "compare the performance of these two options",
-                "evaluate whether this tradeoff is worth it",
-                "analyze the metrics from last quarter",
-                "what are the pros and cons of each approach",
-                "do a cost-benefit analysis of this decision",
-                "which database is better for our workload",
-                "benchmark these implementations against each other",
-                "review the tradeoffs in this architecture",
-            ],
-            Category.EXPERT: [
-                "design a complete distributed system from scratch",
-                "architect a multi-region highly available platform",
-                "build an end-to-end pipeline for our product",
-                "design the system architecture for a new service",
-                "create a production-ready microservices setup",
-                "I need a comprehensive system design for this",
-                "architect the full solution end to end",
-                "design a scalable backend for millions of users",
-            ],
-        }
-        return cls._SEMANTIC_PHRASES
+    # Category descriptions for the LLM prompt — these are what the model
+    # actually matches against. Written to be self-explanatory and distinct.
+    _CATEGORY_DESCRIPTIONS: Dict["Category", str] = {
+        Category.GREETING: "greeting — a social opener, thanks, acknowledgment, or farewell with no task (e.g. 'hello', 'thanks that worked', 'got it')",
+        Category.SIMPLE: "simple — a short factual question or trivia that needs no tools or code (e.g. 'capital of France', 'what does 404 mean')",
+        Category.CODE: "code — debugging, implementation, bug fixing, testing, deployment, or any technical task involving writing or fixing code (e.g. 'the function throws KeyError', 'add validation', 'tests failing in CI', 'refactor to async')",
+        Category.REASONING: "reasoning — asking for an explanation of why/how something works, understanding a concept, or walking through logic (e.g. 'why does it re-render', 'explain how JWT works', 'help me understand why')",
+        Category.ANALYSIS: "analysis — comparing, evaluating, benchmarking, or assessing tradeoffs between options (e.g. 'compare Postgres vs MongoDB', 'evaluate the tradeoffs', 'cost-benefit analysis')",
+        Category.EXPERT: "expert — designing a complete system, architecture, or end-to-end solution from scratch (e.g. 'design a distributed system', 'architect a multi-region API', 'build an end-to-end pipeline')",
+    }
 
     @classmethod
-    def _cosine_similarity(cls, a: List[float], b: List[float]) -> float:
-        """Cosine similarity via stdlib math. No numpy dependency."""
-        if len(a) != len(b) or not a:
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(y * y for y in b))
-        if norm_a == 0.0 or norm_b == 0.0:
-            return 0.0
-        return dot / (norm_a * norm_b)
+    def _build_classify_prompt(cls, message: str) -> List[dict]:
+        """Build the chat messages for the LLM classifier."""
+        descriptions = "\n".join(
+            f"- {desc}" for desc in cls._CATEGORY_DESCRIPTIONS.values()
+        )
+        system = (
+            "You are a message intent classifier. Given a user message, "
+            "respond with EXACTLY ONE word from this list: "
+            "greeting, simple, code, reasoning, analysis, expert.\n\n"
+            "Categories:\n" + descriptions + "\n\n"
+            "Rules:\n"
+            "- Respond with only the category word, nothing else.\n"
+            "- If a message involves writing, fixing, debugging, or deploying code, it is 'code'.\n"
+            "- If it asks to explain why/how or understand a concept, it is 'reasoning'.\n"
+            "- If it asks to design or architect a full system, it is 'expert'.\n"
+            "- If it compares or evaluates options, it is 'analysis'.\n"
+            "- If it is a short factual question with no code, it is 'simple'.\n"
+            "- If it is a social message with no task, it is 'greeting'."
+        )
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": message[:800]},  # truncate like get_embedding does
+        ]
 
     @classmethod
-    def _compute_centroids(cls) -> Optional[Dict["Category", List[float]]]:
-        """Compute mean embedding per category. Returns None on any embed failure.
-
-        Called once (cached via lru_cache on the public method). Embeds all
-        labeled phrases; if any embed returns None, the whole semantic path
-        is disabled for this process (server down → degrade to keyword).
-        """
-        # Lazy import avoids a hard dependency at module load; routing must
-        # import cleanly even if vector_memory's deps (requests) aren't present.
-        try:
-            from tools.vector_memory import get_embedding
-        except Exception:
+    def _parse_llm_category(cls, response_text: str) -> Optional["Category"]:
+        """Extract a Category from the LLM's response. None if unparseable."""
+        if not response_text:
             return None
-
-        phrases = cls._semantic_phrases()
-        centroids: Dict[Category, List[float]] = {}
-        dim: Optional[int] = None
-        for category, phrase_list in phrases.items():
-            vecs: List[List[float]] = []
-            for p in phrase_list:
-                v = get_embedding(p)
-                if v is None:
-                    # Embedding server unavailable — bail entirely.
-                    logger.debug(
-                        "Semantic classifier: embed failed for %r — "
-                        "disabling semantic path", p,
-                    )
-                    return None
-                if dim is None:
-                    dim = len(v)
-                vecs.append(v)
-            # Mean vector across all phrases for this category.
-            centroids[category] = [
-                sum(col) / len(vecs)
-                for col in zip(*vecs)
-            ]
-        return centroids
+        text = response_text.strip().lower()
+        # The prompt asks for exactly one word, but be defensive: take the
+        # first word and strip punctuation. Also handle the model wrapping
+        # the word in markdown or adding a period.
+        first_word = text.split()[0].strip(".,!?:;`*#-\"'()[]") if text else ""
+        for cat in Category:
+            if cat.value == first_word:
+                return cat
+        # Fallback: substring match (handles "The category is: code")
+        for cat in Category:
+            if cat.value in text:
+                return cat
+        return None
 
     @classmethod
     @lru_cache(maxsize=512)
     def classify_semantic(cls, message: str) -> Optional["Category"]:
-        """Classify a message via embedding similarity to category centroids.
+        """Classify a message via the cheap aux LLM (glm-4.5-flash).
 
-        Returns the best-matching Category if its cosine similarity clears
-        ``_SEMANTIC_MIN_CONFIDENCE``; otherwise returns None (caller falls
-        back to keyword ``classify``). Returns None on any embed failure,
-        server-down, or exception — never raises.
+        Returns the predicted Category, or None on any failure (network error,
+        unparseable response, exception). Never raises — the caller falls back
+        to keyword ``classify`` on None.
 
-        Cached via lru_cache(512) keyed by the message string (there was no
-        prior classification cache; the embed round-trip is ~50-100ms and
-        would otherwise hit every turn).
+        Cached via lru_cache(512) keyed by message. The LLM call is ~200-500ms
+        and would otherwise hit every turn.
+
+        Provider/model resolution: reads ``auxiliary.classifier.{provider,model}``
+        from config if present; defaults to ``zai``/``glm-4.5-flash`` (the
+        cheap model per auxiliary_client.py:340).
         """
         if not message or not message.strip():
             return None
         try:
-            centroids = cls._compute_centroids()
-            if centroids is None:
-                return None
-            # Lazy import (see _compute_centroids for rationale).
-            from tools.vector_memory import get_embedding
-            msg_vec = get_embedding(message)
-            if msg_vec is None:
-                return None
+            from agent.auxiliary_client import call_llm
+            messages = cls._build_classify_prompt(message)
 
-            best_cat: Optional[Category] = None
-            best_sim = -1.0
-            for category, centroid in centroids.items():
-                sim = cls._cosine_similarity(msg_vec, centroid)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_cat = category
+            # Resolve provider/model: config override first, then the cheap
+            # default. This keeps the classifier on the fast/cheap model
+            # regardless of the main turn's provider.
+            provider = "zai"
+            model = "glm-4.5-flash"
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config() or {}
+                aux = cfg.get("auxiliary", {})
+                if isinstance(aux, dict):
+                    clf_cfg = aux.get("classifier", {})
+                    if isinstance(clf_cfg, dict):
+                        provider = clf_cfg.get("provider", provider)
+                        model = clf_cfg.get("model", model)
+            except Exception:
+                pass  # config read failure → use defaults
 
-            if best_cat is not None and best_sim >= cls._SEMANTIC_MIN_CONFIDENCE:
-                logger.debug(
-                    "Semantic classify: %r -> %s (%.3f)",
-                    message[:60], best_cat.value, best_sim,
-                )
-                return best_cat
-            logger.debug(
-                "Semantic classify: %r -> None (best %.3f < %.2f)",
-                message[:60], best_sim, cls._SEMANTIC_MIN_CONFIDENCE,
+            response = call_llm(
+                provider=provider,
+                model=model,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=10,  # one word
+                timeout=10.0,
             )
-            return None
+            content = response.choices[0].message.content
+            result = cls._parse_llm_category(content)
+            if result is not None:
+                logger.debug(
+                    "Semantic classify (LLM): %r -> %s",
+                    message[:60], result.value,
+                )
+            else:
+                logger.debug(
+                    "Semantic classify (LLM): unparseable response %r for %r",
+                    content[:80], message[:60],
+                )
+            return result
         except Exception as exc:
-            logger.debug("Semantic classify failed: %s", exc)
+            logger.debug("Semantic classify (LLM) failed: %s", exc)
             return None
+
+
+# ─── Circuit Breaker ─────────────────────────────────────────────────────
 
 
 # ─── Circuit Breaker ─────────────────────────────────────────────────────

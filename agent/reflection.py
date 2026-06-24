@@ -131,11 +131,23 @@ def run_critic(agent, final_response: str, user_message: str) -> str:
     except Exception:
         return final_response  # flag module unavailable → skip critic
 
-    # Gate 2: category must be in the critic-eligible set. Uses the same
-    # classifier the router uses (Phase 2 improved it to 96.7% accuracy).
+    # Gate 2: category must be in the critic-eligible set.
+    # Uses the same semantic-first resolution as Router.route: when the
+    # semantic flag is on, try classify_semantic (96.7% accurate) first,
+    # fall back to keyword classify (66.7%) on None. This ensures the critic
+    # fires on the right turns — without it, "Design a rate limiter" hits a
+    # code keyword and skips the critic even though it's an EXPERT turn.
     try:
         from agent.routing import TaskClassifier
-        category = TaskClassifier.classify(user_message)
+        category = None
+        try:
+            from agent.feature_flags import semantic_classifier_enabled
+            if semantic_classifier_enabled():
+                category = TaskClassifier.classify_semantic(user_message)
+        except Exception:
+            pass
+        if category is None:
+            category = TaskClassifier.classify(user_message)
         if category.value not in _CRITIC_CATEGORIES:
             return final_response
     except Exception:

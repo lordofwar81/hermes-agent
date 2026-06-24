@@ -6,8 +6,10 @@ defined approach and toolset expectation. Personas are orthogonal to the
 existing ``role`` (leaf/orchestrator) — a persona shapes *how* the child
 works, while role controls *whether* it can re-delegate.
 
-Minimal scope (per locked decision): schema field + prompt prefix only.
-No per-child model override (deferred follow-up). The persona's default
+A persona may optionally pin the model its children run on (e.g. the
+critic persona uses the cheap glm-4.7 instead of inheriting the parent's
+model). Precedence when building a child: explicit per-call ``model``
+kwarg > persona.model > parent agent's model. The persona's default
 toolsets are a suggestion, not enforced — the caller can still override
 via the existing ``toolsets`` parameter.
 
@@ -31,6 +33,13 @@ class Persona:
     prompt_prefix: str
     default_toolsets: List[str] = field(default_factory=list)
     description: str = ""
+    # Optional model pin. When set, delegate children using this persona run on
+    # this model instead of inheriting the parent's. None → inherit (default).
+    # A companion provider/base_url is intentionally NOT included here: the
+    # model is assumed to be reachable on the resolved provider (either the
+    # delegation config override or the parent's). Cross-provider persona
+    # routing would need a larger credential model — deferred (Iron Law).
+    model: Optional[str] = None
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────
@@ -79,6 +88,10 @@ _PERSONAS: Dict[str, Persona] = {
         ),
         default_toolsets=["file"],
         description="Quality critic — evaluates deliverables against criteria.",
+        # The critic is a judge, not an author — the cheap aux model is the
+        # right call per Gulli Ch11 (separate author/judge) and halves latency
+        # vs inheriting the parent's strong model. Overridable per-call.
+        model="glm-4.7",
     ),
 }
 
@@ -108,4 +121,20 @@ def resolve_persona_toolsets(name: str, caller_toolsets: Optional[List[str]] = N
     persona = get_persona(name)
     if persona and persona.default_toolsets:
         return list(persona.default_toolsets)
+    return None
+
+
+def resolve_persona_model(name: str, caller_model: Optional[str] = None) -> Optional[str]:
+    """Resolve the effective model for a persona-aware delegate.
+
+    Precedence: explicit per-call ``caller_model`` wins (caller knows best);
+    then the persona's pinned ``model``; then None (caller inherits the
+    parent agent's model). Returns None when no override applies so the
+    downstream resolution (``model or parent_agent.model``) is unchanged.
+    """
+    if caller_model is not None:
+        return caller_model
+    persona = get_persona(name)
+    if persona and persona.model:
+        return persona.model
     return None

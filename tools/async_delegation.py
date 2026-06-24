@@ -160,6 +160,7 @@ def dispatch_async_delegation(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    persona: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -199,6 +200,7 @@ def dispatch_async_delegation(
         "toolsets": list(toolsets) if toolsets else None,
         "role": role,
         "model": model,
+        "persona": persona,
         "session_key": session_key,
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -313,6 +315,7 @@ def _push_completion_event(
         "toolsets": record.get("toolsets"),
         "role": record.get("role"),
         "model": result.get("model") or record.get("model"),
+        "persona": record.get("persona"),
         "status": status,
         "summary": summary,
         "error": error,
@@ -345,6 +348,7 @@ def dispatch_async_delegation_batch(
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    persona: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -381,6 +385,7 @@ def dispatch_async_delegation_batch(
         "toolsets": list(toolsets) if toolsets else None,
         "role": role,
         "model": model,
+        "persona": persona,
         "session_key": session_key,
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -484,6 +489,7 @@ def _finalize_batch(
         "toolsets": event_record.get("toolsets"),
         "role": event_record.get("role"),
         "model": event_record.get("model"),
+        "persona": event_record.get("persona"),
         "status": status,
         "is_batch": True,
         # The full per-task results list — the formatter renders a

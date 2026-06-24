@@ -27,6 +27,7 @@ __all__ = [
     "reflection_enabled",
     "planning_gate_enabled",
     "personas_enabled",
+    "step_back_enabled",
 ]
 
 # Strings that count as "off" for a truthy env-var check.  Mirrors the
@@ -121,3 +122,14 @@ def personas_enabled() -> bool:
     but no prefix is injected).
     """
     return _flag("HERMES_PERSONAS_ENABLED", "personas")
+
+
+def step_back_enabled() -> bool:
+    """Step-back prompting (Gulli Appendix A, Tier 2).
+
+    When on, REASONING/ANALYSIS/EXPERT turns first ask a cheap aux model for
+    the underlying principle/abstraction behind the question, then inject that
+    as context for the main model's answer. Off → no step-back, current
+    behavior. Non-blocking: on any failure, the original turn proceeds.
+    """
+    return _flag("HERMES_STEP_BACK_ENABLED", "step_back")

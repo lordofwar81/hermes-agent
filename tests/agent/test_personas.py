@@ -13,6 +13,7 @@ import pytest
 
 from agent.personas import (
     Persona, get_persona, list_personas, resolve_persona_toolsets,
+    resolve_persona_model,
 )
 from agent.routing import Category  # not used directly but confirms no import cycle
 
@@ -79,6 +80,46 @@ class TestResolvePersonaToolsets:
     def test_none_when_unknown_persona_no_caller(self):
         result = resolve_persona_toolsets("nonexistent", caller_toolsets=None)
         assert result is None
+
+
+# ─── Model resolution (Phase 5 follow-up: per-child model override) ────────
+
+class TestResolvePersonaModel:
+    def test_caller_model_wins(self):
+        """Explicit per-call model overrides persona pin."""
+        result = resolve_persona_model("critic", caller_model="glm-5.2")
+        assert result == "glm-5.2"
+
+    def test_critic_persona_pins_glm47(self):
+        """Critic persona pins the cheap aux model (Gulli Ch11 author/judge)."""
+        result = resolve_persona_model("critic", caller_model=None)
+        assert result == "glm-4.7"
+
+    def test_coder_persona_no_pin_inherits(self):
+        """Coder persona has no model pin → None (inherits parent)."""
+        result = resolve_persona_model("coder", caller_model=None)
+        assert result is None
+
+    def test_researcher_persona_no_pin_inherits(self):
+        result = resolve_persona_model("researcher", caller_model=None)
+        assert result is None
+
+    def test_none_when_no_persona_no_caller(self):
+        result = resolve_persona_model(None, caller_model=None)
+        assert result is None
+
+    def test_none_when_unknown_persona_no_caller(self):
+        result = resolve_persona_model("nonexistent", caller_model=None)
+        assert result is None
+
+    def test_critic_persona_has_model_field(self):
+        """The critic Persona in the registry carries a model attribute."""
+        p = get_persona("critic")
+        assert p.model == "glm-4.7"
+
+    def test_coder_persona_model_is_none(self):
+        p = get_persona("coder")
+        assert p.model is None
 
 
 # ─── Prompt injection ─────────────────────────────────────────────────────

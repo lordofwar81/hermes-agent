@@ -236,6 +236,7 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    plan=None,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -243,6 +244,11 @@ def run_codex_app_server_turn(
 
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
+
+    ``plan`` is an optional Phase-4 ``Plan`` object (agent/planning_gate.py)
+    forwarded from run_conversation(). When present, its rendered form is
+    prepended to the user input so the Codex subprocess honors it instead of
+    discarding the planning gate's output (the prior behavior on this path).
     """
     from agent.transports.codex_app_server_session import CodexAppServerSession
 
@@ -288,8 +294,25 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    # Forward the Phase-4 plan (if any) as an instructions prefix so the
+    # Codex subprocess executes against it. Previously build_plan's output
+    # was generated and discarded on this path.
+    effective_input = user_message
+    if plan is not None:
+        try:
+            rendered = plan.render()
+            if rendered and rendered.strip():
+                effective_input = (
+                    "Suggested plan from upstream planner — follow this approach "
+                    "unless the task clearly calls for a different one:\n"
+                    f"{rendered}\n\n---\n\nTask:\n{user_message}"
+                )
+        except Exception:
+            logger.debug("plan.render() failed; passing raw user message", exc_info=True)
+            effective_input = user_message
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(user_input=effective_input)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

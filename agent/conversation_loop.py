@@ -577,17 +577,43 @@ def run_conversation(
     # ANALYSIS turns before the tool-calling loop begins. Non-blocking: the
     # plan is surfaced to the user via status buffer, then execution proceeds.
     # On any failure or skip, execution proceeds without a plan (unchanged).
+    _turn_plan = None
     try:
         from agent.planning_gate import build_plan
-        build_plan(agent, original_user_message)
+        _turn_plan = build_plan(agent, original_user_message)
     except Exception as _plan_err:
         logger.debug("planning gate entry failed: %s", _plan_err)
+
+    # Tier 2: step-back prompting (Gulli Appendix A). Derives the governing
+    # principle behind the question via a cheap aux model and injects it as
+    # grounding context for the main turn. Category-gated (REASONING/
+    # ANALYSIS/EXPERT), non-blocking. See agent/step_back.py.
+    try:
+        from agent.step_back import run_step_back
+        _principle = run_step_back(agent, original_user_message)
+        if _principle:
+            # Inject the principle into the last user message in the working
+            # list so the main model grounds on it. Mutate the working copy,
+            # not original_user_message (which is logged/persisted).
+            for _m in reversed(messages):
+                if _m.get("role") == "user":
+                    _orig_content = _m.get("content", "")
+                    if isinstance(_orig_content, str):
+                        _m["content"] = (
+                            f"(Governing principle for this question: {_principle})\n\n"
+                            f"{_orig_content}"
+                        )
+                    break
+    except Exception as _sb_err:
+        logger.debug("step-back entry failed: %s", _sb_err)
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
+    # The planning gate's output is forwarded so the subprocess can honor it
+    # (previously the plan was generated and discarded on this path).
     if agent.api_mode == "codex_app_server":
         return agent._run_codex_app_server_turn(
             user_message=user_message,
@@ -595,6 +621,7 @@ def run_conversation(
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
+            plan=_turn_plan,
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:

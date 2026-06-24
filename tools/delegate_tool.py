@@ -1164,8 +1164,18 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    # Resolve effective credentials: explicit per-call > persona pin > parent.
+    # A persona may pin a model (e.g. critic → glm-4.7 per Gulli Ch11) so its
+    # children don't inherit the parent's (typically stronger/slower) model.
+    # Gated by the personas flag so the behaviour is off until enabled.
+    _persona_model = None
+    if persona:
+        try:
+            from agent.personas import resolve_persona_model
+            _persona_model = resolve_persona_model(persona, model)
+        except Exception:
+            _persona_model = None
+    effective_model = _persona_model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
@@ -2605,6 +2615,7 @@ def delegate_task(
             toolsets=toolsets,
             role=top_role,
             model=creds["model"],
+            persona=top_persona,
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,

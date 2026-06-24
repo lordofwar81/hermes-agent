@@ -1,0 +1,6 @@
+2026-06-16	tuesday	context-compression	skill-doc-fix	Fix stale compression model config reference in SKILL.md (auxiliary.compression not compression.provider), LOC count, add codex_gpt55_autoraise	0	339/339	pass	n/a	skill-doc
+2026-06-16	tuesday	context-compression	benchmark-enhancement	Add context retention score + tail protection budget benchmarks to compression_benchmark.py	6/6	339/339	pass	n/a	benchmark
+2026-06-18	thursday	skill-validation	eval-coverage-expansion	Expand trigger_evals.jsonl from 91→295 entries (27.7%→70.1% coverage), fix 3 stale refs, zero Kill Zone touches	204/204	295/295	pass	n/a	eval-data
+sun	hydra/sunday-integration-stress	2026-06-21	test_regression_fixes	fix_6_tests_1_prod_bug	PASS	"Fixed 6 test regressions from gateway R23-R57 decomposition + 1 production bug in telegram_network ReadTimeout retry logic. Test pass rate: 12683/12695 (99.9%). Skill health: 82/100 GREEN."
+2026-06-23T23:00	tuesday-context-compression	estimate_tokens-str.count	5x_speedup_code	99/99_compression_tests_pass	agent/context_compressor.py	6ca296c6f	perf: str.count replaces generator+set for brace counting in _estimate_tokens
+2026-06-23T23:00	tuesday-context-compression	summarize_tool_result-dispatch-table	refactor	99/99_compression_tests_pass	agent/context_compressor.py	6ca296c6f	refactor: if/elif chain -> dispatch table with named formatters

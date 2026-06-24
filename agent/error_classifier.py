@@ -843,6 +843,29 @@ def _classify_by_status(
         )
 
     if status_code == 429:
+        # z.ai (and Anthropic-compatible adapters) return 429 with code 1305
+        # "service may be temporarily overloaded" for server-side capacity
+        # errors, not a true per-key rate limit. The generic 429 path below
+        # would mark the credential pool exhausted for 1 hour and eagerly
+        # fail over to the (smaller-context) fallback model, turning a
+        # transient provider hiccup into a context_overflow cascade.
+        # Classify as overloaded (the 503/529 reason): backoff-retry on the
+        # same credential, no pool mutation, no eager fallback. Matches on
+        # the z.ai body code ("1305") and the canonical phrase. See
+        # issue: transient-overload-credential-exhaustion.
+        _is_zai_overload = (
+            "1305" == str(error_code)
+            or "service may be temporarily overloaded" in error_msg
+            or "the service may be temporarily overloaded" in error_msg
+            or "temporarily overloaded" in error_msg
+        )
+        if _is_zai_overload:
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+                # Do NOT set should_rotate_credential or should_fallback —
+                # the credential is valid, the server is the problem.
+            )
         # Already checked long_context_tier above; this is a normal rate limit
         return result_fn(
             FailoverReason.rate_limit,

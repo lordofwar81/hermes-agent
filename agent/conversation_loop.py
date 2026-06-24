@@ -3488,6 +3488,26 @@ def run_conversation(
                         _retry.primary_recovery_attempted = True
                         retry_count = 0
                         continue
+                    # Transient provider overload (z.ai code 1305, Anthropic
+                    # 529, generic 503): the primary provider is sweating,
+                    # not broken. Falling back here forces the turn onto the
+                    # smaller-context fallback model, tripping a
+                    # context_overflow cascade when the request is large.
+                    # Grant up to 3 extra retries with a longer backoff so
+                    # transient blips clear on the primary instead of
+                    # cascading. Falls through to normal fallback if the
+                    # provider stays down past the extended window.
+                    if (
+                        classified.reason == FailoverReason.overloaded
+                        and not getattr(_retry, "overload_grace_retries_used", 0) >= 3
+                    ):
+                        _used = getattr(_retry, "overload_grace_retries_used", 0) + 1
+                        _retry.overload_grace_retries_used = _used
+                        agent._buffer_status(
+                            f"⏳ Provider overloaded (transient) — retry {_used}/3 with longer backoff..."
+                        )
+                        retry_count = 0  # reset so the while-loop runs again
+                        continue
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")

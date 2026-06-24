@@ -1118,7 +1118,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
-    fb_model = (fb.get("model") or "").strip().lower()
+    fb_model = (fb.get("model") or "").strip()
+    fb_model_lower = fb_model.lower()  # for dedup comparisons only
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
@@ -1130,7 +1131,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     current_model = (getattr(agent, "model", "") or "").strip().lower()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
+    if fb_provider == current_provider and fb_model_lower == current_model:
         logger.warning(
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
@@ -1140,7 +1141,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         fb_base_url_for_dedup
         and current_base_url
         and fb_base_url_for_dedup == current_base_url
-        and fb_model == current_model
+        and fb_model_lower == current_model
     ):
         logger.warning(
             "Fallback skip: chain entry base_url %s matches current backend",

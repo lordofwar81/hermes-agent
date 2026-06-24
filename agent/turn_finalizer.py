@@ -330,6 +330,19 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
 
+    # Phase 3: pre-delivery critic (Gulli Ch4 Producer-Critic).
+    # Synchronous, revise-once. Only fires when the reflection flag is on AND
+    # the turn category is REASONING/ANALYSIS/EXPERT. On any failure or ACCEPT,
+    # final_response is unchanged. See agent/reflection.py for the full design.
+    if final_response and not interrupted:
+        try:
+            from agent.reflection import run_critic
+            final_response = run_critic(
+                agent, final_response, original_user_message,
+            )
+        except Exception as exc:
+            logger.warning("reflection gate failed: %s", exc)
+
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything
     # earlier is from a prior turn and must not leak into the reasoning

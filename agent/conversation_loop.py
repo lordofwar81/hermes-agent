@@ -572,6 +572,17 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Phase 4: planning gate (Gulli Ch6 plan-then-execute).
+    # Generates an explicit plan (steps + done-criteria) for EXPERT/CODE/
+    # ANALYSIS turns before the tool-calling loop begins. Non-blocking: the
+    # plan is surfaced to the user via status buffer, then execution proceeds.
+    # On any failure or skip, execution proceeds without a plan (unchanged).
+    try:
+        from agent.planning_gate import build_plan
+        build_plan(agent, original_user_message)
+    except Exception as _plan_err:
+        logger.debug("planning gate entry failed: %s", _plan_err)
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.

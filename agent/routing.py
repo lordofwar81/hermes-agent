@@ -245,7 +245,7 @@ class TaskClassifier:
     # ───────────────────────────────────────────────────────────────────────
     # Semantic classifier (Phase 2 — Gulli Ch2/Ch16, LLM-based)
     # ───────────────────────────────────────────────────────────────────────
-    # Uses the cheap aux model (glm-4.5-flash) to classify message intent.
+    # Uses the cheap aux model (glm-4.7) to classify message intent.
     # Returns None on any failure (network error, unparseable response, flag
     # off) so the caller falls back to the keyword ``classify``. Never raises.
     #
@@ -314,7 +314,7 @@ class TaskClassifier:
     @classmethod
     @lru_cache(maxsize=512)
     def classify_semantic(cls, message: str) -> Optional["Category"]:
-        """Classify a message via the cheap aux LLM (glm-4.5-flash).
+        """Classify a message via the cheap aux LLM (glm-4.7).
 
         Returns the predicted Category, or None on any failure (network error,
         unparseable response, exception). Never raises — the caller falls back
@@ -324,7 +324,7 @@ class TaskClassifier:
         and would otherwise hit every turn.
 
         Provider/model resolution: reads ``auxiliary.classifier.{provider,model}``
-        from config if present; defaults to ``zai``/``glm-4.5-flash`` (the
+        from config if present; defaults to ``zai``/``glm-4.7`` (the
         cheap model per auxiliary_client.py:340).
         """
         if not message or not message.strip():
@@ -337,7 +337,7 @@ class TaskClassifier:
             # default. This keeps the classifier on the fast/cheap model
             # regardless of the main turn's provider.
             provider = "zai"
-            model = "glm-4.5-flash"
+            model = "glm-4.7"
             try:
                 from hermes_cli.config import load_config
                 cfg = load_config() or {}

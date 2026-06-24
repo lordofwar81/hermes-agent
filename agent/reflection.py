@@ -10,7 +10,7 @@ daemon thread for memory/skill review. The critic must be able to mutate the
 answer the user receives; a background thread cannot.
 
 Design:
-  - Cheap model (glm-4.5-flash): the critic is a separate LLM from the author
+  - Cheap model (glm-4.7): the critic is a separate LLM from the author
     (Gulli Ch11: never use the same LLM as both author and judge).
   - Category-gated: fires only on REASONING/ANALYSIS/EXPERT turns (where
     quality matters most; greetings/simple don't justify the latency).
@@ -158,7 +158,7 @@ def run_critic(agent, final_response: str, user_message: str) -> str:
         from agent.auxiliary_client import call_llm
 
         provider = "zai"
-        model = "glm-4.5-flash"
+        model = "glm-4.7"
         # Allow config override: auxiliary.critic.{provider,model}
         try:
             from hermes_cli.config import load_config

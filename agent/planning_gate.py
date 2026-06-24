@@ -12,7 +12,7 @@ would add latency and break conversational flow for most turns. Users who
 want explicit approval can use the existing /steer or interrupt mechanism.
 
 Design:
-  - Cheap model (glm-4.5-flash): the plan is a quick structural pass, not a
+  - Cheap model (glm-4.7): the plan is a quick structural pass, not a
     deep reasoning task. The main model still does the actual execution.
   - Category-gated: fires only on EXPERT/CODE/ANALYSIS. GREETING/SIMPLE/
     REASONING turns don't benefit from a plan (too short or explanatory).
@@ -182,7 +182,7 @@ def build_plan(agent, user_message: str) -> Optional[Plan]:
         from agent.auxiliary_client import call_llm
 
         provider = "zai"
-        model = "glm-4.5-flash"
+        model = "glm-4.7"
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}

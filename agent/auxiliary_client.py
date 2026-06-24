@@ -337,7 +337,7 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
 # profiles). New providers should set default_aux_model on their profile instead.
 _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
-    "zai": "glm-4.5-flash",
+    "zai": "glm-4.7",
     "kimi-coding": "kimi-k2-turbo-preview",
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",

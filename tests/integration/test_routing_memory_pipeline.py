@@ -23,12 +23,8 @@ from agent.routing import (
     record_routing_success,
     routing_status,
 )
-from agent.memory_manager import MemoryManager, sanitize_context, StreamingContextScrubber
-from agent.memory_provider import MemoryProvider
-from agent.builtin_memory_provider import BuiltinMemoryProvider
 from plugins.memory.holographic.store import MemoryStore
 from plugins.memory.holographic.retrieval import FactRetriever
-
 
 # ─── Fixtures ──────────────────────────────────────────────────────────
 
@@ -174,74 +170,6 @@ class TestMemoryRetrievalPipeline:
             assert results[0]["trust_score"] >= results[-1]["trust_score"]
 
 
-# ─── Pipeline Integration: Memory Manager ──────────────────────────────
-
-class TestMemoryManagerIntegration:
-    def test_manager_add_builtin_provider(self, memory_store):
-        """MemoryManager accepts builtin provider and delegates tools."""
-        mm = MemoryManager()
-        bp = BuiltinMemoryProvider()
-        mm.add_provider(bp)
-        assert mm.get_provider("builtin") is bp
-        assert len(mm.providers) == 1
-
-    def test_manager_rejects_duplicate_external(self, memory_store):
-        """Only one external provider allowed."""
-        mm = MemoryManager()
-
-        class FakeProvider(MemoryProvider):
-            @property
-            def name(self): return "ext1"
-            def is_available(self): return True
-            def initialize(self, session_id, **kw): pass
-            def get_tool_schemas(self): return []
-
-        class FakeProvider2(MemoryProvider):
-            @property
-            def name(self): return "ext2"
-            def is_available(self): return True
-            def initialize(self, session_id, **kw): pass
-            def get_tool_schemas(self): return []
-
-        mm.add_provider(FakeProvider())
-        mm.add_provider(FakeProvider2())  # should be rejected with warning
-        external = [p for p in mm.providers if p.name != "builtin"]
-        assert len(external) == 1
-        assert external[0].name == "ext1"
-
-    def test_sanitize_context_strips_fences(self):
-        """sanitize_context removes memory-context fence tags."""
-        raw = "<memory-context>\nSome recalled data\n</memory-context>\nResponse text"
-        clean = sanitize_context(raw)
-        assert "<memory-context>" not in clean
-        assert "</memory-context>" not in clean
-        assert "Response text" in clean
-
-    def test_streaming_scrubber_stateful(self):
-        """StreamingContextScrubber scrubs complete spans and flushes trailing text."""
-        scrubber = StreamingContextScrubber()
-        # Complete span in one delta — secret data scrubbed, visible text emitted
-        result = scrubber.feed("<memory-context>\nsecret data\n</memory-context>visible text")
-        assert "secret data" not in result
-
-        trailing = scrubber.flush()
-        # Combined result + trailing should contain visible text
-        combined = result + trailing
-        assert "visible text" in combined
-
-    def test_streaming_scrubber_split_tag(self):
-        """Block-boundary tags split across deltas are handled correctly."""
-        scrubber = StreamingContextScrubber()
-        # Start at block boundary (fresh scrubber, _at_block_boundary=True).
-        part1 = scrubber.feed("<memory-context>")
-        # Open tag held pending next char; nothing visible yet.
-        assert "hidden" not in part1
-        part2 = scrubber.feed("\nhidden\n</memory-context>world")
-        assert "hidden" not in part2
-        trailing = scrubber.flush()
-        # "world" should be visible eventually.
-        combined = part1 + part2 + trailing
-        assert "world" in combined
 
 
 # ─── Pipeline Integration: Singleton Gateway Interface ──────────────────

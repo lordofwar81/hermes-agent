@@ -384,16 +384,45 @@ class MemoryStore:
     ) -> None:
         """Mirror a fact into the LanceDB vector store (dual-mode memory).
 
-        Only called for newly-inserted facts (add_fact returns early on duplicate
-        content via the UNIQUE constraint), so re-mirging the same fact cannot
-        happen. Failure here is non-fatal — callers wrap this in try/except.
-        Imports lazily so the holographic store keeps working even if
-        vector_memory / LanceDB is unavailable.
+        Guarded against re-mirroring: facts get pruned and re-added with identical
+        content across hippocampus cycles, and add_fact dedups on SQLite UNIQUE
+        (which resets on delete) — so without this guard the same text accumulates
+        100+ duplicate vectors over time, poisoning recall. We check the vector
+        store for an existing matching text before adding. Failure here is
+        non-fatal — callers wrap this in try/except. Imports lazily so the
+        holographic store keeps working even if vector_memory / LanceDB is
+        unavailable.
         """
         source_tag = f"holographic#{fact_id}"
         from tools.vector_memory import VectorMemoryStore
 
-        store = VectorMemoryStore()
+        # Cache the vector store instance to avoid re-importing LanceDB
+        # and reconnecting on every add_fact call (~340ms overhead each).
+        if not hasattr(self, "_vector_store_cache") or self._vector_store_cache is None:
+            try:
+                self._vector_store_cache = VectorMemoryStore()
+            except Exception:
+                self._vector_store_cache = None
+                return
+
+        store = self._vector_store_cache
+        if store is None:
+            return
+
+        # Dedup guard: skip if this exact text is already mirrored. The table is
+        # small (hundreds of rows); a pandas filter is cheaper than a re-embed
+        # + duplicate insert, and avoids the duplication that historically built
+        # up to 6x. Normalize whitespace for a robust match.
+        try:
+            import re as _re
+            _norm = _re.sub(r"\s+", " ", content.strip()).lower()
+            _existing = store.table.to_pandas()["text"].tolist()
+            for _t in _existing:
+                if _re.sub(r"\s+", " ", str(_t).strip()).lower() == _norm:
+                    return  # already mirrored — skip
+        except Exception:
+            pass  # if the guard itself fails, fall through to add (best-effort)
+
         store.add_memory(
             text=content,
             source=source_tag,

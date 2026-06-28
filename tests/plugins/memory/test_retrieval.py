@@ -315,6 +315,39 @@ class TestTemporalDecay:
         fr.half_life = 10
         assert fr._temporal_decay(None) == 1.0
 
+    def test_decay_parses_z_suffix(self):
+        """A timestamp ending in 'Z' (UTC Zulu) must parse, not silently fall
+        through to the exception path returning 1.0. This pins the
+        ``replace("Z", "+00:00")`` normalization — a mutant that breaks the
+        replace (e.g. searching for a different substring) must be caught."""
+        from plugins.memory.holographic.retrieval import FactRetriever
+        from datetime import datetime, timezone, timedelta
+        fr = FactRetriever.__new__(FactRetriever)
+        fr.half_life = 10
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        decay = fr._temporal_decay(old_ts)
+        # 20 days / 10-day half-life -> 0.5^2 = 0.25. If the Z-suffix wasn't
+        # normalized, fromisoformat raises and the method returns 1.0 (no decay).
+        assert decay == pytest.approx(0.25, abs=0.01)
+        assert decay < 0.5  # confirm decay actually happened (not the 1.0 fallback)
+
+    def test_decay_precision_seconds_per_day(self):
+        """Pin the age-to-decay math on a short, known age. A 1-day-old fact
+        with a 10-day half-life decays to 0.5^(0.1) = 0.9330. This catches
+        gross divisor errors (e.g. /8640, /864000) and confirms the seconds-
+        per-day conversion is in the right order of magnitude. Note: an
+        off-by-one (/86400 -> /86401) produces ~1e-6 drift, below practical
+        detection — that mutant is equivalent for realistic decay windows."""
+        from plugins.memory.holographic.retrieval import FactRetriever
+        from datetime import datetime, timezone, timedelta
+        import math
+        fr = FactRetriever.__new__(FactRetriever)
+        fr.half_life = 10
+        one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        decay = fr._temporal_decay(one_day_ago)
+        expected = math.pow(0.5, 1.0 / 10.0)
+        assert decay == pytest.approx(expected, rel=1e-4)
+
 
 # ─── Trust Boost on Retrieval ──────────────────────────────────────────
 

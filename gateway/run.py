@@ -1275,6 +1275,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.multiplex_mixin import MultiplexAdaptersMixin
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.session_cache_mixin import GatewaySessionCacheMixin
 from gateway.process_mixin import GatewayProcessMixin
@@ -1569,6 +1570,26 @@ def _teams_pipeline_plugin_enabled() -> bool:
     if not isinstance(enabled, list):
         return False
     return "teams_pipeline" in enabled or "teams-pipeline" in enabled
+
+
+def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
+    """True when gateway.message_timestamps.enabled is opted in.
+
+    Default OFF: injecting a ``[Tue 2026-04-28 13:40:53 CEST]`` prefix onto
+    every user message changes what the model sees for all gateway users, so
+    it must be explicitly enabled in config.yaml under
+    ``gateway.message_timestamps.enabled``.
+    """
+    if not isinstance(user_config, dict):
+        return False
+    gw = user_config.get("gateway")
+    if not isinstance(gw, dict):
+        return False
+    mt = gw.get("message_timestamps")
+    if isinstance(mt, dict):
+        return bool(mt.get("enabled", False))
+    # Allow a bare ``message_timestamps: true`` shorthand.
+    return bool(mt)
 
 
 def _load_gateway_config() -> dict:
@@ -1927,7 +1948,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin, AsyncDelegationMixin, SlashConfirmMixin, McpReloadMixin, MediaDeliveryMixin, InboundTextMixin, StartupPreflightMixin, GatewayStopMixin, BusyAgentDispatchMixin, HandleMessageWithAgentMixin, RunAgentMixin, RunAgentViaProxyMixin, GatewayStartMixin, HandleMessageMixin):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin, GatewayGoalsMixin, GatewayRunningMixin, GatewayStartupMixin, GatewayVoiceMixin, GatewayTelegramTopicsMixin, GatewayProcessMixin, GatewaySessionCacheMixin, GatewayExitRequestMixin, GatewayActiveSessionMixin, GatewaySessionKeyMixin, GatewayAgentCacheMixin, GatewayUpdateProgressMixin, GatewayDrainQueueMixin, GatewayTranscriptionMixin, GatewayPlatformFailoverMixin, GatewaySessionMiscMixin, MiscTinyMixin, RestartNotifyMixin, GoalContinuationMixin, BackgroundTaskMixin, CreateAdapterMixin, MultiplexAdaptersMixin, SessionExpiryMixin, TeamsDockerMediaMixin, TurnAgentConfigMixin, PlatformReconnectMixin, AsyncDelegationMixin, SlashConfirmMixin, McpReloadMixin, MediaDeliveryMixin, InboundTextMixin, StartupPreflightMixin, GatewayStopMixin, BusyAgentDispatchMixin, HandleMessageWithAgentMixin, RunAgentMixin, RunAgentViaProxyMixin, GatewayStartMixin, HandleMessageMixin):
     """
     Main gateway controller.
 

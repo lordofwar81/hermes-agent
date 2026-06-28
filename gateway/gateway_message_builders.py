@@ -84,6 +84,7 @@ def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
     channel_prompt: Optional[str] = None,
+    inject_timestamps: bool = False,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
@@ -92,8 +93,18 @@ def _build_gateway_agent_history(
     turns.  Keeping that context out of ``conversation_history`` avoids
     consecutive-user repair merging it with the live user turn and then hiding
     the current message behind ``history_offset`` during persistence.
+
+    When ``inject_timestamps`` is True (gateway.message_timestamps.enabled),
+    each replayed user message is rendered with a single human-readable
+    timestamp prefix from its stored metadata.
     """
 
+    from hermes_time import get_timezone as _get_msg_tz
+    from gateway.message_timestamps import (
+        render_user_content_with_timestamp as _render_msg_ts,
+    )
+
+    _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
@@ -113,6 +124,8 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
+        if inject_timestamps and role == "user" and isinstance(content, str):
+            content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
             observed_group_context.append(str(content).strip())
             continue

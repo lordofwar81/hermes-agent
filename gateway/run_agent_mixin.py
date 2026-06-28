@@ -154,6 +154,7 @@ class RunAgentMixin:
             _is_control_interrupt_message,
             _is_fresh_gateway_interruption,
             _load_gateway_config,
+            _message_timestamps_enabled,
             _platform_config_key,
             _prepare_gateway_status_message,
             _preserve_queued_followup_history_offset,
@@ -1402,6 +1403,7 @@ class RunAgentMixin:
             agent_history, observed_group_context = _build_gateway_agent_history(
                 history,
                 channel_prompt=channel_prompt,
+                inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
             )
             
             # Collect MEDIA paths already in history so we can exclude them

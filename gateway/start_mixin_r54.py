@@ -45,7 +45,6 @@ import time
 from gateway.config import Platform
 from gateway.gateway_agent_mgmt import _update_platform_runtime_status
 from gateway.gateway_async_utils import (
-    _connect_adapter_with_timeout,
     _safe_adapter_disconnect,
 )
 
@@ -133,7 +132,7 @@ class GatewayStartMixin:
                 error_message=None,
             )
             try:
-                success = await _connect_adapter_with_timeout(adapter, platform)
+                success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)

@@ -56,7 +56,6 @@ from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource, is_shared_multi_user_session
 from gateway.gateway_message_builders import _build_document_context_note
 from gateway.gateway_message_pipeline import (
-    _decide_image_input_mode,
     _enrich_message_with_vision,
     _thread_metadata_for_source,
 )
@@ -139,7 +138,7 @@ class InboundTextMixin:
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
                 # pre-run + prepend description).  See agent/image_routing.py.
-                _img_mode = _decide_image_input_mode()
+                _img_mode = self._decide_image_input_mode()
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
                     pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -291,7 +290,18 @@ class InboundTextMixin:
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            # When the user is replying to the agent's OWN prior message, mark
+            # it explicitly so the agent knows this is a follow-up to something
+            # it said, not a quote of another user (#96db7c688). Restored from
+            # commit 96db7c688 after the gateway decomposition refactor dropped
+            # the own-message branch.
+            if getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                    f"{message_text}"
+                )
+            else:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

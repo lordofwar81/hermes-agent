@@ -1073,6 +1073,7 @@ class TestAuxiliaryClientProviderPriority:
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-tok"), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client()
         assert client is None

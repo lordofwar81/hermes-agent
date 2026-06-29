@@ -213,6 +213,12 @@ def check_cross_references(root: Path = SKILLS_ROOT) -> List[Finding]:
             # Slug is the relative path from root
             valid_slugs.add(str(skill_dir.relative_to(root)))
 
+    # Also accept bare skill names (the final path segment) as valid — skills
+    # legitimately reference each other by bare slug (e.g. name="architecture-diagram"),
+    # which Hermes resolves at runtime, even though valid_slugs stores full paths
+    # like "creative/architecture-diagram".
+    bare_slugs = {slug.split("/")[-1] for slug in valid_slugs}
+
     findings: List[Finding] = []
     # Pattern: references like skill_view(name='other-skill') or skill_manage
     ref_pattern = re.compile(r"(?:skill_view|skill_manage|load.*skill).*?name\s*[=:]\s*['\"]([^'\"]+)['\"]")
@@ -228,11 +234,16 @@ def check_cross_references(root: Path = SKILLS_ROOT) -> List[Finding]:
             continue
 
         skill_name = str(skill_dir.relative_to(root))
+        own_bare = skill_name.split("/")[-1]
         lines = content.splitlines()
         for line_num, line in enumerate(lines, start=1):
             for m in ref_pattern.finditer(line):
                 ref_slug = m.group(1)
-                if ref_slug not in valid_slugs and not ref_slug.startswith("plugin:"):
+                # A skill referencing its own slug (e.g. loading its own
+                # template) is a legitimate self-reference, not a broken link.
+                if ref_slug == own_bare:
+                    continue
+                if ref_slug not in valid_slugs and ref_slug not in bare_slugs and not ref_slug.startswith("plugin:"):
                     findings.append(Finding(
                         skill=skill_name, file=skill_file, line=line_num,
                         severity="warn", pattern="cross_ref",

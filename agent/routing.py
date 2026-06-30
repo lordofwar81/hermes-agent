@@ -336,6 +336,38 @@ class TaskClassifier:
                 return cat
         return None
 
+    # Cached classifier provider/model from config. Read once, lives for the
+    # process lifetime — the semantic classifier runs on a fixed aux model
+    # and config changes take effect on gateway restart anyway.
+    _clf_provider: Optional[str] = None
+    _clf_model: Optional[str] = None
+    _clf_config_loaded: bool = False
+
+    @classmethod
+    def _load_clf_config(cls) -> tuple:
+        """Resolve (provider, model) for the semantic classifier.
+
+        Reads config once and caches the result. Returns (provider, model).
+        """
+        if cls._clf_config_loaded:
+            return cls._clf_provider or "zai", cls._clf_model or "glm-4.7"
+        provider, model = "zai", "glm-4.7"
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            aux = cfg.get("auxiliary", {})
+            if isinstance(aux, dict):
+                clf_cfg = aux.get("classifier", {})
+                if isinstance(clf_cfg, dict):
+                    provider = clf_cfg.get("provider", provider)
+                    model = clf_cfg.get("model", model)
+        except Exception:
+            pass
+        cls._clf_provider = provider
+        cls._clf_model = model
+        cls._clf_config_loaded = True
+        return provider, model
+
     @classmethod
     @lru_cache(maxsize=512)
     def classify_semantic(cls, message: str) -> Optional["Category"]:
@@ -350,30 +382,15 @@ class TaskClassifier:
 
         Provider/model resolution: reads ``auxiliary.classifier.{provider,model}``
         from config if present; defaults to ``zai``/``glm-4.7`` (the
-        cheap model per auxiliary_client.py:340).
+        cheap model per auxiliary_client.py:340). Config is read once and
+        cached for the process lifetime.
         """
         if not message or not message.strip():
             return None
         try:
             from agent.auxiliary_client import call_llm
             messages = cls._build_classify_prompt(message)
-
-            # Resolve provider/model: config override first, then the cheap
-            # default. This keeps the classifier on the fast/cheap model
-            # regardless of the main turn's provider.
-            provider = "zai"
-            model = "glm-4.7"
-            try:
-                from hermes_cli.config import load_config
-                cfg = load_config() or {}
-                aux = cfg.get("auxiliary", {})
-                if isinstance(aux, dict):
-                    clf_cfg = aux.get("classifier", {})
-                    if isinstance(clf_cfg, dict):
-                        provider = clf_cfg.get("provider", provider)
-                        model = clf_cfg.get("model", model)
-            except Exception:
-                pass  # config read failure → use defaults
+            provider, model = cls._load_clf_config()
 
             response = call_llm(
                 provider=provider,
@@ -401,10 +418,7 @@ class TaskClassifier:
             return None
 
 
-# ─── Circuit Breaker ─────────────────────────────────────────────────────
 
-
-# ─── Circuit Breaker ─────────────────────────────────────────────────────
 
 class CircuitBreaker:
     """Per-provider circuit breaker with automatic recovery.

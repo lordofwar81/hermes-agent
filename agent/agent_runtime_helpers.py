@@ -437,6 +437,41 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 continue
         merged.append(msg)
 
+    # Pass 3: merge consecutive assistant messages. Some local servers
+    # (llama.cpp-based, e.g. the gemma-4-26b-a4b endpoint) reject a
+    # transcript ending in two or more assistant turns with HTTP 400
+    # "Cannot have 2 or more assistant messages at the end of the list".
+    # This shape arises when a saved assistant reply is followed by
+    # another assistant turn (resume, title/summary injection, a
+    # completed tool-loop continuation appended before the next user
+    # turn). Merge plain-text assistant runs so the tail is a single
+    # assistant message. Assistant messages carrying tool_calls are left
+    # intact — merging them would corrupt tool-call/result pairing.
+    merged_assistant: List[Dict] = []
+    for msg in merged:
+        if (
+            merged_assistant
+            and isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and not (msg.get("tool_calls"))
+            and isinstance(merged_assistant[-1], dict)
+            and merged_assistant[-1].get("role") == "assistant"
+            and not (merged_assistant[-1].get("tool_calls"))
+        ):
+            prev = merged_assistant[-1]
+            prev_content = prev.get("content", "")
+            new_content = msg.get("content", "")
+            if isinstance(prev_content, str) and isinstance(new_content, str):
+                prev["content"] = (
+                    (prev_content + "\n\n" + new_content)
+                    if prev_content and new_content
+                    else (prev_content or new_content)
+                )
+                repairs += 1
+                continue
+        merged_assistant.append(msg)
+    merged = merged_assistant
+
     if repairs > 0:
         # Rewrite in place so downstream paths (persistence, return
         # value, session DB flush) see the repaired sequence.

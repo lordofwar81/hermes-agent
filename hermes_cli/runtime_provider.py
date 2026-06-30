@@ -1881,7 +1881,7 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)
-        return {
+        runtime = {
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
@@ -1889,6 +1889,35 @@ def resolve_runtime_provider(
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
+        # Attach the credential pool when the resolved key belongs to a
+        # multi-entry pool for this provider. Without this, api_key providers
+        # (e.g. Z.AI) carry NO pool at runtime, so a single spurious upstream
+        # 401 (Z.AI intermittently returns "token expired or incorrect" on
+        # a valid key) hits recover_with_credential_pool -> "if pool is
+        # None: return False" and aborts the turn immediately as
+        # "Provider authentication failed" -- never rotating to the
+        # alternate key that is also configured. Pin the pool's current
+        # entry to the key actually resolved so the recovery loop rotates
+        # to the OTHER entry on failure, not back to the same key.
+        _resolved_key = (creds.get("api_key", "") or "").strip()
+        if _resolved_key:
+            try:
+                _api_pool = load_pool(provider)
+            except Exception:
+                _api_pool = None
+            if _api_pool and _api_pool.has_credentials():
+                _matched_id = None
+                for _e in getattr(_api_pool, "_entries", []):
+                    if (getattr(_e, "runtime_api_key", "") or "").strip() == _resolved_key:
+                        _matched_id = getattr(_e, "id", None)
+                        break
+                if _matched_id is not None:
+                    try:
+                        _api_pool.acquire_lease(_matched_id)
+                    except Exception:
+                        pass
+                    runtime["credential_pool"] = _api_pool
+        return runtime
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,

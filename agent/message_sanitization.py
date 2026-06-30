@@ -182,6 +182,69 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _try_merge_concatenated_objects(raw: str) -> str | None:
+    """Merge two-or-more concatenated JSON objects into one JSON object string.
+
+    Returns the merged JSON (compact, ASCII-safe) if the input is exactly
+    N complete JSON objects concatenated (e.g. ``{"a":1}{"b":2}``), or
+    ``None`` if the input is not that shape.  ``None`` lets the caller
+    fall through to the empty-object fallback rather than guessing.
+
+    Only triggers on the concatenated-objects shape — a single valid
+    object is handled by earlier repair passes, and genuinely broken
+    JSON (truncated, malformed) is left for those passes too.
+    """
+    if not raw or raw[0] != "{":
+        return None
+    # Walk the string tracking string-state and brace depth; collect the
+    # slice of each top-level object. Bail out (return None) on any
+    # character that breaks the "pure concatenation of {…} objects" shape.
+    objects: list[str] = []
+    depth = 0
+    in_str = False
+    escape = False
+    start = 0
+    for i, ch in enumerate(raw):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return None  # unbalanced — not our shape
+            if depth == 0:
+                objects.append(raw[start : i + 1])
+        elif depth == 0 and not ch.isspace():
+            # Top-level junk between objects (e.g. trailing commas,
+            # prose) means this isn't pure concatenation.
+            return None
+    if depth != 0 or len(objects) < 2:
+        return None
+
+    merged: dict = {}
+    for obj_str in objects:
+        try:
+            parsed = json.loads(obj_str, strict=False)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None  # one bad object aborts the merge
+        if isinstance(parsed, dict):
+            # Skip empty {} prefixes the model sometimes emits; keep
+            # their nothingness out of the merge but don't fail.
+            merged.update(parsed)
+    return json.dumps(merged, separators=(",", ":"), ensure_ascii=True)
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -268,6 +331,24 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             return escaped
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
+    # Repair pass 5: concatenated JSON objects. Models (notably GLM-5.x
+    # via the z.ai gateway and local Gemma) sometimes emit two or more
+    # complete JSON objects smashed together for a single tool_call —
+    # e.g. '{"path":"x"}{"command":"y"}', or an empty prefix
+    # '{"}{"limit":"5"}'. The JSON decoder rejects the whole blob, the
+    # passes above can't split it, and the call would be nuked to {}.
+    # Observed daily in errors.log ("Unrepairable tool_call arguments").
+    # Split on object boundaries, parse each, merge into one dict
+    # (later keys win — matches the model's intent of emitting the real
+    # args after any stray/empty prefix).
+    merged = _try_merge_concatenated_objects(raw_stripped)
+    if merged is not None:
+        logger.warning(
+            "Repaired concatenated tool_call arguments for %s: %s → %s",
+            tool_name, raw_stripped[:80], merged[:80],
+        )
+        return merged
 
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.

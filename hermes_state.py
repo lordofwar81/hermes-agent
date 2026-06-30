@@ -2620,13 +2620,9 @@ class SessionDB:
                         message_timestamp = float(ts_value)
                 except (TypeError, ValueError):
                     logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
-            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
-            codex_reasoning_items = (
-                msg.get("codex_reasoning_items") if role == "assistant" else None
-            )
-            codex_message_items = (
-                msg.get("codex_message_items") if role == "assistant" else None
-            )
+            reasoning_details = msg.get("reasoning_details")
+            codex_reasoning_items = msg.get("codex_reasoning_items")
+            codex_message_items = msg.get("codex_message_items")
             reasoning_details_json = (
                 json.dumps(reasoning_details) if reasoning_details else None
             )
@@ -2659,8 +2655,8 @@ class SessionDB:
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    msg.get("reasoning") if role == "assistant" else None,
-                    msg.get("reasoning_content") if role == "assistant" else None,
+                    msg.get("reasoning"),
+                    msg.get("reasoning_content"),
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
@@ -2799,6 +2795,7 @@ class SessionDB:
         session_id: str,
         around_message_id: int,
         window: int = 5,
+        include_inactive: bool = False,
     ) -> Dict[str, Any]:
         """Load a window of messages anchored on a specific message id.
 
@@ -2823,8 +2820,9 @@ class SessionDB:
             window = 0
         with self._lock:
             # Confirm the anchor exists in this session.
+            active_filter = "" if include_inactive else " AND (active = 1 OR compacted = 1)"
             anchor_exists = self._conn.execute(
-                "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
+                f"SELECT 1 FROM messages WHERE id = ? AND session_id = ?{active_filter} LIMIT 1",
                 (around_message_id, session_id),
             ).fetchone()
             if not anchor_exists:
@@ -2833,15 +2831,15 @@ class SessionDB:
             # Two queries: anchor + before (DESC, take window+1), and after
             # (ASC, take window). Final order is id ASC.
             before_rows = self._conn.execute(
-                "SELECT * FROM messages "
-                "WHERE session_id = ? AND id <= ? "
-                "ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages "
+                f"WHERE session_id = ? AND id <= ?{active_filter} "
+                f"ORDER BY id DESC LIMIT ?",
                 (session_id, around_message_id, window + 1),
             ).fetchall()
             after_rows = self._conn.execute(
-                "SELECT * FROM messages "
-                "WHERE session_id = ? AND id > ? "
-                "ORDER BY id ASC LIMIT ?",
+                f"SELECT * FROM messages "
+                f"WHERE session_id = ? AND id > ?{active_filter} "
+                f"ORDER BY id ASC LIMIT ?",
                 (session_id, around_message_id, window),
             ).fetchall()
 
@@ -2956,6 +2954,7 @@ class SessionDB:
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
                     f"AND length(content) > 0 "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
                 ).fetchall()
@@ -2964,6 +2963,7 @@ class SessionDB:
                     f"SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
                     f"AND length(content) > 0 "
+                    f"AND (active = 1 OR compacted = 1) "
                     f"ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),
                 ).fetchall()

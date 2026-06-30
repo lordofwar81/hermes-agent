@@ -37,7 +37,25 @@ from agent.routing import (
     routing_status,
     FAILURE_THRESHOLD,
     RECOVERY_TIMEOUT_SECONDS,
+    SESSION_ACTIVE_WINDOW_S,
+    SESSION_MIN_PRIOR_TURNS,
+    SESSION_UPGRADE_CATEGORY,
+    SUBSTANTIVE_CATEGORIES,
 )
+
+
+# ─── Singleton cleanup ──────────────────────────────────────────────────
+# Several test classes initialize the global router singleton (init_router).
+# Without resetting it after each test, a leaked _instance pollutes downstream
+# test modules (e.g. gateway tests) whose _resolve_turn_agent_config would
+# then route against a stale test router. This autouse fixture guarantees the
+# singleton is cleared after every test in this module, regardless of which
+# class/method touched it.
+@pytest.fixture(autouse=True)
+def _reset_router_singleton():
+    yield
+    import agent.routing as routing_mod
+    routing_mod._instance = None
 
 
 # ─── Test Config ─────────────────────────────────────────────────────────
@@ -349,14 +367,56 @@ class TestBudgetTracker:
             assert not bt.is_available()
 
     def test_daily_reset(self):
+        # Cycle label changes → budget resets even if spend was maxed.
         with tempfile.TemporaryDirectory() as tmpdir:
             bt = self._isolated_tracker(10.0, tmpdir)
             bt.record(10.0)
             bt._cache = None
             assert not bt.is_available()
-            mock_dt = MagicMock()
-            mock_dt.strftime.return_value = "2099-01-01"
-            with patch.object(bt, "_now_pst", return_value=mock_dt):
+            # Next cycle label → tracker treats it as a fresh cycle.
+            with patch.object(bt, "_budget_cycle_label", return_value="2099-01-01"):
+                bt._cache = None
+                assert bt.is_available()
+
+    # ── 5pm PT boundary (BUDGET_RESET_HOUR_PST = 17) ────────────────────
+    # Venice resets at 5pm Pacific, not midnight. These tests pin the cycle
+    # label logic so spend recorded just before vs just after 5pm lands in
+    # the correct cycle. Uses real datetime objects (no MagicMock strftime).
+
+    def _dt(self, y, mo, d, h, mi=0):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime(y, mo, d, h, mi, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    def test_before_5pm_belongs_to_prior_days_cycle(self):
+        # 2026-06-26 16:00 PT → still in the cycle that started 06-25 17:00.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 16)) == "2026-06-25"
+
+    def test_at_exactly_5pm_starts_new_cycle(self):
+        # 2026-06-26 17:00 PT → new cycle, label = 06-26.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 17)) == "2026-06-26"
+
+    def test_after_5pm_same_cycle_as_tomorrow_morning(self):
+        # 06-26 23:00 and 06-27 04:00 are both in the 06-26 cycle.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 23)) == "2026-06-26"
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 27, 4)) == "2026-06-26"
+
+    def test_spend_before_5pm_not_reset_by_midnight_rollover(self):
+        # Regression guard for the original bug: a file stamped "today" at
+        # 4pm must NOT be considered a new cycle just because the calendar
+        # date rolled past midnight. With the 5pm rule, the file written at
+        # 4pm on the 26th has last_reset = cycle_label(26th 4pm) = "25th".
+        # A read at 11pm same calendar day sees cycle_label(26th 23:00) = "26th"
+        # → different label → correctly resets (the 5pm boundary crossed).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bt = self._isolated_tracker(10.0, tmpdir)
+            with patch.object(BudgetTracker, "_now_pst", return_value=self._dt(2026, 6, 26, 16)):
+                bt.record(10.0)
+                bt._cache = None
+                assert not bt.is_available()
+            # 11pm same calendar day — midnight-rollover rule would NOT reset
+            # (same date string), but 5pm rule SHOULD (boundary crossed).
+            with patch.object(BudgetTracker, "_now_pst", return_value=self._dt(2026, 6, 26, 23)):
                 bt._cache = None
                 assert bt.is_available()
 
@@ -617,6 +677,124 @@ class TestRouter:
         result = router.route("debug this code", self._primary_config())
         assert result.provider == "zai"
         assert result.model == "glm-5"
+
+
+# ─── Session-Aware Routing Guard Tests ────────────────────────────────────
+
+class TestSessionAwareRouting:
+    """The session-aware guard: once a session has had substantive work,
+    a later SIMPLE/GREETING turn is upgraded so it is not routed to a
+    tool-less local model mid-conversation. Regression coverage for the
+    2026-06-25 incident where turn 8 of a 51-tool-call session got
+    dumped to a slow local model because 'estradiol was high...' hit the
+    keyword default."""
+
+    def teardown_method(self):
+        # Reset the router singleton so tests that go through route_turn
+        # (the gateway entry point) don't leak a test router into other
+        # test modules that rely on _instance being None by default.
+        import agent.routing as routing_mod
+        routing_mod._instance = None
+
+    def _make_router(self, config=None):
+        return Router(config or make_test_config())
+
+    def _primary_config(self):
+        return {
+            "model": "glm-5-turbo",
+            "base_url": "https://api.zai.ai/v1",
+            "api_key": "primary-key",
+            "provider": "primary",
+        }
+
+    def test_no_session_key_preserves_original_behavior(self):
+        """Omitting session_key (cron, one-shot CLI) must behave exactly as
+        before — no upgrade, no recording."""
+        router = self._make_router()
+        result = router.route("hello", self._primary_config())
+        assert result.category == Category.GREETING
+        assert result.suppress_tools
+
+    def test_inactive_session_not_upgraded(self):
+        """A fresh session_key with no prior substantive turns must NOT
+        upgrade — the first message of a chat can still be a greeting."""
+        router = self._make_router()
+        result = router.route("hello", self._primary_config(), session_key="s1")
+        assert result.category == Category.GREETING
+        assert result.suppress_tools
+
+    def test_substantive_turn_activates_session(self):
+        """A CODE turn marks the session active."""
+        router = self._make_router()
+        router.route("debug the crash", self._primary_config(), session_key="s1")
+        assert router._session_is_active("s1")
+
+    def test_trivial_turn_does_not_activate_session(self):
+        """A GREETING/SIMPLE turn must NOT mark the session active — a lone
+        'hello' shouldn't make the next turn eligible for upgrade."""
+        router = self._make_router()
+        router.route("hello", self._primary_config(), session_key="s1")
+        assert not router._session_is_active("s1")
+
+    def test_active_session_upgrades_simple_to_code(self):
+        """The core fix: after a substantive turn, a SIMPLE message is
+        upgraded to CODE (API-first, tools enabled)."""
+        router = self._make_router()
+        # turn 1: substantive
+        router.route("debug the crash", self._primary_config(), session_key="s1")
+        # turn 2: would-be SIMPLE
+        result = router.route("what time is it", self._primary_config(), session_key="s1")
+        assert result.category == Category.CODE
+        # upgraded turn must keep tools enabled (CODE is not suppressed)
+        assert not result.suppress_tools
+
+    def test_active_session_upgrades_greeting_to_code(self):
+        """Same guard for GREETING — the estradiol incident was a short
+        reply misread as trivial."""
+        router = self._make_router()
+        router.route("implement the feature", self._primary_config(), session_key="s1")
+        result = router.route("ok", self._primary_config(), session_key="s1")
+        assert result.category == Category.CODE
+        assert not result.suppress_tools
+
+    def test_sessions_are_isolated(self):
+        """Activity in session A must not upgrade a turn in session B."""
+        router = self._make_router()
+        router.route("debug this", self._primary_config(), session_key="A")
+        # session B has no history
+        result = router.route("ok", self._primary_config(), session_key="B")
+        assert result.category == Category.GREETING
+
+    def test_window_expiry_deactivates_session(self):
+        """After SESSION_ACTIVE_WINDOW_S with no substantive turn, the
+        session is no longer active and turns are not upgraded."""
+        router = self._make_router()
+        router.route("debug this", self._primary_config(), session_key="s1")
+        # Backdate the recorded timestamp past the window
+        stale = time.time() - SESSION_ACTIVE_WINDOW_S - 1
+        router._session_activity["s1"] = [stale]
+        assert not router._session_is_active("s1")
+        result = router.route("ok", self._primary_config(), session_key="s1")
+        assert result.category == Category.GREETING
+
+    def test_route_turn_threads_session_key(self):
+        """The gateway entry point must honor session_key end-to-end."""
+        import agent.routing as routing_mod
+        routing_mod._instance = None
+        init_router(make_test_config())
+        # prime the session
+        route_turn("debug the crash", self._primary_config(), session_key="sx")
+        result = route_turn("ok", self._primary_config(), session_key="sx")
+        assert result is not None
+        assert result.category == Category.CODE
+        routing_mod._instance = None
+
+    def test_activity_buffer_is_bounded(self):
+        """Very long sessions must not grow the activity list unbounded."""
+        router = self._make_router()
+        for _ in range(200):
+            router.route("debug this", self._primary_config(), session_key="long")
+        assert len(router._session_activity["long"]) <= 64
 
 
 # ─── Singleton Interface Tests ────────────────────────────────────────────

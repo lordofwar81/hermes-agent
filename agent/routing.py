@@ -43,6 +43,19 @@ RECOVERY_TIMEOUT_SECONDS = 180  # 3 minutes per blocked provider
 HEALTH_CHECK_TIMEOUT = 5        # seconds for local model pre-flight ping
 HEALTH_CACHE_TTL = 30           # seconds between health checks
 LOCAL_CONTEXT_RATIO = 0.6       # use 60% of local model context for safety
+BUDGET_RESET_HOUR_PST = 17      # Venice account quota resets 5pm Pacific
+
+# Session-aware routing guard. Once a session has had substantive work
+# (a prior turn classified as CODE/REASONING/ANALYSIS/EXPERT), a later
+# short/casual message that would otherwise classify as SIMPLE or
+# GREETING is upgraded so it is NOT routed to a tool-less local model
+# mid-conversation. The classifier is stateless per turn; without this
+# guard, turn 8 of a 51-tool-call session can still get dumped to a
+# slow local model because one short reply ("estradiol was high...")
+# hit the keyword default. See routing_history.jsonl 2026-06-25.
+SESSION_ACTIVE_WINDOW_S = 1800  # a session counts as "active" for 30 min
+SESSION_MIN_PRIOR_TURNS = 1     # >=1 prior substantive turn triggers guard
+SESSION_UPGRADE_CATEGORY = None  # set below after Category is defined
 
 
 # ─── Task Categories ─────────────────────────────────────────────────────
@@ -55,6 +68,18 @@ class Category(Enum):
     REASONING = "reasoning"    # explain why, how, design questions
     ANALYSIS = "analysis"      # compare, evaluate, audit, metrics
     EXPERT = "expert"          # full system design, end-to-end, multi-step
+
+
+# Categories that represent substantive work. Seeing one of these in a
+# session's recent history marks the session as "active" and triggers the
+# session-aware guard for subsequent SIMPLE/GREETING turns.
+SUBSTANTIVE_CATEGORIES = frozenset(
+    {Category.CODE, Category.REASONING, Category.ANALYSIS, Category.EXPERT}
+)
+# When a SIMPLE/GREETING turn is upgraded inside an active session, it is
+# promoted to CODE — the safe default that is API-first in every chain and
+# keeps tools enabled (so a follow-up question mid-task still has tools).
+SESSION_UPGRADE_CATEGORY = Category.CODE
 
 
 # ─── Data Classes ────────────────────────────────────────────────────────
@@ -487,7 +512,7 @@ class BudgetTracker:
             return self._cache
 
         now_pst = self._now_pst()
-        date_str = now_pst.strftime("%Y-%m-%d")
+        date_str = self._budget_cycle_label(now_pst)
         data = {"last_reset": date_str, "spent": 0.0}
 
         if self._file.exists():
@@ -528,6 +553,29 @@ class BudgetTracker:
         # the budget day boundary). Name kept for backward compat.
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("America/Los_Angeles"))
+
+    @classmethod
+    def _budget_cycle_label(cls, now_pst: Optional[datetime] = None) -> str:
+        """Label the current Venice budget cycle.
+
+        Venice's account quota resets at 5pm Pacific (BUDGET_RESET_HOUR_PST),
+        not local midnight. So the cycle "2026-06-25" runs from
+        2026-06-25 17:00 PT through 2026-06-26 17:00 PT. A spend recorded at
+        4pm on the 26th still belongs to the 25th's cycle; one at 5:01pm on
+        the 25th belongs to the 26th's.
+
+        Returns a YYYY-MM-DD string: the calendar date of the cycle start.
+        """
+        from zoneinfo import ZoneInfo
+        if now_pst is None:
+            now_pst = cls._now_pst()
+        if now_pst.hour < BUDGET_RESET_HOUR_PST:
+            # Before 5pm: still in the cycle that started yesterday at 5pm.
+            cycle_start = now_pst - timedelta(days=1)
+        else:
+            # 5pm or later: in the cycle that started today at 5pm.
+            cycle_start = now_pst
+        return cycle_start.strftime("%Y-%m-%d")
 
 
 # ─── Provider Registry ───────────────────────────────────────────────────
@@ -669,6 +717,47 @@ class Router:
         )
         from hermes_constants import get_hermes_home
         self._history_file = get_hermes_home() / "routing_history.jsonl"
+        # Per-session record of recent substantive turns, for the
+        # session-aware guard. Maps session_key -> list of timestamps.
+        # Bounded and TTL-pruned so this can't grow unbounded.
+        self._session_activity: Dict[str, list] = {}
+
+    # ─── Session-aware routing guard ──────────────────────────────────────
+
+    def _prune_session(self, session_key: str, now: float) -> None:
+        """Drop expired timestamps for a session (TTL = SESSION_ACTIVE_WINDOW_S)."""
+        window = SESSION_ACTIVE_WINDOW_S
+        buf = self._session_activity.get(session_key)
+        if not buf:
+            return
+        fresh = [ts for ts in buf if now - ts < window]
+        if fresh:
+            self._session_activity[session_key] = fresh
+        else:
+            self._session_activity.pop(session_key, None)
+
+    def _session_is_active(self, session_key: Optional[str]) -> bool:
+        """True if the session has >= SESSION_MIN_PRIOR_TURNS substantive
+        turns within the active window. None/empty session_key → False
+        (preserves the original stateless behavior for callers that don't
+        pass a session, e.g. cron jobs, one-shot CLI invocations)."""
+        if not session_key:
+            return False
+        now = time.time()
+        self._prune_session(session_key, now)
+        return len(self._session_activity.get(session_key, [])) >= SESSION_MIN_PRIOR_TURNS
+
+    def _record_session_turn(self, session_key: Optional[str], category: "Category") -> None:
+        """Record a substantive turn for the session so later SIMPLE/GREETING
+        turns inside the active window get upgraded. Trivial categories are
+        not recorded (a 'hello' shouldn't mark a session as active)."""
+        if not session_key or category not in SUBSTANTIVE_CATEGORIES:
+            return
+        buf = self._session_activity.setdefault(session_key, [])
+        buf.append(time.time())
+        # Hard cap to prevent unbounded growth on very long sessions.
+        if len(buf) > 64:
+            del buf[: len(buf) - 64]
 
     def _record_decision(self, result: "RouteResult", message: str) -> None:
         """Append a routing decision to routing_history.jsonl for observability.
@@ -699,6 +788,7 @@ class Router:
         message: str,
         primary_config: dict,
         suppress_tools_override: Optional[bool] = None,
+        session_key: Optional[str] = None,
     ) -> RouteResult:
         """Route a message to the optimal model.
 
@@ -706,6 +796,12 @@ class Router:
             message: User message text.
             primary_config: Session's primary model config (fallback).
             suppress_tools_override: Force tool suppression on/off.
+            session_key: Session identifier for the session-aware guard.
+                When provided and the session is "active" (has recent
+                substantive turns), a SIMPLE/GREETING classification is
+                upgraded so it is not routed to a tool-less local model
+                mid-conversation. None/empty preserves the original
+                stateless behavior.
 
         Returns:
             RouteResult with model, credentials, and routing metadata.
@@ -722,6 +818,23 @@ class Router:
             pass  # flag module unavailable → keyword path (never block routing)
         if category is None:
             category = TaskClassifier.classify(message)
+
+        # Session-aware guard: don't downgrade a casual reply to a tool-less
+        # local model when it's part of an active working session. The
+        # classifier judges each turn in isolation; this is the only place it
+        # learns the session is mid-task. Upgraded category is recorded below
+        # so the session stays "active" for subsequent turns.
+        original_category = category
+        if (
+            category in (Category.SIMPLE, Category.GREETING)
+            and self._session_is_active(session_key)
+        ):
+            logger.info(
+                "Session %s active — upgrading %s -> %s",
+                session_key, category.value, SESSION_UPGRADE_CATEGORY.value,
+            )
+            category = SESSION_UPGRADE_CATEGORY
+
         blocked = self._breaker.blocked_providers()
 
         # Get the ordered provider chain for this category
@@ -730,6 +843,7 @@ class Router:
             logger.debug("No chain for %s — using primary", category.value)
             result = self._primary_route(primary_config, category)
             self._record_decision(result, message)
+            self._record_session_turn(session_key, category)
             return result
 
         # Walk the chain, skip blocked/unhealthy/budget-exceeded
@@ -781,6 +895,7 @@ class Router:
                 fallback_count=fallback_count,
             )
             self._record_decision(result, message)
+            self._record_session_turn(session_key, category)
             return result
 
         # All chain providers exhausted — fall to primary
@@ -790,6 +905,7 @@ class Router:
         )
         result = self._primary_route(primary_config, category, fallback_count)
         self._record_decision(result, message)
+        self._record_session_turn(session_key, category)
         return result
 
     def _primary_route(
@@ -859,11 +975,17 @@ def route_turn(
     message: str,
     primary_config: dict,
     suppress_tools_override: Optional[bool] = None,
+    session_key: Optional[str] = None,
 ) -> Optional[RouteResult]:
-    """Gateway entry point. Returns None if router not initialized."""
+    """Gateway entry point. Returns None if router not initialized.
+
+    ``session_key`` enables the session-aware guard: when the session is
+    active, SIMPLE/GREETING turns are upgraded rather than routed to a
+    tool-less local model. None preserves the original stateless behavior.
+    """
     if _instance is None:
         return None
-    return _instance.route(message, primary_config, suppress_tools_override)
+    return _instance.route(message, primary_config, suppress_tools_override, session_key)
 
 
 def record_routing_failure(provider: str) -> None:

@@ -126,7 +126,7 @@ class TaskClassifier:
     _CODE_SINGLE_WORDS = frozenset({
         "debug", "debugging", "implement", "implementation", "patch",
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
-        "script", "server", "test", "security", "deploy", "compile",
+        "script", "server", "test", "tests", "security", "deploy", "compile",
         "refactor", "rewrite", "rework", "design",
         "cron", "docker", "compose",
         "container", "pipeline", "workflow",
@@ -167,6 +167,7 @@ class TaskClassifier:
         "explain why", "explain how", "why does", "how does",
         "what causes", "redesign", "improve", "tradeoff", "trade-off",
         "advantage", "disadvantage",
+        "explain the difference",
     })
 
     _GREETING_KW = frozenset({
@@ -176,6 +177,7 @@ class TaskClassifier:
 
     _EXPERT_PHRASES = [
         "design a system", "design a complete system", "design an architecture",
+        "design a microservice", "design a distributed", "design a scalable",
         "implement a complete", "end-to-end", "full system",
         "architect a", "architect the",
         "build a complete", "build an entire", "comprehensive system",

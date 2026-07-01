@@ -778,8 +778,12 @@ class FactRetriever:
                             pair["fact_b"].get("fact_id"),
                             verdict.get("reasoning"),
                         )
-                # Re-sort verified + any pairs beyond the LLM cap (kept as-is)
-                results = verified + contradictions[_MAX_LLM_PAIRS:]
+                # When llm_verify is on, only return LLM-processed pairs.
+                # Including pairs beyond the cap would surface unchecked
+                # candidates with confirmed=None, defeating the precision
+                # pass. The cap exists to bound latency; if the caller
+                # needs more, they raise the limit and accept more LLM calls.
+                results = verified
                 results.sort(
                     key=lambda x: x["contradiction_score"], reverse=True
                 )

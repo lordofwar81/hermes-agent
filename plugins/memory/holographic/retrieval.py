@@ -6,8 +6,13 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
+import re
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -22,6 +27,157 @@ except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
 
+# ── LLM contradiction verifier ────────────────────────────────────────
+# Precision pass on top of the structural contradict() detector. The
+# structural detector flags any fact pair with high entity overlap + low
+# content similarity; this class asks a local LLM whether the pair is a
+# *real* semantic contradiction, killing false positives (e.g. two facts
+# about the same entity that merely describe different aspects).
+#
+# Fail-open by design: any failure (no endpoint, timeout, parse error)
+# returns None, and the caller falls back to the structural score alone.
+
+_DEFAULT_LLM_URL = os.environ.get(
+    "HERMES_CONTRADICT_LLM_URL",
+    "http://192.168.1.149:8000/v1/chat/completions",  # Mac Studio, Qwen3.6-35B
+)
+_DEFAULT_LLM_MODEL = os.environ.get(
+    "HERMES_CONTRADICT_LLM_MODEL",
+    "mlx-community/Qwen3.6-35B-A3B-4bit",
+)
+_DEFAULT_LLM_KEY = os.environ.get("LLM_SERVER_KEY", "notempty")
+_LLM_TIMEOUT = 15  # seconds — fail fast, don't block the detector
+
+
+class LLMVerifier:
+    """Minimal OpenAI-compatible chat client for contradiction verification.
+
+    One instance is cheap to construct (no connection held). alive is
+    probed once on first use and cached. All public methods degrade to
+    None on any failure — never raises to the caller.
+    """
+
+    def __init__(
+        self,
+        url: str = _DEFAULT_LLM_URL,
+        model: str = _DEFAULT_LLM_MODEL,
+        api_key: str = _DEFAULT_LLM_KEY,
+        timeout: int = _LLM_TIMEOUT,
+    ):
+        self.url = url
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+        self._alive: bool | None = None
+
+    @property
+    def alive(self) -> bool:
+        if self._alive is not None:
+            return self._alive
+        self._alive = self._probe()
+        return self._alive
+
+    def _probe(self) -> bool:
+        try:
+            models_url = self.url.replace("/chat/completions", "/models")
+            req = urllib.request.Request(
+                models_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status == 200
+        except Exception:
+            logger.debug("LLM verifier probe failed", exc_info=True)
+            return False
+
+    def verify_contradiction(
+        self, text_a: str, text_b: str
+    ) -> dict | None:
+        """Ask the LLM whether two statements genuinely contradict.
+
+        Returns dict {is_contradiction: bool, confidence: float, reasoning: str}
+        or None if the LLM is unavailable or the response couldn't be parsed.
+        """
+        if not self.alive:
+            return None
+
+        prompt = (
+            "You are a contradiction detection system. Compare these two "
+            "statements and determine if they make conflicting claims about "
+            "the same subject.\n\n"
+            f'Statement A: "{text_a}"\n\n'
+            f'Statement B: "{text_b}"\n\n'
+            "Two facts about the same entity that describe different aspects "
+            "are NOT contradictions (e.g. 'Alice lives in Paris' and 'Alice "
+            "likes jazz' are compatible). Only answer YES if the statements "
+            "cannot both be true at the same time.\n\n"
+            "Respond EXACTLY in this format, nothing else:\n"
+            "CONTRADICTION: yes or no\n"
+            "CONFIDENCE: 0.0-1.0\n"
+            "REASONING: <one sentence>\n"
+        )
+
+        payload = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 150,
+            "temperature": 0.1,
+            "stream": False,
+            # Qwen3.x emits a chain-of-thought preamble by default that eats
+            # the token budget before the structured answer appears. Suppress
+            # it so the model emits the parseable CONTRADICTION/CONFIDENCE/
+            # REASONING block directly. Harmless on non-Qwen servers (ignored).
+            "chat_template_kwargs": {"enable_thinking": False},
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                self.url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            content = result["choices"][0]["message"]["content"]
+        except Exception:
+            logger.debug("LLM contradiction verify call failed", exc_info=True)
+            return None
+
+        return self._parse_response(content)
+
+    @staticmethod
+    def _parse_response(content: str) -> dict | None:
+        """Parse the LLM's structured response. Returns None on malformed input."""
+        is_contra = False
+        confidence = 0.5
+        reasoning = ""
+        for line in content.strip().splitlines():
+            low = line.lower()
+            if low.startswith("contradiction:"):
+                is_contra = "yes" in low
+            elif low.startswith("confidence:"):
+                m = re.search(r"[\d.]+", low)
+                if m:
+                    try:
+                        confidence = max(0.0, min(1.0, float(m.group())))
+                    except ValueError:
+                        pass
+            elif low.startswith("reasoning:"):
+                reasoning = line.split(":", 1)[1].strip()
+        # If we got at least the CONTRADICTION line, it's a valid parse
+        if "contradiction:" in content.lower():
+            return {
+                "is_contradiction": is_contra,
+                "confidence": confidence,
+                "reasoning": reasoning,
+            }
+        return None
+
+
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
 
@@ -34,6 +190,7 @@ class FactRetriever:
         hrr_weight: float = 0.2,
         neural_weight: float = 0.3,
         hrr_dim: int = 1024,
+        llm_verifier: LLMVerifier | None = None,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
@@ -65,6 +222,10 @@ class FactRetriever:
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
         self.neural_weight = neural_weight
+        # LLM verifier for the contradict() precision pass. None by default;
+        # contradict() lazily constructs one if llm_verify=True and no override
+        # is provided. This keeps non-contradict callers free of LLM latency.
+        self.llm_verifier: LLMVerifier | None = llm_verifier
 
     def search(
         self,
@@ -456,12 +617,20 @@ class FactRetriever:
         category: str | None = None,
         threshold: float = 0.3,
         limit: int = 10,
+        llm_verify: bool = False,
     ) -> list[dict]:
         """Find potentially contradictory facts via entity overlap + content divergence.
 
         Two facts contradict when they share entities (same subject) but have
         low content-vector similarity (different claims). This is automated
         memory hygiene — no other memory system does this.
+
+        If llm_verify=True, each structurally-detected candidate pair is
+        confirmed by a local LLM precision pass. Confirmed pairs get a
+        boosted score and `llm_confirmed: true`; rejected pairs are dropped.
+        Fail-open: if the LLM endpoint is unavailable or returns nothing,
+        structural results are returned unfiltered (the LLM is a precision
+        refinement, not a dependency).
 
         Returns pairs of facts with a contradiction score.
         Falls back to empty list if numpy unavailable.
@@ -481,7 +650,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
-                   f.created_at, f.updated_at, f.hrr_vector
+                   f.epistemic_status, f.created_at, f.updated_at, f.hrr_vector
             FROM facts f
             {where}
             """,
@@ -564,7 +733,60 @@ class FactRetriever:
                     })
 
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
-        results = contradictions[:limit]
+
+        # ── LLM precision pass (fail-open) ────────────────────────────
+        # The structural detector's known weakness: two facts sharing entities
+        # but describing different aspects (not a real conflict). The LLM pass
+        # confirms genuine semantic contradictions and drops false positives.
+        # Cap at 20 pairs to bound LLM latency (~15s/pair worst case).
+        if llm_verify and contradictions:
+            verifier = self.llm_verifier or LLMVerifier()
+            if verifier.alive:
+                _MAX_LLM_PAIRS = 20
+                verified: list[dict] = []
+                for pair in contradictions[:_MAX_LLM_PAIRS]:
+                    verdict = verifier.verify_contradiction(
+                        pair["fact_a"]["content"], pair["fact_b"]["content"]
+                    )
+                    if verdict is None:
+                        # LLM couldn't answer for this pair — keep the
+                        # structural result, badge as unverified.
+                        pair["llm_confirmed"] = None
+                        pair["llm_reasoning"] = None
+                        verified.append(pair)
+                    elif verdict["is_contradiction"]:
+                        # Confirmed: boost score by LLM confidence factor.
+                        pair["llm_confirmed"] = True
+                        pair["llm_reasoning"] = verdict["reasoning"]
+                        pair["contradiction_score"] = round(
+                            pair["contradiction_score"]
+                            * (0.5 + 0.5 * verdict["confidence"]),
+                            3,
+                        )
+                        verified.append(pair)
+                    else:
+                        # LLM says not a real contradiction — drop it.
+                        logger.debug(
+                            "LLM rejected contradiction pair (facts %s/%s): %s",
+                            pair["fact_a"].get("fact_id"),
+                            pair["fact_b"].get("fact_id"),
+                            verdict.get("reasoning"),
+                        )
+                # Re-sort verified + any pairs beyond the LLM cap (kept as-is)
+                results = verified + contradictions[_MAX_LLM_PAIRS:]
+                results.sort(
+                    key=lambda x: x["contradiction_score"], reverse=True
+                )
+            else:
+                # LLM unreachable — return structural results, badged.
+                for pair in contradictions:
+                    pair["llm_confirmed"] = None
+                    pair["llm_reasoning"] = "LLM endpoint unavailable"
+                results = contradictions
+        else:
+            results = contradictions
+
+        results = results[:limit]
         # Boost trust for all facts involved in contradiction pairs
         try:
             unique_facts = []

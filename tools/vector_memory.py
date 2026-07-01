@@ -543,19 +543,6 @@ class VectorMemoryStore:
 
 
 # -----------------------------------------------------------------------------
-# Integration with contradiction detector
-# -----------------------------------------------------------------------------
-
-try:
-    from tools.contradiction_detector import add_epistemic_methods_to_class
-
-    # Monkey-patch the class to add epistemic methods
-    add_epistemic_methods_to_class(VectorMemoryStore)
-except ImportError:
-    pass
-
-
-# -----------------------------------------------------------------------------
 # Command-line interface
 # -----------------------------------------------------------------------------
 

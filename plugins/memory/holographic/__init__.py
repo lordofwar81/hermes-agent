@@ -31,6 +31,15 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 
+def _str_to_bool(value) -> bool:
+    """Coerce schema-passed values (str/bool) to bool. MCP args arrive as strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (unchanged from original PR)
 # ---------------------------------------------------------------------------
@@ -47,7 +56,7 @@ FACT_STORE_SCHEMA = {
         "• probe — Entity recall: ALL facts about a person/thing.\n"
         "• related — What connects to an entity? Structural adjacency.\n"
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously.\n"
-        "• contradict — Memory hygiene: find facts making conflicting claims.\n"
+        "• contradict — Memory hygiene: find facts making conflicting claims. Pass llm_verify=true for an LLM precision pass that filters false positives.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
     ),
@@ -66,8 +75,10 @@ FACT_STORE_SCHEMA = {
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
+            "epistemic_status": {"type": "string", "enum": ["stated", "inferred", "verified", "contradicted", "retracted"], "description": "Set fact's epistemic status (for 'update'). Use 'contradicted' to retire a superseded fact."},
             "min_trust": {"type": "number", "description": "Minimum trust filter (default: 0.3)."},
             "limit": {"type": "integer", "description": "Max results (default: 10)."},
+            "llm_verify": {"type": "boolean", "description": "If true, confirm each candidate pair with a local LLM precision pass (default: false). Drops pairs the LLM says aren't real contradictions."},
         },
         "required": ["action"],
     },
@@ -431,6 +442,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 results = retriever.contradict(
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
+                    llm_verify=_str_to_bool(args.get("llm_verify", False)),
                 )
                 return json.dumps({"results": results, "count": len(results)})
 
@@ -441,6 +453,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     trust_delta=float(args["trust_delta"]) if "trust_delta" in args else None,
                     tags=args.get("tags"),
                     category=args.get("category"),
+                    epistemic_status=args.get("epistemic_status"),
                 )
                 return json.dumps({"updated": updated})
 

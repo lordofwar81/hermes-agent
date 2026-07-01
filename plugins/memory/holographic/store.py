@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS facts (
     trust_score     REAL DEFAULT 0.5,
     retrieval_count INTEGER DEFAULT 0,
     helpful_count   INTEGER DEFAULT 0,
+    epistemic_status TEXT DEFAULT 'stated',  -- stated|inferred|verified|contradicted|retracted
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     hrr_vector      BLOB,
@@ -85,6 +86,13 @@ _HELPFUL_DELTA   =  0.05
 _UNHELPFUL_DELTA = -0.10
 _TRUST_MIN       =  0.0
 _TRUST_MAX       =  1.0
+
+# Epistemic lifecycle of a fact: stated → inferred → verified, or →
+# contradicted / retracted when superseded. Used by update_fact() and
+# surfaced in retrieval results so callers can filter on certainty.
+_EPISTEMIC_STATES = (
+    'stated', 'inferred', 'verified', 'contradicted', 'retracted',
+)
 
 # ── Entity extraction patterns ──────────────────────────────────────
 # Each pattern targets a distinct structural signal in fact text.
@@ -315,6 +323,13 @@ class MemoryStore:
             self._conn.execute("ALTER TABLE facts ADD COLUMN neural_embed BLOB")
             self._conn.commit()
             _log.info("Added neural_embed column to facts table")
+        # Migrate: add epistemic_status column if missing
+        if "epistemic_status" not in columns:
+            self._conn.execute(
+                "ALTER TABLE facts ADD COLUMN epistemic_status TEXT DEFAULT 'stated'"
+            )
+            self._conn.commit()
+            _log.info("Added epistemic_status column to facts table")
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -430,7 +445,7 @@ class MemoryStore:
             sql = f"""
                 SELECT f.fact_id, f.content, f.category, f.tags,
                        f.trust_score, f.retrieval_count, f.helpful_count,
-                       f.created_at, f.updated_at
+                       f.epistemic_status, f.created_at, f.updated_at
                 FROM facts f
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
@@ -461,8 +476,12 @@ class MemoryStore:
         trust_delta: float | None = None,
         tags: str | None = None,
         category: str | None = None,
+        epistemic_status: str | None = None,
     ) -> bool:
         """Partially update a fact. Trust is clamped to [0, 1].
+
+        epistemic_status must be one of: stated, inferred, verified,
+        contradicted, retracted. Invalid values are ignored with a warning.
 
         Returns True if the row existed, False otherwise.
         """
@@ -489,6 +508,15 @@ class MemoryStore:
                 new_trust = _clamp_trust(row["trust_score"] + trust_delta)
                 assignments.append("trust_score = ?")
                 params.append(new_trust)
+            if epistemic_status is not None:
+                if epistemic_status in _EPISTEMIC_STATES:
+                    assignments.append("epistemic_status = ?")
+                    params.append(epistemic_status)
+                else:
+                    _log.warning(
+                        "Ignoring invalid epistemic_status %r (must be one of %s)",
+                        epistemic_status, ", ".join(_EPISTEMIC_STATES),
+                    )
 
             params.append(fact_id)
             self._conn.execute(
@@ -555,7 +583,8 @@ class MemoryStore:
 
             sql = f"""
                 SELECT fact_id, content, category, tags, trust_score,
-                       retrieval_count, helpful_count, created_at, updated_at
+                       retrieval_count, helpful_count, epistemic_status,
+                       created_at, updated_at
                 FROM facts
                 WHERE trust_score >= ?
                   {category_clause}

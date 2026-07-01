@@ -327,3 +327,361 @@ class TestTrustBoost:
         retriever.search("boost test fact")
         after = [f for f in populated_store.list_facts() if f["fact_id"] == fid][0]
         assert after["trust_score"] > initial_trust
+
+
+# ─── LLM Contradiction Verification ────────────────────────────────────
+
+class FakeLLMVerifier:
+    """Test double for LLMVerifier — no network calls.
+
+    Returns pre-scripted verdicts based on the fact contents, or a fixed
+    verdict for any pair. Mimics the real class's fail-open contract:
+    alive and verify_contradiction are the only surfaces contradict() uses.
+    """
+
+    def __init__(self, verdicts: dict | None = None, default: dict | None = None, alive: bool = True):
+        # verdicts: keyed by (text_a, text_b) tuples — lookup is content-based
+        self._verdicts = verdicts or {}
+        self._default = default
+        self._alive = alive
+
+    @property
+    def alive(self) -> bool:
+        return self._alive
+
+    def verify_contradiction(self, text_a: str, text_b: str) -> dict | None:
+        for (a, b), verdict in self._verdicts.items():
+            if a in text_a and b in text_b:
+                return verdict
+        return self._default
+
+
+class TestLLMContradictionVerify:
+    """Tests for the LLM precision pass on contradict(llm_verify=True)."""
+
+    @pytest.fixture
+    def contra_store(self, tmp_path):
+        """Store with a guaranteed structural contradiction pair.
+
+        Uses entity-rich facts that the entity extractor will reliably tag,
+        ensuring the structural detector finds them. The pair shares the
+        entity 'Acme Server' but makes opposing claims about its status.
+        A lowered threshold (0.15) is used in the tests because short facts
+        sharing the entity token produce moderate (not high) content
+        divergence in HRR space — the threshold calibration is a separate
+        concern from the LLM verify pass being tested here.
+        """
+        from plugins.memory.holographic.store import EmbedClient
+        store = MemoryStore(db_path=str(tmp_path / "contra.db"), hrr_dim=256)
+        store._embed = EmbedClient(
+            url="http://127.0.0.1:19999/v1/embeddings", timeout=1
+        )
+        store.add_fact("Acme Server is running and accepting requests", category="infra")
+        store.add_fact("Acme Server is shut down permanently decommissioned", category="infra")
+        # Non-contradicting filler to pad the store
+        store.add_fact("Acme Server has 128GB RAM and 16 cores", category="infra")
+        return store
+
+    # Threshold lowered to ensure the structural detector surfaces the pair
+    # despite moderate HRR similarity (entity token dominates the binding).
+    _THRESHOLD = 0.15
+
+    def _retriever(self, store, fake_verifier=None):
+        return FactRetriever(
+            store=store, hrr_dim=256,
+            fts_weight=0.4, jaccard_weight=0.3, hrr_weight=0.3,
+            neural_weight=0.0, llm_verifier=fake_verifier,
+        )
+
+    def test_llm_confirmed_pair_is_kept_and_boosted(self, contra_store):
+        """When the LLM confirms a contradiction, it stays and its score is
+        modulated by the LLM's confidence."""
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": True,
+                "confidence": 0.9,
+                "reasoning": "one says alive, other says dead",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        assert len(structural) >= 1  # structural detector found candidates
+
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+        confirmed = [r for r in llm_results if r.get("llm_confirmed") is True]
+        assert len(confirmed) >= 1
+
+        for pair in confirmed:
+            assert pair["llm_reasoning"] is not None
+            # Confidence 0.9 → score * (0.5 + 0.5*0.9) = score * 0.95
+            orig = next(
+                (s for s in structural
+                 if s["fact_a"]["fact_id"] == pair["fact_a"]["fact_id"]
+                 and s["fact_b"]["fact_id"] == pair["fact_b"]["fact_id"]),
+                None,
+            )
+            if orig:
+                expected = round(orig["contradiction_score"] * 0.95, 3)
+                assert pair["contradiction_score"] == pytest.approx(expected, abs=0.002)
+
+    def test_llm_rejected_pair_is_dropped(self, contra_store):
+        """When the LLM says 'not a contradiction', the pair is filtered out."""
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": False,
+                "confidence": 0.8,
+                "reasoning": "different aspects of same entity, not conflicting",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        assert len(structural) >= 1
+
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+        confirmed = [r for r in llm_results if r.get("llm_confirmed") is True]
+        assert len(confirmed) == 0  # LLM rejected all candidates
+
+    def test_llm_unavailable_falls_back_to_structural(self, contra_store):
+        """When the LLM endpoint is down, contradict(llm_verify=True) returns
+        the same structural results, badged as unverified. Fail-open."""
+        fake = FakeLLMVerifier(alive=False)  # endpoint down
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+
+        assert len(llm_results) == len(structural)
+        for pair in llm_results:
+            assert pair.get("llm_confirmed") is None
+            assert "unavailable" in pair.get("llm_reasoning", "").lower()
+
+    def test_llm_verify_off_by_default(self, contra_store):
+        """Without llm_verify=True, no LLM badges appear on results."""
+        retriever = self._retriever(contra_store)  # no verifier
+        results = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        for pair in results:
+            assert "llm_confirmed" not in pair
+
+    def test_llm_unsure_pair_kept_as_unverified(self, contra_store):
+        """When the LLM returns None (can't parse / unsure), the structural
+        pair is kept but badged as unverified (not confirmed)."""
+        fake = FakeLLMVerifier(default=None, alive=True)
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+
+        assert len(llm_results) == len(structural)
+        for pair in llm_results:
+            assert pair.get("llm_confirmed") is None
+            assert pair.get("llm_reasoning") is None
+
+    def test_score_boost_modulates_by_confidence(self, contra_store):
+        """The contradiction score must be multiplied by the confidence
+        factor, not left unchanged. Kills the 'no-score-boost' mutant."""
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": True,
+                "confidence": 0.9,
+                "reasoning": "confirmed",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        assert len(structural) >= 1
+
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+        confirmed = [r for r in llm_results if r.get("llm_confirmed") is True]
+        assert len(confirmed) >= 1
+
+        for pair in confirmed:
+            orig = next(
+                (s for s in structural
+                 if s["fact_a"]["fact_id"] == pair["fact_a"]["fact_id"]
+                 and s["fact_b"]["fact_id"] == pair["fact_b"]["fact_id"]),
+                None,
+            )
+            assert orig is not None, "confirmed pair must exist in structural results"
+            expected = round(orig["contradiction_score"] * 0.95, 3)
+            # The boosted score must differ from the original — if it's
+            # identical, the confidence factor wasn't applied.
+            assert pair["contradiction_score"] != orig["contradiction_score"]
+            assert pair["contradiction_score"] == pytest.approx(expected, abs=0.002)
+
+    def test_rejected_pairs_absent_from_results(self, contra_store):
+        """Rejected pairs must not appear in results at all — not just
+        missing the confirmed badge. Kills the 'keep-rejected' mutant."""
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": False,
+                "confidence": 0.8,
+                "reasoning": "not a contradiction",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        structural = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        assert len(structural) >= 1
+
+        llm_results = retriever.contradict(
+            category="infra", threshold=self._THRESHOLD, llm_verify=True
+        )
+        # All structural pairs should be gone (within the LLM cap)
+        # Verify each structural pair's fact IDs don't appear in results
+        for s_pair in structural[:20]:  # LLM cap
+            s_a = s_pair["fact_a"]["fact_id"]
+            s_b = s_pair["fact_b"]["fact_id"]
+            for r in llm_results:
+                assert not (
+                    r["fact_a"]["fact_id"] == s_a and r["fact_b"]["fact_id"] == s_b
+                ), f"rejected pair ({s_a},{s_b}) should not appear in results"
+
+    def test_contradict_respects_limit(self, contra_store):
+        """Results count must not exceed the limit parameter."""
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": True,
+                "confidence": 1.0,
+                "reasoning": "confirmed",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        # Use a very low threshold to maximize candidates
+        all_results = retriever.contradict(category="infra", threshold=0.01)
+        if len(all_results) > 1:
+            limited = retriever.contradict(category="infra", threshold=0.01, limit=1)
+            assert len(limited) <= 1
+
+    def test_contradict_boosts_trust(self, contra_store):
+        """Facts involved in contradiction pairs should have their trust
+        boosted after contradict() runs."""
+        # Get initial trust
+        facts_before = contra_store.list_facts()
+        trust_before = {f["fact_id"]: f["trust_score"] for f in facts_before}
+
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": True,
+                "confidence": 1.0,
+                "reasoning": "confirmed",
+            }
+        )
+        retriever = self._retriever(contra_store, fake)
+        results = retriever.contradict(category="infra", threshold=self._THRESHOLD)
+        assert len(results) >= 1
+
+        # Check trust increased for involved facts
+        facts_after = contra_store.list_facts()
+        trust_after = {f["fact_id"]: f["trust_score"] for f in facts_after}
+
+        boosted = False
+        for pair in results:
+            for key in ("fact_a", "fact_b"):
+                fid = pair[key]["fact_id"]
+                if trust_before[fid] < trust_after.get(fid, 0):
+                    boosted = True
+                    break
+            if boosted:
+                break
+        assert boosted, "at least one fact should have its trust boosted"
+
+
+# ─── Real LLMVerifier unit tests ───────────────────────────────────────
+# These test the actual LLMVerifier class (not the fake) against a dead
+# endpoint, ensuring the fail-open contract holds in the real implementation.
+
+class TestLLMVerifierClass:
+    def test_alive_false_on_dead_endpoint(self):
+        """LLMVerifier.alive must return False when the endpoint is unreachable.
+        This kills the 'always-alive' mutant — the test exercises the real
+        _probe() method, not the FakeLLMVerifier override."""
+        from plugins.memory.holographic.retrieval import LLMVerifier
+        v = LLMVerifier(
+            url="http://127.0.0.1:19999/v1/chat/completions",  # nothing there
+            timeout=1,
+        )
+        assert v.alive is False
+
+    def test_verify_returns_none_when_not_alive(self):
+        """verify_contradiction must return None when alive is False."""
+        from plugins.memory.holographic.retrieval import LLMVerifier
+        v = LLMVerifier(
+            url="http://127.0.0.1:19999/v1/chat/completions",
+            timeout=1,
+        )
+        result = v.verify_contradiction("A is true", "A is false")
+        assert result is None
+
+    def test_parse_response_extracts_fields(self):
+        """_parse_response must correctly extract contradiction, confidence,
+        and reasoning from a well-formed LLM response."""
+        from plugins.memory.holographic.retrieval import LLMVerifier
+        content = (
+            "CONTRADICTION: yes\n"
+            "CONFIDENCE: 0.85\n"
+            "REASONING: The two statements make opposing claims.\n"
+        )
+        result = LLMVerifier._parse_response(content)
+        assert result is not None
+        assert result["is_contradiction"] is True
+        assert result["confidence"] == pytest.approx(0.85, abs=0.001)
+        assert "opposing claims" in result["reasoning"]
+
+    def test_parse_response_no_line_returns_none(self):
+        """If the response doesn't contain 'CONTRADICTION:', return None."""
+        from plugins.memory.holographic.retrieval import LLMVerifier
+        result = LLMVerifier._parse_response("I think they might conflict.")
+        assert result is None
+
+    def test_parse_response_clamps_confidence(self):
+        """Confidence values outside [0, 1] are clamped."""
+        from plugins.memory.holographic.retrieval import LLMVerifier
+        content = "CONTRADICTION: no\nCONFIDENCE: 5.0\nREASONING: test\n"
+        result = LLMVerifier._parse_response(content)
+        assert result is not None
+        assert result["confidence"] == 1.0  # clamped from 5.0
+
+
+# ─── Epistemic Status ──────────────────────────────────────────────────
+
+class TestEpistemicStatus:
+    def test_new_fact_defaults_to_stated(self, populated_store):
+        facts = populated_store.list_facts()
+        assert len(facts) > 0
+        for f in facts:
+            assert f["epistemic_status"] == "stated"
+
+    def test_update_fact_epistemic_status(self, populated_store):
+        fid = populated_store.add_fact("temporary fact for epistemic test")
+        updated = populated_store.update_fact(fid, epistemic_status="contradicted")
+        assert updated is True
+        facts = populated_store.list_facts()
+        target = [f for f in facts if f["fact_id"] == fid][0]
+        assert target["epistemic_status"] == "contradicted"
+
+    def test_update_fact_rejects_invalid_status(self, populated_store):
+        fid = populated_store.add_fact("another temporary fact")
+        # Should not raise, just log a warning and ignore the value
+        updated = populated_store.update_fact(fid, epistemic_status="bogus")
+        assert updated is True  # row existed
+        facts = populated_store.list_facts()
+        target = [f for f in facts if f["fact_id"] == fid][0]
+        assert target["epistemic_status"] == "stated"  # unchanged
+
+    def test_search_surfaces_epistemic_status(self, retriever):
+        results = retriever.search("Strix Halo")
+        if results:
+            assert "epistemic_status" in results[0]
+
+    def test_contradict_surfaces_epistemic_status(self, retriever):
+        results = retriever.contradict(category="infra")
+        for pair in results:
+            assert "epistemic_status" in pair["fact_a"]
+            assert "epistemic_status" in pair["fact_b"]

@@ -369,7 +369,7 @@ class UnifiedMemorySearch:
 
         try:
             # Get embedding for query text
-            from .contradiction_detector import get_embedding
+            from .vector_memory import get_embedding
 
             embedding = get_embedding(parsed.text)
             if not embedding:

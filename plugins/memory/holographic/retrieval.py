@@ -604,7 +604,7 @@ class FactRetriever:
     def contradict(
         self,
         category: str | None = None,
-        threshold: float = 0.3,
+        threshold: float = 0.2,
         limit: int = 10,
         llm_verify: bool = False,
     ) -> list[dict]:
@@ -613,6 +613,12 @@ class FactRetriever:
         Two facts contradict when they share entities (same subject) but have
         low content-vector similarity (different claims). This is automated
         memory hygiene — no other memory system does this.
+
+        Default threshold 0.2 (was 0.3): lowered because real fact corpora
+        produce moderate HRR similarity even for genuine contradictions — the
+        entity token dominates the binding. At 0.3 the detector returned zero
+        pairs on the 152-fact production DB. The LLM verify pass handles the
+        false positives a lower threshold admits.
 
         If llm_verify=True, each structurally-detected candidate pair is
         confirmed by a local LLM precision pass. Confirmed pairs get a

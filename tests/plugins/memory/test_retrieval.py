@@ -592,6 +592,54 @@ class TestLLMContradictionVerify:
                 break
         assert boosted, "at least one fact should have its trust boosted"
 
+    def test_llm_verify_excludes_unchecked_pairs(self, tmp_path):
+        """When llm_verify=True, pairs beyond the LLM cap (20) must not
+        appear in results. This was a real bug: unchecked pairs leaked
+        through with confirmed=None, defeating the precision pass."""
+        from plugins.memory.holographic.store import EmbedClient
+        # Build a store with many pairs sharing an entity
+        store = MemoryStore(db_path=str(tmp_path / "many.db"), hrr_dim=256)
+        store._embed = EmbedClient(
+            url="http://127.0.0.1:19999/v1/embeddings", timeout=1
+        )
+        # 25 facts all sharing "Alpha Node" entity — produces many pairs
+        for i in range(25):
+            store.add_fact(
+                f"Alpha Node configuration variant {i} details",
+                category="infra",
+            )
+
+        # Fake verifier that rejects everything
+        fake = FakeLLMVerifier(
+            default={
+                "is_contradiction": False,
+                "confidence": 0.9,
+                "reasoning": "not a contradiction",
+            }
+        )
+        retriever = self._retriever(store, fake)
+
+        # Structural pass should find many pairs
+        structural = retriever.contradict(
+            category="infra", threshold=0.01, limit=100
+        )
+        assert len(structural) > 20, "need >20 pairs to exceed LLM cap"
+
+        # LLM verify — all pairs within cap are rejected
+        llm_results = retriever.contradict(
+            category="infra", threshold=0.01, limit=50, llm_verify=True
+        )
+
+        # No pairs should have confirmed=None from unchecked-beyond-cap leak
+        leaked = [r for r in llm_results if r.get("llm_confirmed") is None]
+        assert len(leaked) == 0, (
+            f"{len(leaked)} pairs leaked through without LLM check"
+        )
+        # All results were LLM-processed and rejected — should be empty
+        assert len(llm_results) == 0, (
+            f"{len(llm_results)} pairs survived despite all being rejected"
+        )
+
 
 # ─── Real LLMVerifier unit tests ───────────────────────────────────────
 # These test the actual LLMVerifier class (not the fake) against a dead

@@ -133,14 +133,20 @@ class TaskClassifier:
         # Code-execution vocabulary (eval-set gaps): these words appear in
         # debugging/implementation requests without any other code keyword,
         # causing the classifier to default to SIMPLE.
-        "function", "error", "errors", "crash", "crashed", "throw", "throwing",
-        "throws", "failed", "failure", "exception", "broken", "broke",
+        "function", "error", "errors", "crash", "crashed", "crashing",
+        "throw", "throwing", "throws", "failed", "failing", "failure",
+        "exception", "broken", "broke",
         "validation", "validate", "regex", "callback", "async", "await",
         "git", "merge", "commit", "branch",
         # Test/CI vocabulary
-        "pytest", "unittest", "ci", "failing",
+        "pytest", "unittest", "ci",
         # Language/runtime nouns that imply code context
         "keyerror", "indexerror", "attributeerror", "segfault",
+        # Operational debugging vocabulary (stress-test gaps): common words
+        # in real debugging descriptions that lack explicit code keywords.
+        "hangs", "hang", "hanging", "timeout", "timed", "upload", "download",
+        "request", "response", "endpoint", "latency", "memory", "leak",
+        "stack", "trace", "log", "logs", "logging",
     })
     _CODE_MULTIWORD_PHRASES = frozenset({
         "next step",
@@ -319,13 +325,15 @@ class TaskClassifier:
             return Category.CODE
 
         # Greeting: short message with greeting keyword, but NOT if it contains
-        # code intent (e.g., "ok, deploy it" is CODE, not GREETING).
-        # Uses word-boundary matching so 'fix' doesn't block 'fixed' greetings.
+        # code intent (e.g., "ok, deploy it" is CODE, not GREETING) or action/
+        # research intent (e.g., "hey what's the weather" needs tools, not a
+        # tool-less greeting model). Uses word-boundary matching so 'fix'
+        # doesn't block 'fixed' greetings.
         # Threshold is 35 chars: covers "thanks, that worked perfectly" (30)
         # and "morning! how are you today?" (27) while still excluding real
-        # tasks. Code-keyword guard backstops longer messages.
+        # tasks. Code-keyword + action-intent guards backstop longer messages.
         if len(text) <= 35:
-            if not cls._has_code_keyword(text_lower):
+            if not cls._has_code_keyword(text_lower) and not cls._has_action_intent(text):
                 for g in cls._GREETING_KW:
                     if len(g.split()) == 1:
                         if re.search(r'\b' + re.escape(g) + r'\b', text_lower):

@@ -366,6 +366,100 @@ class TestTaskClassifier:
             "look up the CVE", Category.SIMPLE
         ) is False
 
+    # ── Mutation-killing tests (classify boundary cases) ────────────────
+
+    def test_code_single_backtick_no_code_keyword(self):
+        """A single backtick with NO code keyword must still classify as CODE.
+
+        Kills mutant that changes `or` to `and` in the backtick check —
+        without this, a single-backtick message with no keyword would fall
+        through to SIMPLE (mutmut classify_6).
+        """
+        # "a`b" — has a backtick, no code keyword, no triple backtick
+        assert TaskClassifier.classify("run `check` thing") == Category.CODE
+
+    def test_greeting_boundary_exactly_35_chars(self):
+        """A 35-char greeting message must classify as GREETING (<= boundary).
+
+        Kills mutants that change <=35 to <35 (mutmut classify_11).
+        """
+        # Exactly 35 chars: "thanks for the help with this" = 29... need exact
+        msg = "ok, that is perfectly fine"  # 26 chars, has greeting "ok"
+        assert len(msg) <= 35
+        assert TaskClassifier.classify(msg) == Category.GREETING
+        # Construct a message at exactly 35 chars with a greeting keyword
+        msg35 = "ok, " + "x" * 31  # 35 chars, starts with "ok"
+        assert len(msg35) == 35
+        assert TaskClassifier.classify(msg35) == Category.GREETING
+
+    def test_greeting_boundary_exactly_36_chars_not_greeting(self):
+        """A 36-char message with greeting keyword must NOT be GREETING.
+
+        Kills mutant that changes <=35 to <=36 (mutmut classify_12).
+        """
+        msg36 = "ok, " + "x" * 32  # 36 chars, starts with "ok"
+        assert len(msg36) == 36
+        assert TaskClassifier.classify(msg36) != Category.GREETING
+
+    def test_continuation_alone_is_simple(self):
+        """A bare continuation phrase with no code keyword must be SIMPLE.
+
+        Kills mutant that inverts `in` to `not in` on continuation phrases
+        (mutmut classify_35). With the inversion, `not in` is almost always
+        True, so the branch is taken — but then the code-keyword check fails
+        and it falls through anyway. This test pins the correct behavior:
+        a continuation phrase alone classifies as SIMPLE.
+        """
+        result = TaskClassifier.classify("keep going")
+        assert result == Category.SIMPLE
+
+    def test_continuation_with_code_keyword_is_code(self):
+        """Continuation phrase + code keyword → CODE (not SIMPLE)."""
+        assert TaskClassifier.classify("continue with the deploy") == Category.CODE
+
+    def test_has_action_intent_none_message(self):
+        """None message must not trigger action intent (kills mutmut_4)."""
+        assert TaskClassifier._has_action_intent(None) is False
+        assert TaskClassifier._has_action_intent("") is False
+
+    # ── Stress-test found bugs (now fixed) ──────────────────────────────
+
+    def test_crashing_variants_are_code(self):
+        """All crash variants (crash/crashed/crashing) classify as CODE.
+
+        The stress test found 'crashing' was missing from the keyword set
+        — boundary regex matched 'crash' but not 'crashing' (different word).
+        """
+        assert TaskClassifier.classify("the thing keeps crashing") == Category.CODE
+        assert TaskClassifier.classify("the app crashed again") == Category.CODE
+        assert TaskClassifier.classify("watch it crash") == Category.CODE
+
+    def test_long_debug_description_not_simple(self):
+        """A 200-char debugging description with no single code keyword
+        still reaches a tool-capable category, not SIMPLE+suppressed.
+
+        Stress test found this landed SIMPLE because 'hangs', 'timeout',
+        'upload' etc. weren't in the code keyword set.
+        """
+        msg = ("So I've been working on this feature where the user uploads a file "
+               "and it gets processed, but every time I try to upload something larger "
+               "than 5MB the whole thing just hangs and eventually times out.")
+        cat = TaskClassifier.classify(msg)
+        assert cat != Category.SIMPLE, f"long debug wrongly classified as SIMPLE"
+        assert not TaskClassifier._should_suppress_tools(msg, cat)
+
+    def test_greeting_with_action_not_greeting(self):
+        """A short greeting-adjacent message with action intent must NOT
+        classify as GREETING (which would suppress tools).
+
+        'hey what's the weather' has 'hey' but also action/research intent.
+        Found by stress test — greeting fired before action check.
+        """
+        # "hey check the logs" — has 'hey' but also 'check' (action)
+        assert TaskClassifier.classify("hey check the logs") != Category.GREETING
+        # "hi show me the error" — has 'hi' but also 'show me' (action)
+        assert TaskClassifier.classify("hi show me the error") != Category.GREETING
+
 
 # ─── CircuitBreaker Tests ────────────────────────────────────────────────
 

@@ -61,7 +61,13 @@ def _reset_router_singleton():
 # ─── Test Config ─────────────────────────────────────────────────────────
 
 def make_test_config() -> dict:
-    """Minimal routing config for testing. All providers have keys."""
+    """Minimal routing config for testing. All providers have keys.
+
+    All 6 category chains are defined (previously only code/expert/greeting
+    existed, so simple/reasoning/analysis silently fell to default_chain —
+    masking chain-selection bugs). Chains are cloud-first to match the
+    production config after the routing fix.
+    """
     return {
         "routing": {
             "providers": [
@@ -96,6 +102,9 @@ def make_test_config() -> dict:
             "chains": {
                 "code": ["zai-main", "strix-local", "venice-ds"],
                 "expert": ["zai-main", "venice-ds"],
+                "reasoning": ["zai-main", "venice-ds"],
+                "analysis": ["zai-main", "venice-ds"],
+                "simple": ["zai-main", "strix-local"],
                 "greeting": ["strix-local", "zai-main"],
             },
             "default_chain": ["zai-main"],
@@ -125,7 +134,7 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("goodbye") == Category.GREETING
 
     def test_not_greeting_long_message(self):
-        """Messages >25 chars should not be classified as GREETING even with greeting keywords."""
+        """Messages with code keywords should not be classified as GREETING even with greeting keywords."""
         assert TaskClassifier.classify("ok, now I need you to debug this thing") != Category.GREETING
 
     def test_code_backticks(self):
@@ -224,7 +233,11 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("what time is it") == Category.SIMPLE
 
     def test_simple_long_question(self):
-        assert TaskClassifier.classify("can you tell me about the weather today") == Category.SIMPLE
+        # Genuinely trivial long question with no action/research intent.
+        # "tell me about the weather" was the old case, but that IS an action
+        # request (needs web_search for live data) — moved to action-intent
+        # tests. This replacement is pure trivia with no action verb.
+        assert TaskClassifier.classify("what is the boiling point of water at sea level") == Category.SIMPLE
 
     def test_empty_string(self):
         assert TaskClassifier.classify("") == Category.SIMPLE
@@ -279,6 +292,79 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("make it production-ready") == Category.EXPERT
         assert TaskClassifier.classify("make it production ready") == Category.EXPERT
         assert TaskClassifier.classify("production ready code") == Category.EXPERT
+
+    # ── Action-intent classification (D1 fix) ───────────────────────────
+    # These messages were all bucketed SIMPLE by the old keyword classifier
+    # because they lack code/analysis vocabulary. They route to local models
+    # with tools stripped, stranding the agent. Now classified ANALYSIS so
+    # they hit cloud-first chains with tools on.
+
+    def test_action_use_skill(self):
+        """The unifi-skill failure: 'Use unifi skill...' must not be SIMPLE."""
+        msg = "Use unifi skill. Tell me if a new wired Linux device just came online"
+        assert TaskClassifier.classify(msg) == Category.ANALYSIS
+
+    def test_action_tell_me_if(self):
+        """'Tell me if X' is an action request needing tools, not trivia."""
+        assert TaskClassifier.classify("Tell me if a new device came online") == Category.ANALYSIS
+
+    def test_action_check_status(self):
+        """'Check the...' is an action request — must not be SIMPLE."""
+        # Note: may classify as CODE or ANALYSIS depending on vocabulary
+        # ("logs"/"errors" hit code keywords). Either is fine — both are
+        # tool-capable cloud-first categories. The point is it's NOT SIMPLE.
+        result = TaskClassifier.classify("Check the logs for errors")
+        assert result in (Category.CODE, Category.ANALYSIS)
+
+    def test_action_show_me(self):
+        assert TaskClassifier.classify("Show me what's at 192.168.1.191") == Category.ANALYSIS
+
+    def test_action_look_up(self):
+        assert TaskClassifier.classify("Look up the latest CVE for openssl") == Category.ANALYSIS
+
+    def test_action_configure(self):
+        assert TaskClassifier.classify("Set up the new sensor") == Category.ANALYSIS
+
+    def test_action_imperative_start(self):
+        """Sentence starting with an action verb classifies as ANALYSIS."""
+        assert TaskClassifier.classify("Restart the gateway service") == Category.ANALYSIS
+        assert TaskClassifier.classify("List all running containers") == Category.ANALYSIS
+
+    def test_action_not_triggered_by_non_imperative(self):
+        """'I use vim' should NOT trigger action intent (use is not imperative there)."""
+        # 'I use vim for editing' — 'use' is mid-sentence, not imperative
+        assert TaskClassifier.classify("I use vim for editing and I love it") == Category.SIMPLE
+
+    def test_action_tell_me_about_weather(self):
+        """'tell me about X today' needs tools (live data) → ANALYSIS, not SIMPLE."""
+        assert TaskClassifier.classify("can you tell me about the weather today") == Category.ANALYSIS
+
+    # ── _should_suppress_tools predicate (D2 fix) ───────────────────────
+
+    def test_suppress_trivial_greeting(self):
+        """Genuine greetings still suppress tools."""
+        assert TaskClassifier._should_suppress_tools("hi", Category.GREETING) is True
+        assert TaskClassifier._should_suppress_tools("thanks", Category.GREETING) is True
+
+    def test_suppress_trivial_simple(self):
+        """Genuine trivia still suppresses tools."""
+        assert TaskClassifier._should_suppress_tools("what time is it", Category.SIMPLE) is True
+
+    def test_suppress_false_for_code(self):
+        """Non-trivial categories never suppress tools."""
+        assert TaskClassifier._should_suppress_tools("fix the bug", Category.CODE) is False
+        assert TaskClassifier._should_suppress_tools("compare X vs Y", Category.ANALYSIS) is False
+
+    def test_suppress_false_for_action_in_simple(self):
+        """An action request misbucketed as SIMPLE keeps tools."""
+        assert TaskClassifier._should_suppress_tools(
+            "tell me if a device came online", Category.SIMPLE
+        ) is False
+
+    def test_suppress_false_for_research_in_simple(self):
+        assert TaskClassifier._should_suppress_tools(
+            "look up the CVE", Category.SIMPLE
+        ) is False
 
 
 # ─── CircuitBreaker Tests ────────────────────────────────────────────────
@@ -976,4 +1062,48 @@ class TestClassifySemantic:
         assert TaskClassifier._parse_llm_category("") is None
         assert TaskClassifier._parse_llm_category(None) is None
 
+
+# ─── Eval Set (golden cases from tests/eval/evalset.yaml) ────────────────
+
+def _load_eval_cases():
+    """Load the eval set YAML. Returns list of (input, expected_category) tuples.
+
+    Falls back to an empty list (test skipped) if PyYAML or the file is
+    unavailable — never blocks the test suite from running.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return []
+    eval_path = Path(__file__).parent / "eval" / "evalset.yaml"
+    if not eval_path.exists():
+        return []
+    data = yaml.safe_load(eval_path.read_text())
+    return [
+        (case["input"], Category(case["expected_category"]))
+        for case in (data.get("cases") or [])
+    ]
+
+
+_EVAL_CASES = _load_eval_cases()
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    _EVAL_CASES,
+    ids=[f"eval-{i}" for i in range(len(_EVAL_CASES))],
+)
+def test_evalset_classification(message, expected):
+    """Eval set: realistic conversational inputs must classify correctly.
+
+    These are the golden cases from tests/eval/evalset.yaml — distinct from
+    the deterministic TestTaskClassifier cases. They measure classification
+    quality on the kind of ambiguous, real-world messages users send. A
+    failure here means the keyword classifier is misclassifying a realistic
+    input (the exact failure mode that broke the unifi-skill query).
+    """
+    assert TaskClassifier.classify(message) == expected, (
+        f"eval case misclassified: {message!r} -> "
+        f"{TaskClassifier.classify(message)} (expected {expected})"
+    )
 

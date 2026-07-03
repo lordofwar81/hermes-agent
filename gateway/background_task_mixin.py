@@ -93,7 +93,7 @@ class BackgroundTaskMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = _load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, session_key=task_id)
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).

@@ -130,6 +130,17 @@ class TaskClassifier:
         "refactor", "rewrite", "rework", "design",
         "cron", "docker", "compose",
         "container", "pipeline", "workflow",
+        # Code-execution vocabulary (eval-set gaps): these words appear in
+        # debugging/implementation requests without any other code keyword,
+        # causing the classifier to default to SIMPLE.
+        "function", "error", "errors", "crash", "crashed", "throw", "throwing",
+        "throws", "failed", "failure", "exception", "broken", "broke",
+        "validation", "validate", "regex", "callback", "async", "await",
+        "git", "merge", "commit", "branch",
+        # Test/CI vocabulary
+        "pytest", "unittest", "ci", "failing",
+        # Language/runtime nouns that imply code context
+        "keyerror", "indexerror", "attributeerror", "segfault",
     })
     _CODE_MULTIWORD_PHRASES = frozenset({
         "next step",
@@ -168,16 +179,72 @@ class TaskClassifier:
         "what causes", "redesign", "improve", "tradeoff", "trade-off",
         "advantage", "disadvantage",
         "explain the difference",
+        # Eval-set gaps: reasoning-seeking phrasings the keyword path missed.
+        "help me understand", "walk me through", "right way to",
+        "overcomplicating", "thought process",
     })
 
     _GREETING_KW = frozenset({
         "hello", "hi", "hey", "thanks", "thank you", "ty",
         "cheers", "ok", "okay", "got it", "understood", "bye", "goodbye",
+        # Time-of-day greetings (eval-set gap).
+        "morning", "afternoon", "evening", "good morning", "good afternoon",
+        "good evening",
     })
+
+    # Action-intent phrases: messages asking the agent to DO something —
+    # use a skill, check status, look something up, configure, monitor.
+    # These must NOT classify as SIMPLE (which strips tools and routes to
+    # a weak local model). Multi-word phrases matched as substrings on the
+    # lowercased text. Replaces the prior _RESEARCH_KW set with broader
+    # coverage of action verbs that the unifi-skill failure exposed.
+    _ACTION_MULTIWORD = frozenset({
+        # Information requests
+        "tell me if", "tell me whether", "tell me what", "tell me when",
+        "tell me about", "tell me how", "tell me which",
+        "show me", "show me if", "show me what", "show me how",
+        "check if", "check whether", "check for", "check the", "check on",
+        "check this", "check that", "check any", "check all",
+        "look up", "lookup", "find out", "find me", "find any", "find all",
+        "search for", "google", "research",
+        # Setup/config actions
+        "set up", "configure",
+        # Monitoring/scanning
+        "scan for", "scan the", "watch for", "watch the",
+        "alert me", "notify me", "notify when", "notify if",
+        "monitor the", "monitor for",
+        # Listing/reporting
+        "list all", "list the", "list any",
+        "report on", "report back",
+        "summarize this", "summarize the", "summarize what",
+        # Investigation/lookup
+        "what's at", "what is at", "what's on", "what's new on",
+        "what is the latest on", "anything on",
+        "info on", "information on",
+        "learn about", "read about", "read me",
+        # Skill invocation
+        "use skill", "use the skill", "use your",
+    })
+
+    # Imperative-start verbs: a sentence that STARTS with an action verb is
+    # an action request even when no multi-word phrase matches (e.g.,
+    # "Use unifi skill" → "use" at start, "restart the gateway" → "restart").
+    # Only checked at sentence boundaries to avoid false positives like
+    # "I use vim" (where "use" is not imperative).
+    _ACTION_IMPERATIVE_RE = re.compile(
+        r'(?:^|[.!?]\s+)'
+        r'(?:use|check|show|tell|find|list|scan|monitor|configure|'
+        r'summarize|report|watch|alert|notify|search|lookup|start|stop|'
+        r'restart|create|delete|add|remove|update|install|run|test|ping|'
+        r'fetch|pull|push|deploy|build|kill|send|post|get|set)\b'
+    )
 
     _EXPERT_PHRASES = [
         "design a system", "design a complete system", "design an architecture",
         "design a microservice", "design a distributed", "design a scalable",
+        # Eval-set gap: "design a complete distributed system" wasn't caught
+        # because the phrase required an exact "design a complete system".
+        "design a complete",
         "implement a complete", "end-to-end", "full system",
         "architect a", "architect the",
         "build a complete", "build an entire", "comprehensive system",
@@ -209,6 +276,38 @@ class TaskClassifier:
                 return True
         return False
 
+    @classmethod
+    def _has_action_intent(cls, message: str) -> bool:
+        """True when a message asks the agent to DO something actionable.
+
+        Catches imperative action requests ("use unifi skill", "tell me if a
+        new device came online", "check the logs", "show me what's at X")
+        that the keyword classifier would otherwise bucket as SIMPLE and
+        route to a tool-less local model. This is the fix for the failure
+        where the unifi-skill query got stranded on mac-qwen36 with no tools.
+        """
+        text_lower = (message or "").lower()
+        if any(kw in text_lower for kw in cls._ACTION_MULTIWORD):
+            return True
+        if cls._ACTION_IMPERATIVE_RE.search(text_lower):
+            return True
+        return False
+
+    @classmethod
+    def _should_suppress_tools(cls, message: str, category: Category) -> bool:
+        """Decide whether tool definitions should be suppressed for a turn.
+
+        Only genuinely trivial messages suppress tools: short greeting/simple
+        turns with no action intent, no external subject lookup, and no
+        code/skill vocabulary. The prior rule (category in GREETING/SIMPLE →
+        suppress) was too blunt — it stranded action requests misbucketed as
+        SIMPLE by stripping the very tools they needed.
+        """
+        if category not in (Category.GREETING, Category.SIMPLE):
+            return False
+        if cls._has_action_intent(message):
+            return False
+        return True
 
     @classmethod
     def classify(cls, message: str) -> Category:
@@ -222,7 +321,10 @@ class TaskClassifier:
         # Greeting: short message with greeting keyword, but NOT if it contains
         # code intent (e.g., "ok, deploy it" is CODE, not GREETING).
         # Uses word-boundary matching so 'fix' doesn't block 'fixed' greetings.
-        if len(text) <= 25:
+        # Threshold is 35 chars: covers "thanks, that worked perfectly" (30)
+        # and "morning! how are you today?" (27) while still excluding real
+        # tasks. Code-keyword guard backstops longer messages.
+        if len(text) <= 35:
             if not cls._has_code_keyword(text_lower):
                 for g in cls._GREETING_KW:
                     if len(g.split()) == 1:
@@ -264,6 +366,16 @@ class TaskClassifier:
 
         # Analysis: comparison/evaluation (non-override path, no code kw overlap)
         if any(kw in text_lower for kw in cls._ANALYSIS_KW):
+            return Category.ANALYSIS
+
+        # Action intent: a message asking the agent to DO something (use a
+        # skill, check status, look something up) must NOT fall through to
+        # SIMPLE — that would route it to a tool-less local model and strand
+        # the agent. Upgrade to ANALYSIS (cloud-first, tools on). This is the
+        # fix for the unifi-skill failure: "Use unifi skill. Tell me if a new
+        # wired Linux device just came online" was bucketed SIMPLE → local →
+        # no tools → 8 minutes of thrashing → empty reply.
+        if cls._has_action_intent(text):
             return Category.ANALYSIS
 
         # Default: simple
@@ -885,13 +997,14 @@ class Router:
                 fallback_count += 1
                 continue
 
-            # Found a valid provider
+            # Found a valid provider. Decide tool suppression via the unified
+            # predicate — only genuinely trivial GREETING/SIMPLE turns (short,
+            # no action intent) suppress tools. Action requests ("use skill",
+            # "check status", "tell me if") keep tools even if misclassified
+            # as SIMPLE, so they never strand the agent on a tool-less model.
             suppress = suppress_tools_override
             if suppress is None:
-                # Suppress tools for GREETING and SIMPLE — saves ~2K tokens per
-                # turn on short queries (time checks, yes/no, etc.) routed to
-                # local models that don't need tool definitions.
-                suppress = category in (Category.GREETING, Category.SIMPLE)
+                suppress = TaskClassifier._should_suppress_tools(message, category)
 
             logger.info(
                 "Route: %s -> %s (%s, local=%s, tools=%s, fallbacks=%d)",

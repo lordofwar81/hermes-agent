@@ -1115,7 +1115,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "api_key": runtime_kwargs.get("api_key"),
                     "provider": runtime_kwargs.get("provider"),
                 }
-                _route = route_turn(user_message, _primary_cfg)
+                _route = route_turn(user_message, _primary_cfg, session_key=gateway_session_key)
                 if _route is not None:
                     model = _route.model
                     runtime_kwargs["base_url"] = _route.base_url

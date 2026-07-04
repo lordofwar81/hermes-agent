@@ -5142,3 +5142,24 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+class AsyncSessionDB:
+    """Async door onto SessionDB: offloads each call via asyncio.to_thread so a
+    blocking SQLite call never freezes the event loop.  Generic forwarder —
+    every method returns ``await asyncio.to_thread(self._db.<method>, ...)``.
+    Imported by upstream cherry-picked tests (IDOR /resume suite)."""
+
+    def __init__(self, db: "SessionDB") -> None:
+        self._db = db
+
+    def __getattr__(self, name: str):
+        import asyncio
+        attr = getattr(self._db, name)
+        if not callable(attr):
+            return attr
+
+        async def _offloaded(*args, **kwargs):
+            return await asyncio.to_thread(attr, *args, **kwargs)
+
+        return _offloaded

@@ -330,12 +330,15 @@ class HolographicMemoryProvider(MemoryProvider):
         db_path = get_hermes_home() / "state.db"
         if not db_path.exists():
             return []
-        # Build an FTS5 MATCH query: quote terms to avoid syntax errors on
-        # punctuation. Simple word-boundary match on the message content.
+        # Build an FTS5 MATCH query: each term is double-quoted per the FTS5
+        # query syntax spec so that special characters (hyphens, asterisks,
+        # colons, parentheses) in user input do not cause syntax errors or
+        # unintended boolean operators. Strip existing double-quotes from
+        # the raw input first to prevent nested-quote injection.
         terms = [t for t in query.replace('"', "").split() if len(t) >= 2]
         if not terms:
             return []
-        match_expr = " ".join(terms[:6])  # cap at 6 terms to keep MATCH cheap
+        match_expr = " ".join(f'"{t}"' for t in terms[:6])  # cap at 6 terms
         try:
             conn = sqlite3.connect(str(db_path))
             conn.row_factory = sqlite3.Row

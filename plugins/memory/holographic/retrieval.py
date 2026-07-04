@@ -334,14 +334,7 @@ class FactRetriever:
             fact.pop("neural_embed", None)
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            self.store._conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            self.store._conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -426,14 +419,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -509,14 +495,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -600,14 +579,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -913,14 +885,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -1057,6 +1022,22 @@ class FactRetriever:
             logger.debug(
                 "Failed to boost trust for fact_id=%s", fact_id, exc_info=True
             )
+
+    def _increment_retrieval_counts(self, facts: list[dict]) -> None:
+        """Increment retrieval_count for all facts in the list (single UPDATE+commit)."""
+        if not facts:
+            return
+        try:
+            conn = self.store._conn
+            fact_ids = [f["fact_id"] for f in facts]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to increment retrieval counts", exc_info=True)
 
     def _boost_retrieved_facts(self, facts: list[dict]) -> None:
         """Batch boost trust scores for retrieved facts (+0.02 each, capped at 1.0).

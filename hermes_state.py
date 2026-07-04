@@ -524,6 +524,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    session_key TEXT,
+    chat_id TEXT,
+    chat_type TEXT,
+    thread_id TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -1353,19 +1357,56 @@ class SessionDB:
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Insert a session row, enriching NULL metadata on conflict.
+
+        The gateway's ``get_or_create_session`` creates a bare row (source +
+        user_id) *before* the agent exists; the agent's later
+        ``create_session`` then carries the real ``model`` / ``model_config`` /
+        ``system_prompt``. A plain ``INSERT OR IGNORE`` silently dropped that
+        enrichment, leaving gateway sessions with NULL model/billing metadata.
+        The ``ON CONFLICT`` upsert backfills those fields via ``COALESCE`` —
+        only filling columns that are still NULL, never overwriting values an
+        earlier writer already set (so a later bare call with source="unknown"
+        can't clobber a real source/model).
+
+        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
+        thread the session was started in) so that gateway ``/resume`` can prove
+        a persisted, now-inactive row belongs to the caller's chat/thread before
+        switching to it (IDOR scoping — without them the ``sessions`` table has
+        no chat/thread to compare).
+        """
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO sessions (
+                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
+                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       model = COALESCE(sessions.model, excluded.model),
+                       model_config = COALESCE(sessions.model_config, excluded.model_config),
+                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                       session_key = COALESCE(sessions.session_key, excluded.session_key),
+                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    session_key,
+                    chat_id,
+                    chat_type,
+                    thread_id,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,

@@ -298,3 +298,54 @@ def test_flush_guard_clamps_overshooting_cursor():
 
     # min(5, 2) = 2 → nothing skipped below start_idx, cursor settles at 2
     assert agent._last_flushed_db_idx == 2
+
+
+# -- consecutive assistant merge (gemma "2 or more assistant messages") ------
+
+def test_repair_merges_consecutive_assistant_messages():
+    """Two trailing assistant turns merge into one so local servers (gemma)
+    do not reject with HTTP 400 2-or-more-assistant-messages."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "first reply\n\nsecond reply"
+
+
+def test_repair_merges_assistant_when_one_side_empty():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": ""},
+        {"role": "assistant", "content": "real reply"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert messages[-1] == {"role": "assistant", "content": "real reply"}
+
+
+def test_repair_does_not_merge_assistant_with_tool_calls():
+    """assistant(tool_calls) must stay distinct; merging would break
+    tool-call/result pairing and the role-alternation contract."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do x"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "t1", "type": "function",
+                          "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "assistant", "content": "after tools"},
+    ]
+
+    AIAgent._repair_message_sequence(agent, messages)
+
+    assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages)
+    assert messages[-1] == {"role": "assistant", "content": "after tools"}

@@ -123,6 +123,30 @@ class TestFinalizeShutdownFlushesInflightTranscript:
 
         agent.close.assert_called_once()
 
+    def test_strip_scaffolding_runs_before_flush(self):
+        """Empty-response retry scaffolding is stripped from the transcript
+        tail BEFORE the flush, mirroring the graceful ``_persist_session``
+        path so a resumed turn doesn't replay synthetic recovery nudges
+        (#13121 follow-up).  Guards against a regression that drops the
+        ``_drop_trailing_empty_response_scaffolding`` call (which mutation
+        testing flagged as silently removable)."""
+        runner = _make_runner()
+        inflight = [
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": "ok"},
+            # Synthetic recovery scaffolding the strip path must remove.
+            {"role": "assistant", "content": "", "_empty_recovery_synthetic": True},
+        ]
+        agent = _FakeAgent(session_messages=inflight)
+
+        runner._finalize_shutdown_agents({"k": agent})
+
+        # The strip hook must have been invoked on the live transcript...
+        agent._drop_trailing_empty_response_scaffolding.assert_called_once_with(inflight)
+        # ...BEFORE the flush (strip mutates the list in place, then flush
+        # persists the trimmed tail).
+        agent._flush_messages_to_session_db.assert_called_once_with(inflight)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # E2E: real AIAgent flush → real SessionDB → real load_transcript.

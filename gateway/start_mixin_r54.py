@@ -45,7 +45,6 @@ import time
 from gateway.config import Platform
 from gateway.gateway_agent_mgmt import _update_platform_runtime_status
 from gateway.gateway_async_utils import (
-    _connect_adapter_with_timeout,
     _safe_adapter_disconnect,
 )
 
@@ -133,7 +132,7 @@ class GatewayStartMixin:
                 error_message=None,
             )
             try:
-                success = await _connect_adapter_with_timeout(adapter, platform)
+                success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
@@ -274,7 +273,23 @@ class GatewayStartMixin:
 
         self._running = True
         self._update_runtime_status("running")
-        
+
+        # Bring up adapters for every non-active profile this gateway serves
+        # (gateway.multiplex_profiles). No-op unless the flag is on. Runs after
+        # the primary startup loop so the active profile's adapters seed the
+        # credential-conflict detection. A MultiplexConfigError (e.g. a
+        # secondary profile binding a port) aborts startup cleanly.
+        try:
+            _secondary_connected = await self._start_secondary_profile_adapters()
+            connected_count += _secondary_connected
+        except Exception as _mux_exc:
+            # Re-raise config errors so the operator fixes config.yaml instead
+            # of running a half-wired multiplexer; log+continue on others.
+            from gateway.run import MultiplexConfigError
+            if isinstance(_mux_exc, MultiplexConfigError):
+                raise
+            logger.error("Secondary-profile adapter startup failed: %s", _mux_exc, exc_info=True)
+
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:

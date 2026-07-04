@@ -37,13 +37,37 @@ from agent.routing import (
     routing_status,
     FAILURE_THRESHOLD,
     RECOVERY_TIMEOUT_SECONDS,
+    SESSION_ACTIVE_WINDOW_S,
+    SESSION_MIN_PRIOR_TURNS,
+    SESSION_UPGRADE_CATEGORY,
+    SUBSTANTIVE_CATEGORIES,
 )
+
+
+# ─── Singleton cleanup ──────────────────────────────────────────────────
+# Several test classes initialize the global router singleton (init_router).
+# Without resetting it after each test, a leaked _instance pollutes downstream
+# test modules (e.g. gateway tests) whose _resolve_turn_agent_config would
+# then route against a stale test router. This autouse fixture guarantees the
+# singleton is cleared after every test in this module, regardless of which
+# class/method touched it.
+@pytest.fixture(autouse=True)
+def _reset_router_singleton():
+    yield
+    import agent.routing as routing_mod
+    routing_mod._instance = None
 
 
 # ─── Test Config ─────────────────────────────────────────────────────────
 
 def make_test_config() -> dict:
-    """Minimal routing config for testing. All providers have keys."""
+    """Minimal routing config for testing. All providers have keys.
+
+    All 6 category chains are defined (previously only code/expert/greeting
+    existed, so simple/reasoning/analysis silently fell to default_chain —
+    masking chain-selection bugs). Chains are cloud-first to match the
+    production config after the routing fix.
+    """
     return {
         "routing": {
             "providers": [
@@ -78,6 +102,9 @@ def make_test_config() -> dict:
             "chains": {
                 "code": ["zai-main", "strix-local", "venice-ds"],
                 "expert": ["zai-main", "venice-ds"],
+                "reasoning": ["zai-main", "venice-ds"],
+                "analysis": ["zai-main", "venice-ds"],
+                "simple": ["zai-main", "strix-local"],
                 "greeting": ["strix-local", "zai-main"],
             },
             "default_chain": ["zai-main"],
@@ -107,7 +134,7 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("goodbye") == Category.GREETING
 
     def test_not_greeting_long_message(self):
-        """Messages >25 chars should not be classified as GREETING even with greeting keywords."""
+        """Messages with code keywords should not be classified as GREETING even with greeting keywords."""
         assert TaskClassifier.classify("ok, now I need you to debug this thing") != Category.GREETING
 
     def test_code_backticks(self):
@@ -206,7 +233,11 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("what time is it") == Category.SIMPLE
 
     def test_simple_long_question(self):
-        assert TaskClassifier.classify("can you tell me about the weather today") == Category.SIMPLE
+        # Genuinely trivial long question with no action/research intent.
+        # "tell me about the weather" was the old case, but that IS an action
+        # request (needs web_search for live data) — moved to action-intent
+        # tests. This replacement is pure trivia with no action verb.
+        assert TaskClassifier.classify("what is the boiling point of water at sea level") == Category.SIMPLE
 
     def test_empty_string(self):
         assert TaskClassifier.classify("") == Category.SIMPLE
@@ -261,6 +292,173 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("make it production-ready") == Category.EXPERT
         assert TaskClassifier.classify("make it production ready") == Category.EXPERT
         assert TaskClassifier.classify("production ready code") == Category.EXPERT
+
+    # ── Action-intent classification (D1 fix) ───────────────────────────
+    # These messages were all bucketed SIMPLE by the old keyword classifier
+    # because they lack code/analysis vocabulary. They route to local models
+    # with tools stripped, stranding the agent. Now classified ANALYSIS so
+    # they hit cloud-first chains with tools on.
+
+    def test_action_use_skill(self):
+        """The unifi-skill failure: 'Use unifi skill...' must not be SIMPLE."""
+        msg = "Use unifi skill. Tell me if a new wired Linux device just came online"
+        assert TaskClassifier.classify(msg) == Category.ANALYSIS
+
+    def test_action_tell_me_if(self):
+        """'Tell me if X' is an action request needing tools, not trivia."""
+        assert TaskClassifier.classify("Tell me if a new device came online") == Category.ANALYSIS
+
+    def test_action_check_status(self):
+        """'Check the...' is an action request — must not be SIMPLE."""
+        # Note: may classify as CODE or ANALYSIS depending on vocabulary
+        # ("logs"/"errors" hit code keywords). Either is fine — both are
+        # tool-capable cloud-first categories. The point is it's NOT SIMPLE.
+        result = TaskClassifier.classify("Check the logs for errors")
+        assert result in (Category.CODE, Category.ANALYSIS)
+
+    def test_action_show_me(self):
+        assert TaskClassifier.classify("Show me what's at 192.168.1.191") == Category.ANALYSIS
+
+    def test_action_look_up(self):
+        assert TaskClassifier.classify("Look up the latest CVE for openssl") == Category.ANALYSIS
+
+    def test_action_configure(self):
+        assert TaskClassifier.classify("Set up the new sensor") == Category.ANALYSIS
+
+    def test_action_imperative_start(self):
+        """Sentence starting with an action verb classifies as ANALYSIS."""
+        assert TaskClassifier.classify("Restart the gateway service") == Category.ANALYSIS
+        assert TaskClassifier.classify("List all running containers") == Category.ANALYSIS
+
+    def test_action_not_triggered_by_non_imperative(self):
+        """'I use vim' should NOT trigger action intent (use is not imperative there)."""
+        # 'I use vim for editing' — 'use' is mid-sentence, not imperative
+        assert TaskClassifier.classify("I use vim for editing and I love it") == Category.SIMPLE
+
+    def test_action_tell_me_about_weather(self):
+        """'tell me about X today' needs tools (live data) → ANALYSIS, not SIMPLE."""
+        assert TaskClassifier.classify("can you tell me about the weather today") == Category.ANALYSIS
+
+    # ── _should_suppress_tools predicate (D2 fix) ───────────────────────
+
+    def test_suppress_trivial_greeting(self):
+        """Genuine greetings still suppress tools."""
+        assert TaskClassifier._should_suppress_tools("hi", Category.GREETING) is True
+        assert TaskClassifier._should_suppress_tools("thanks", Category.GREETING) is True
+
+    def test_suppress_trivial_simple(self):
+        """Genuine trivia still suppresses tools."""
+        assert TaskClassifier._should_suppress_tools("what time is it", Category.SIMPLE) is True
+
+    def test_suppress_false_for_code(self):
+        """Non-trivial categories never suppress tools."""
+        assert TaskClassifier._should_suppress_tools("fix the bug", Category.CODE) is False
+        assert TaskClassifier._should_suppress_tools("compare X vs Y", Category.ANALYSIS) is False
+
+    def test_suppress_false_for_action_in_simple(self):
+        """An action request misbucketed as SIMPLE keeps tools."""
+        assert TaskClassifier._should_suppress_tools(
+            "tell me if a device came online", Category.SIMPLE
+        ) is False
+
+    def test_suppress_false_for_research_in_simple(self):
+        assert TaskClassifier._should_suppress_tools(
+            "look up the CVE", Category.SIMPLE
+        ) is False
+
+    # ── Mutation-killing tests (classify boundary cases) ────────────────
+
+    def test_code_single_backtick_no_code_keyword(self):
+        """A single backtick with NO code keyword must still classify as CODE.
+
+        Kills mutant that changes `or` to `and` in the backtick check —
+        without this, a single-backtick message with no keyword would fall
+        through to SIMPLE (mutmut classify_6).
+        """
+        # "a`b" — has a backtick, no code keyword, no triple backtick
+        assert TaskClassifier.classify("run `check` thing") == Category.CODE
+
+    def test_greeting_boundary_exactly_35_chars(self):
+        """A 35-char greeting message must classify as GREETING (<= boundary).
+
+        Kills mutants that change <=35 to <35 (mutmut classify_11).
+        """
+        # Exactly 35 chars: "thanks for the help with this" = 29... need exact
+        msg = "ok, that is perfectly fine"  # 26 chars, has greeting "ok"
+        assert len(msg) <= 35
+        assert TaskClassifier.classify(msg) == Category.GREETING
+        # Construct a message at exactly 35 chars with a greeting keyword
+        msg35 = "ok, " + "x" * 31  # 35 chars, starts with "ok"
+        assert len(msg35) == 35
+        assert TaskClassifier.classify(msg35) == Category.GREETING
+
+    def test_greeting_boundary_exactly_36_chars_not_greeting(self):
+        """A 36-char message with greeting keyword must NOT be GREETING.
+
+        Kills mutant that changes <=35 to <=36 (mutmut classify_12).
+        """
+        msg36 = "ok, " + "x" * 32  # 36 chars, starts with "ok"
+        assert len(msg36) == 36
+        assert TaskClassifier.classify(msg36) != Category.GREETING
+
+    def test_continuation_alone_is_simple(self):
+        """A bare continuation phrase with no code keyword must be SIMPLE.
+
+        Kills mutant that inverts `in` to `not in` on continuation phrases
+        (mutmut classify_35). With the inversion, `not in` is almost always
+        True, so the branch is taken — but then the code-keyword check fails
+        and it falls through anyway. This test pins the correct behavior:
+        a continuation phrase alone classifies as SIMPLE.
+        """
+        result = TaskClassifier.classify("keep going")
+        assert result == Category.SIMPLE
+
+    def test_continuation_with_code_keyword_is_code(self):
+        """Continuation phrase + code keyword → CODE (not SIMPLE)."""
+        assert TaskClassifier.classify("continue with the deploy") == Category.CODE
+
+    def test_has_action_intent_none_message(self):
+        """None message must not trigger action intent (kills mutmut_4)."""
+        assert TaskClassifier._has_action_intent(None) is False
+        assert TaskClassifier._has_action_intent("") is False
+
+    # ── Stress-test found bugs (now fixed) ──────────────────────────────
+
+    def test_crashing_variants_are_code(self):
+        """All crash variants (crash/crashed/crashing) classify as CODE.
+
+        The stress test found 'crashing' was missing from the keyword set
+        — boundary regex matched 'crash' but not 'crashing' (different word).
+        """
+        assert TaskClassifier.classify("the thing keeps crashing") == Category.CODE
+        assert TaskClassifier.classify("the app crashed again") == Category.CODE
+        assert TaskClassifier.classify("watch it crash") == Category.CODE
+
+    def test_long_debug_description_not_simple(self):
+        """A 200-char debugging description with no single code keyword
+        still reaches a tool-capable category, not SIMPLE+suppressed.
+
+        Stress test found this landed SIMPLE because 'hangs', 'timeout',
+        'upload' etc. weren't in the code keyword set.
+        """
+        msg = ("So I've been working on this feature where the user uploads a file "
+               "and it gets processed, but every time I try to upload something larger "
+               "than 5MB the whole thing just hangs and eventually times out.")
+        cat = TaskClassifier.classify(msg)
+        assert cat != Category.SIMPLE, f"long debug wrongly classified as SIMPLE"
+        assert not TaskClassifier._should_suppress_tools(msg, cat)
+
+    def test_greeting_with_action_not_greeting(self):
+        """A short greeting-adjacent message with action intent must NOT
+        classify as GREETING (which would suppress tools).
+
+        'hey what's the weather' has 'hey' but also action/research intent.
+        Found by stress test — greeting fired before action check.
+        """
+        # "hey check the logs" — has 'hey' but also 'check' (action)
+        assert TaskClassifier.classify("hey check the logs") != Category.GREETING
+        # "hi show me the error" — has 'hi' but also 'show me' (action)
+        assert TaskClassifier.classify("hi show me the error") != Category.GREETING
 
 
 # ─── CircuitBreaker Tests ────────────────────────────────────────────────
@@ -349,14 +547,56 @@ class TestBudgetTracker:
             assert not bt.is_available()
 
     def test_daily_reset(self):
+        # Cycle label changes → budget resets even if spend was maxed.
         with tempfile.TemporaryDirectory() as tmpdir:
             bt = self._isolated_tracker(10.0, tmpdir)
             bt.record(10.0)
             bt._cache = None
             assert not bt.is_available()
-            mock_dt = MagicMock()
-            mock_dt.strftime.return_value = "2099-01-01"
-            with patch.object(bt, "_now_pst", return_value=mock_dt):
+            # Next cycle label → tracker treats it as a fresh cycle.
+            with patch.object(bt, "_budget_cycle_label", return_value="2099-01-01"):
+                bt._cache = None
+                assert bt.is_available()
+
+    # ── 5pm PT boundary (BUDGET_RESET_HOUR_PST = 17) ────────────────────
+    # Venice resets at 5pm Pacific, not midnight. These tests pin the cycle
+    # label logic so spend recorded just before vs just after 5pm lands in
+    # the correct cycle. Uses real datetime objects (no MagicMock strftime).
+
+    def _dt(self, y, mo, d, h, mi=0):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime(y, mo, d, h, mi, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    def test_before_5pm_belongs_to_prior_days_cycle(self):
+        # 2026-06-26 16:00 PT → still in the cycle that started 06-25 17:00.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 16)) == "2026-06-25"
+
+    def test_at_exactly_5pm_starts_new_cycle(self):
+        # 2026-06-26 17:00 PT → new cycle, label = 06-26.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 17)) == "2026-06-26"
+
+    def test_after_5pm_same_cycle_as_tomorrow_morning(self):
+        # 06-26 23:00 and 06-27 04:00 are both in the 06-26 cycle.
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 26, 23)) == "2026-06-26"
+        assert BudgetTracker._budget_cycle_label(self._dt(2026, 6, 27, 4)) == "2026-06-26"
+
+    def test_spend_before_5pm_not_reset_by_midnight_rollover(self):
+        # Regression guard for the original bug: a file stamped "today" at
+        # 4pm must NOT be considered a new cycle just because the calendar
+        # date rolled past midnight. With the 5pm rule, the file written at
+        # 4pm on the 26th has last_reset = cycle_label(26th 4pm) = "25th".
+        # A read at 11pm same calendar day sees cycle_label(26th 23:00) = "26th"
+        # → different label → correctly resets (the 5pm boundary crossed).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bt = self._isolated_tracker(10.0, tmpdir)
+            with patch.object(BudgetTracker, "_now_pst", return_value=self._dt(2026, 6, 26, 16)):
+                bt.record(10.0)
+                bt._cache = None
+                assert not bt.is_available()
+            # 11pm same calendar day — midnight-rollover rule would NOT reset
+            # (same date string), but 5pm rule SHOULD (boundary crossed).
+            with patch.object(BudgetTracker, "_now_pst", return_value=self._dt(2026, 6, 26, 23)):
                 bt._cache = None
                 assert bt.is_available()
 
@@ -619,6 +859,124 @@ class TestRouter:
         assert result.model == "glm-5"
 
 
+# ─── Session-Aware Routing Guard Tests ────────────────────────────────────
+
+class TestSessionAwareRouting:
+    """The session-aware guard: once a session has had substantive work,
+    a later SIMPLE/GREETING turn is upgraded so it is not routed to a
+    tool-less local model mid-conversation. Regression coverage for the
+    2026-06-25 incident where turn 8 of a 51-tool-call session got
+    dumped to a slow local model because 'estradiol was high...' hit the
+    keyword default."""
+
+    def teardown_method(self):
+        # Reset the router singleton so tests that go through route_turn
+        # (the gateway entry point) don't leak a test router into other
+        # test modules that rely on _instance being None by default.
+        import agent.routing as routing_mod
+        routing_mod._instance = None
+
+    def _make_router(self, config=None):
+        return Router(config or make_test_config())
+
+    def _primary_config(self):
+        return {
+            "model": "glm-5-turbo",
+            "base_url": "https://api.zai.ai/v1",
+            "api_key": "primary-key",
+            "provider": "primary",
+        }
+
+    def test_no_session_key_preserves_original_behavior(self):
+        """Omitting session_key (cron, one-shot CLI) must behave exactly as
+        before — no upgrade, no recording."""
+        router = self._make_router()
+        result = router.route("hello", self._primary_config())
+        assert result.category == Category.GREETING
+        assert result.suppress_tools
+
+    def test_inactive_session_not_upgraded(self):
+        """A fresh session_key with no prior substantive turns must NOT
+        upgrade — the first message of a chat can still be a greeting."""
+        router = self._make_router()
+        result = router.route("hello", self._primary_config(), session_key="s1")
+        assert result.category == Category.GREETING
+        assert result.suppress_tools
+
+    def test_substantive_turn_activates_session(self):
+        """A CODE turn marks the session active."""
+        router = self._make_router()
+        router.route("debug the crash", self._primary_config(), session_key="s1")
+        assert router._session_is_active("s1")
+
+    def test_trivial_turn_does_not_activate_session(self):
+        """A GREETING/SIMPLE turn must NOT mark the session active — a lone
+        'hello' shouldn't make the next turn eligible for upgrade."""
+        router = self._make_router()
+        router.route("hello", self._primary_config(), session_key="s1")
+        assert not router._session_is_active("s1")
+
+    def test_active_session_upgrades_simple_to_code(self):
+        """The core fix: after a substantive turn, a SIMPLE message is
+        upgraded to CODE (API-first, tools enabled)."""
+        router = self._make_router()
+        # turn 1: substantive
+        router.route("debug the crash", self._primary_config(), session_key="s1")
+        # turn 2: would-be SIMPLE
+        result = router.route("what time is it", self._primary_config(), session_key="s1")
+        assert result.category == Category.CODE
+        # upgraded turn must keep tools enabled (CODE is not suppressed)
+        assert not result.suppress_tools
+
+    def test_active_session_upgrades_greeting_to_code(self):
+        """Same guard for GREETING — the estradiol incident was a short
+        reply misread as trivial."""
+        router = self._make_router()
+        router.route("implement the feature", self._primary_config(), session_key="s1")
+        result = router.route("ok", self._primary_config(), session_key="s1")
+        assert result.category == Category.CODE
+        assert not result.suppress_tools
+
+    def test_sessions_are_isolated(self):
+        """Activity in session A must not upgrade a turn in session B."""
+        router = self._make_router()
+        router.route("debug this", self._primary_config(), session_key="A")
+        # session B has no history
+        result = router.route("ok", self._primary_config(), session_key="B")
+        assert result.category == Category.GREETING
+
+    def test_window_expiry_deactivates_session(self):
+        """After SESSION_ACTIVE_WINDOW_S with no substantive turn, the
+        session is no longer active and turns are not upgraded."""
+        router = self._make_router()
+        router.route("debug this", self._primary_config(), session_key="s1")
+        # Backdate the recorded timestamp past the window
+        stale = time.time() - SESSION_ACTIVE_WINDOW_S - 1
+        router._session_activity["s1"] = [stale]
+        assert not router._session_is_active("s1")
+        result = router.route("ok", self._primary_config(), session_key="s1")
+        assert result.category == Category.GREETING
+
+    def test_route_turn_threads_session_key(self):
+        """The gateway entry point must honor session_key end-to-end."""
+        import agent.routing as routing_mod
+        routing_mod._instance = None
+        init_router(make_test_config())
+        # prime the session
+        route_turn("debug the crash", self._primary_config(), session_key="sx")
+        result = route_turn("ok", self._primary_config(), session_key="sx")
+        assert result is not None
+        assert result.category == Category.CODE
+        routing_mod._instance = None
+
+    def test_activity_buffer_is_bounded(self):
+        """Very long sessions must not grow the activity list unbounded."""
+        router = self._make_router()
+        for _ in range(200):
+            router.route("debug this", self._primary_config(), session_key="long")
+        assert len(router._session_activity["long"]) <= 64
+
+
 # ─── Singleton Interface Tests ────────────────────────────────────────────
 
 class TestSingletonInterface:
@@ -798,4 +1156,48 @@ class TestClassifySemantic:
         assert TaskClassifier._parse_llm_category("") is None
         assert TaskClassifier._parse_llm_category(None) is None
 
+
+# ─── Eval Set (golden cases from tests/eval/evalset.yaml) ────────────────
+
+def _load_eval_cases():
+    """Load the eval set YAML. Returns list of (input, expected_category) tuples.
+
+    Falls back to an empty list (test skipped) if PyYAML or the file is
+    unavailable — never blocks the test suite from running.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return []
+    eval_path = Path(__file__).parent / "eval" / "evalset.yaml"
+    if not eval_path.exists():
+        return []
+    data = yaml.safe_load(eval_path.read_text())
+    return [
+        (case["input"], Category(case["expected_category"]))
+        for case in (data.get("cases") or [])
+    ]
+
+
+_EVAL_CASES = _load_eval_cases()
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    _EVAL_CASES,
+    ids=[f"eval-{i}" for i in range(len(_EVAL_CASES))],
+)
+def test_evalset_classification(message, expected):
+    """Eval set: realistic conversational inputs must classify correctly.
+
+    These are the golden cases from tests/eval/evalset.yaml — distinct from
+    the deterministic TestTaskClassifier cases. They measure classification
+    quality on the kind of ambiguous, real-world messages users send. A
+    failure here means the keyword classifier is misclassifying a realistic
+    input (the exact failure mode that broke the unifi-skill query).
+    """
+    assert TaskClassifier.classify(message) == expected, (
+        f"eval case misclassified: {message!r} -> "
+        f"{TaskClassifier.classify(message)} (expected {expected})"
+    )
 

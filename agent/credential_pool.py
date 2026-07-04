@@ -110,6 +110,14 @@ SUPPORTED_POOL_STRATEGIES = {
 # 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
 # Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
+# api_key credentials cannot be "refreshed" the way OAuth tokens can — a 401
+# against a static api_key is almost always a transient/spurious provider-side
+# rejection (seen on Z.AI with valid keys: "token expired or incorrect" on a
+# key that tests 200 seconds later). A 5-minute cooldown per key means just two
+# spurious 401s within 5 minutes exhausts the whole pool and surfaces
+# "Provider authentication failed" to the user. Use a short cooldown so the key
+# re-enters rotation quickly and the second pool key can cover the window.
+EXHAUSTED_TTL_401_API_KEY_SECONDS = 30          # 30 seconds
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
@@ -247,9 +255,17 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+def _exhausted_ttl(error_code: Optional[int], entry: "Optional[PooledCredential]" = None) -> int:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion.
+
+    For 401 auth failures on api_key credentials, use a short cooldown: api_key
+    secrets cannot be refreshed, and provider-side spurious 401s (e.g. Z.AI
+    "token expired or incorrect" on a valid key) are transient. A long cooldown
+    risks exhausting every key in a small pool within minutes.
+    """
     if error_code == 401:
+        if entry is not None and getattr(entry, "auth_type", "") == AUTH_TYPE_API_KEY:
+            return EXHAUSTED_TTL_401_API_KEY_SECONDS
         return EXHAUSTED_TTL_401_SECONDS
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
@@ -341,7 +357,7 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+        return entry.last_status_at + _exhausted_ttl(entry.last_error_code, entry)
     return None
 
 

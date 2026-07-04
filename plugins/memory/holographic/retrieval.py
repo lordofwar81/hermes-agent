@@ -6,8 +6,13 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
+import re
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -22,6 +27,157 @@ except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
 
+# ── LLM contradiction verifier ────────────────────────────────────────
+# Precision pass on top of the structural contradict() detector. The
+# structural detector flags any fact pair with high entity overlap + low
+# content similarity; this class asks a local LLM whether the pair is a
+# *real* semantic contradiction, killing false positives (e.g. two facts
+# about the same entity that merely describe different aspects).
+#
+# Fail-open by design: any failure (no endpoint, timeout, parse error)
+# returns None, and the caller falls back to the structural score alone.
+
+_DEFAULT_LLM_URL = os.environ.get(
+    "HERMES_CONTRADICT_LLM_URL",
+    "http://192.168.1.149:8000/v1/chat/completions",  # Mac Studio, Qwen3.6-35B
+)
+_DEFAULT_LLM_MODEL = os.environ.get(
+    "HERMES_CONTRADICT_LLM_MODEL",
+    "mlx-community/Qwen3.6-35B-A3B-4bit",
+)
+_DEFAULT_LLM_KEY = os.environ.get("LLM_SERVER_KEY", "notempty")
+_LLM_TIMEOUT = 15  # seconds — fail fast, don't block the detector
+
+
+class LLMVerifier:
+    """Minimal OpenAI-compatible chat client for contradiction verification.
+
+    One instance is cheap to construct (no connection held). alive is
+    probed once on first use and cached. All public methods degrade to
+    None on any failure — never raises to the caller.
+    """
+
+    def __init__(
+        self,
+        url: str = _DEFAULT_LLM_URL,
+        model: str = _DEFAULT_LLM_MODEL,
+        api_key: str = _DEFAULT_LLM_KEY,
+        timeout: int = _LLM_TIMEOUT,
+    ):
+        self.url = url
+        self.model = model
+        self.api_key = api_key
+        self.timeout = timeout
+        self._alive: bool | None = None
+
+    @property
+    def alive(self) -> bool:
+        if self._alive is not None:
+            return self._alive
+        self._alive = self._probe()
+        return self._alive
+
+    def _probe(self) -> bool:
+        try:
+            models_url = self.url.replace("/chat/completions", "/models")
+            req = urllib.request.Request(
+                models_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status == 200
+        except Exception:
+            logger.debug("LLM verifier probe failed", exc_info=True)
+            return False
+
+    def verify_contradiction(
+        self, text_a: str, text_b: str
+    ) -> dict | None:
+        """Ask the LLM whether two statements genuinely contradict.
+
+        Returns dict {is_contradiction: bool, confidence: float, reasoning: str}
+        or None if the LLM is unavailable or the response couldn't be parsed.
+        """
+        if not self.alive:
+            return None
+
+        prompt = (
+            "You are a contradiction detection system. Compare these two "
+            "statements and determine if they make conflicting claims about "
+            "the same subject.\n\n"
+            f'Statement A: "{text_a}"\n\n'
+            f'Statement B: "{text_b}"\n\n'
+            "Two facts about the same entity that describe different aspects "
+            "are NOT contradictions (e.g. 'Alice lives in Paris' and 'Alice "
+            "likes jazz' are compatible). Only answer YES if the statements "
+            "cannot both be true at the same time.\n\n"
+            "Respond EXACTLY in this format, nothing else:\n"
+            "CONTRADICTION: yes or no\n"
+            "CONFIDENCE: 0.0-1.0\n"
+            "REASONING: <one sentence>\n"
+        )
+
+        payload = json.dumps({
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 150,
+            "temperature": 0.1,
+            "stream": False,
+            # Qwen3.x emits a chain-of-thought preamble by default that eats
+            # the token budget before the structured answer appears. Suppress
+            # it so the model emits the parseable CONTRADICTION/CONFIDENCE/
+            # REASONING block directly. Harmless on non-Qwen servers (ignored).
+            "chat_template_kwargs": {"enable_thinking": False},
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                self.url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            content = result["choices"][0]["message"]["content"]
+        except Exception:
+            logger.debug("LLM contradiction verify call failed", exc_info=True)
+            return None
+
+        return self._parse_response(content)
+
+    @staticmethod
+    def _parse_response(content: str) -> dict | None:
+        """Parse the LLM's structured response. Returns None on malformed input."""
+        is_contra = False
+        confidence = 0.5
+        reasoning = ""
+        for line in content.strip().splitlines():
+            low = line.lower()
+            if low.startswith("contradiction:"):
+                is_contra = "yes" in low
+            elif low.startswith("confidence:"):
+                m = re.search(r"[\d.]+", low)
+                if m:
+                    try:
+                        confidence = max(0.0, min(1.0, float(m.group())))
+                    except ValueError:
+                        pass
+            elif low.startswith("reasoning:"):
+                reasoning = line.split(":", 1)[1].strip()
+        # If we got at least the CONTRADICTION line, it's a valid parse
+        if "contradiction:" in content.lower():
+            return {
+                "is_contradiction": is_contra,
+                "confidence": confidence,
+                "reasoning": reasoning,
+            }
+        return None
+
+
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
 
@@ -34,6 +190,7 @@ class FactRetriever:
         hrr_weight: float = 0.2,
         neural_weight: float = 0.3,
         hrr_dim: int = 1024,
+        llm_verifier: LLMVerifier | None = None,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
@@ -65,6 +222,10 @@ class FactRetriever:
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
         self.neural_weight = neural_weight
+        # LLM verifier for the contradict() precision pass. None by default;
+        # contradict() lazily constructs one if llm_verify=True and no override
+        # is provided. This keeps non-contradict callers free of LLM latency.
+        self.llm_verifier: LLMVerifier | None = llm_verifier
 
     def search(
         self,
@@ -96,12 +257,14 @@ class FactRetriever:
 
         # Stage 2: Compute query neural embedding once (if available)
         query_neural = None
+        query_neural_norm = 0.0  # precomputed norm; invariant across candidates
         if self.neural_weight > 0:
             try:
                 query_neural = self.store._embed.embed(query)
                 if query_neural is not None:
                     import numpy as np
                     query_neural = np.asarray(query_neural, dtype=np.float32)
+                    query_neural_norm = float(np.linalg.norm(query_neural))
             except Exception:
                 query_neural = None
 
@@ -109,18 +272,25 @@ class FactRetriever:
         query_tokens = self._tokenize(query)
         scored = []
 
-        for fact in candidates:
-            content_tokens = self._tokenize(fact["content"])
-            tag_tokens = self._tokenize(fact.get("tags", ""))
+        # Hoist query-invariant computations out of the per-candidate loop.
+        # encode_text(query) is independent of the fact being scored; without
+        # hoisting it was recomputed once per candidate (the dominant cost in
+        # the HRR branch — see profile: encode_text ≫ bytes_to_phases).
+        query_vec = None
+        if self.hrr_weight > 0:
+            query_vec = hrr.encode_text(query, self.hrr_dim)
+        # Pre-tokenize candidates once; tags are reused for both jaccard union.
+        tokenized = [(f, self._tokenize(f["content"]), self._tokenize(f.get("tags", ""))) for f in candidates]
+
+        for fact, content_tokens, tag_tokens in tokenized:
             all_tokens = content_tokens | tag_tokens
 
             jaccard = self._jaccard_similarity(query_tokens, all_tokens)
             fts_score = fact.get("fts_rank", 0.0)
 
             # HRR similarity
-            if self.hrr_weight > 0 and fact.get("hrr_vector"):
+            if query_vec is not None and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
                 hrr_sim = 0.5  # neutral
@@ -131,12 +301,11 @@ class FactRetriever:
                 try:
                     import numpy as np
                     fact_embed = np.frombuffer(fact["neural_embed"], dtype=np.float32)
-                    # Cosine similarity
+                    # Cosine similarity — query norm precomputed above
                     dot = float(np.dot(query_neural, fact_embed))
-                    norm_q = float(np.linalg.norm(query_neural))
                     norm_f = float(np.linalg.norm(fact_embed))
-                    if norm_q > 0 and norm_f > 0:
-                        neural_sim = max(0.0, dot / (norm_q * norm_f))  # clamp to [0,1]
+                    if query_neural_norm > 0 and norm_f > 0:
+                        neural_sim = max(0.0, dot / (query_neural_norm * norm_f))  # clamp to [0,1]
                 except Exception:
                     neural_sim = 0.5
 
@@ -165,14 +334,7 @@ class FactRetriever:
             fact.pop("neural_embed", None)
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            self.store._conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            self.store._conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -239,6 +401,8 @@ class FactRetriever:
             # Final fallback: keyword search
             return self.search(entity, category=category, limit=limit)
 
+        # role_content is a fixed role vector; encode once, not per-fact.
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)
@@ -246,7 +410,6 @@ class FactRetriever:
             # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
             # Compare residual against content signal
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
@@ -256,14 +419,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -311,6 +467,10 @@ class FactRetriever:
         if not rows:
             return self.search(entity, category=category, limit=limit)
 
+        # Role vectors are fixed atoms; encode once, not per-fact (2x per iter).
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+
         # Score each fact by how much the entity's atom appears in its vector
         # This catches both role-bound entity matches AND content word matches
         scored = []
@@ -322,8 +482,6 @@ class FactRetriever:
             residual = hrr.unbind(fact_vec, entity_vec)
             # A high-similarity residual to ANY known role vector means this entity
             # plays a structural role in the fact
-            role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
 
             entity_role_sim = hrr.similarity(residual, role_entity)
             content_role_sim = hrr.similarity(residual, role_content)
@@ -337,14 +495,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -428,14 +579,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -443,14 +587,28 @@ class FactRetriever:
     def contradict(
         self,
         category: str | None = None,
-        threshold: float = 0.3,
+        threshold: float = 0.2,
         limit: int = 10,
+        llm_verify: bool = False,
     ) -> list[dict]:
         """Find potentially contradictory facts via entity overlap + content divergence.
 
         Two facts contradict when they share entities (same subject) but have
         low content-vector similarity (different claims). This is automated
         memory hygiene — no other memory system does this.
+
+        Default threshold 0.2 (was 0.3): lowered because real fact corpora
+        produce moderate HRR similarity even for genuine contradictions — the
+        entity token dominates the binding. At 0.3 the detector returned zero
+        pairs on the 152-fact production DB. The LLM verify pass handles the
+        false positives a lower threshold admits.
+
+        If llm_verify=True, each structurally-detected candidate pair is
+        confirmed by a local LLM precision pass. Confirmed pairs get a
+        boosted score and `llm_confirmed: true`; rejected pairs are dropped.
+        Fail-open: if the LLM endpoint is unavailable or returns nothing,
+        structural results are returned unfiltered (the LLM is a precision
+        refinement, not a dependency).
 
         Returns pairs of facts with a contradiction score.
         Falls back to empty list if numpy unavailable.
@@ -470,7 +628,7 @@ class FactRetriever:
         rows = conn.execute(
             f"""
             SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
-                   f.created_at, f.updated_at, f.hrr_vector
+                   f.epistemic_status, f.created_at, f.updated_at, f.hrr_vector
             FROM facts f
             {where}
             """,
@@ -488,19 +646,29 @@ class FactRetriever:
             rows = sorted(rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True)
             rows = rows[:_MAX_CONTRADICT_FACTS]
 
-        # Build entity sets per fact
-        fact_entities: dict[int, set[str]] = {}
+        # Build entity sets per fact — single batched query instead of one per
+        # fact (was N+1: 500 separate SELECTs on a full store). Scope the query
+        # to exactly the fact_ids we are about to compare.
+        fact_ids = [row["fact_id"] for row in rows]
+        id_ph = ",".join("?" * len(fact_ids))
+        entity_rows = conn.execute(
+            f"""
+            SELECT fe.fact_id, e.name FROM entities e
+            JOIN fact_entities fe ON fe.entity_id = e.entity_id
+            WHERE fe.fact_id IN ({id_ph})
+            """,
+            fact_ids,
+        ).fetchall()
+        fact_entities: dict[int, set[str]] = {fid: set() for fid in fact_ids}
+        for er in entity_rows:
+            fact_entities[er["fact_id"]].add(er["name"].lower())
+
+        # Decode each fact's HRR vector exactly once. The pair loop used to
+        # re-decode every vector for every pair it appeared in (≈2N decodes per
+        # fact → 199k decodes on a 200-fact store; now 200).
+        fact_vectors: dict[int, "np.ndarray"] = {}
         for row in rows:
-            fid = row["fact_id"]
-            entity_rows = conn.execute(
-                """
-                SELECT e.name FROM entities e
-                JOIN fact_entities fe ON fe.entity_id = e.entity_id
-                WHERE fe.fact_id = ?
-                """,
-                (fid,),
-            ).fetchall()
-            fact_entities[fid] = {r["name"].lower() for r in entity_rows}
+            fact_vectors[row["fact_id"]] = hrr.bytes_to_phases(row["hrr_vector"])
 
         # Compare all pairs: high entity overlap + low content similarity = contradiction
         facts = [dict(r) for r in rows]
@@ -521,10 +689,9 @@ class FactRetriever:
                 if entity_overlap < 0.3:
                     continue  # Not enough entity overlap to be contradictory
 
-                # Content similarity via HRR vectors
-                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
-                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
-                content_sim = hrr.similarity(v1, v2)
+                # Content similarity via HRR vectors (decoded once above)
+                content_sim = hrr.similarity(fact_vectors[f1["fact_id"]],
+                                             fact_vectors[f2["fact_id"]])
 
                 # High entity overlap + low content similarity = potential contradiction
                 # contradiction_score: higher = more contradictory
@@ -544,7 +711,64 @@ class FactRetriever:
                     })
 
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
-        results = contradictions[:limit]
+
+        # ── LLM precision pass (fail-open) ────────────────────────────
+        # The structural detector's known weakness: two facts sharing entities
+        # but describing different aspects (not a real conflict). The LLM pass
+        # confirms genuine semantic contradictions and drops false positives.
+        # Cap at 20 pairs to bound LLM latency (~15s/pair worst case).
+        if llm_verify and contradictions:
+            verifier = self.llm_verifier or LLMVerifier()
+            if verifier.alive:
+                _MAX_LLM_PAIRS = 20
+                verified: list[dict] = []
+                for pair in contradictions[:_MAX_LLM_PAIRS]:
+                    verdict = verifier.verify_contradiction(
+                        pair["fact_a"]["content"], pair["fact_b"]["content"]
+                    )
+                    if verdict is None:
+                        # LLM couldn't answer for this pair — keep the
+                        # structural result, badge as unverified.
+                        pair["llm_confirmed"] = None
+                        pair["llm_reasoning"] = None
+                        verified.append(pair)
+                    elif verdict["is_contradiction"]:
+                        # Confirmed: boost score by LLM confidence factor.
+                        pair["llm_confirmed"] = True
+                        pair["llm_reasoning"] = verdict["reasoning"]
+                        pair["contradiction_score"] = round(
+                            pair["contradiction_score"]
+                            * (0.5 + 0.5 * verdict["confidence"]),
+                            3,
+                        )
+                        verified.append(pair)
+                    else:
+                        # LLM says not a real contradiction — drop it.
+                        logger.debug(
+                            "LLM rejected contradiction pair (facts %s/%s): %s",
+                            pair["fact_a"].get("fact_id"),
+                            pair["fact_b"].get("fact_id"),
+                            verdict.get("reasoning"),
+                        )
+                # When llm_verify is on, only return LLM-processed pairs.
+                # Including pairs beyond the cap would surface unchecked
+                # candidates with confirmed=None, defeating the precision
+                # pass. The cap exists to bound latency; if the caller
+                # needs more, they raise the limit and accept more LLM calls.
+                results = verified
+                results.sort(
+                    key=lambda x: x["contradiction_score"], reverse=True
+                )
+            else:
+                # LLM unreachable — return structural results, badged.
+                for pair in contradictions:
+                    pair["llm_confirmed"] = None
+                    pair["llm_reasoning"] = "LLM endpoint unavailable"
+                results = contradictions
+        else:
+            results = contradictions
+
+        results = results[:limit]
         # Boost trust for all facts involved in contradiction pairs
         try:
             unique_facts = []
@@ -661,14 +885,7 @@ class FactRetriever:
         results = scored[:limit]
 
         # Increment retrieval_count for all returned facts
-        if results:
-            fact_ids = [f["fact_id"] for f in results]
-            placeholders = ",".join("?" * len(fact_ids))
-            conn.execute(
-                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                fact_ids,
-            )
-            conn.commit()
+        self._increment_retrieval_counts(results)
 
         self._boost_retrieved_facts(results)
         return results
@@ -805,6 +1022,22 @@ class FactRetriever:
             logger.debug(
                 "Failed to boost trust for fact_id=%s", fact_id, exc_info=True
             )
+
+    def _increment_retrieval_counts(self, facts: list[dict]) -> None:
+        """Increment retrieval_count for all facts in the list (single UPDATE+commit)."""
+        if not facts:
+            return
+        try:
+            conn = self.store._conn
+            fact_ids = [f["fact_id"] for f in facts]
+            placeholders = ",".join("?" * len(fact_ids))
+            conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to increment retrieval counts", exc_info=True)
 
     def _boost_retrieved_facts(self, facts: list[dict]) -> None:
         """Batch boost trust scores for retrieved facts (+0.02 each, capped at 1.0).

@@ -56,6 +56,17 @@ def config():
     return SAMPLE_CONFIG
 
 
+# Reset the global router singleton after every test. Several tests here
+# call init_router(); without cleanup the leaked _instance pollutes other
+# test modules (e.g. gateway session-override tests) whose routing path
+# would then resolve against this stale test router.
+@pytest.fixture(autouse=True)
+def _reset_router_singleton():
+    yield
+    import agent.routing as routing_mod
+    routing_mod._instance = None
+
+
 # ── TaskClassifier Tests ─────────────────────────────────────────────────
 
 

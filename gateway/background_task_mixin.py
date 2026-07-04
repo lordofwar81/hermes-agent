@@ -30,14 +30,12 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from gateway.gateway_async_utils import _run_in_executor_with_context
 from gateway.gateway_config_loaders import _load_service_tier
 from gateway.gateway_lifecycle import _cleanup_agent_resources
 from gateway.gateway_message_pipeline import (
     _enrich_message_with_vision,
     _thread_metadata_for_source,
 )
-from gateway.platforms.base import BasePlatformAdapter
 
 
 class BackgroundTaskMixin:
@@ -95,7 +93,7 @@ class BackgroundTaskMixin:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = _load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs, session_key=task_id)
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -152,7 +150,7 @@ class BackgroundTaskMixin:
                 finally:
                     _cleanup_agent_resources(agent)
 
-            result = await _run_in_executor_with_context(run_sync)
+            result = await self._run_in_executor_with_context(run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):

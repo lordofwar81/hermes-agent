@@ -24,9 +24,11 @@ takes no module-level imports beyond the lazy one.
 
 from __future__ import annotations
 
+from typing import Optional
+
 
 class TurnAgentConfigMixin:
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, session_key: Optional[str] = None) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Consults the custom per-turn router (agent.routing) to pick an optimal
@@ -35,6 +37,11 @@ class TurnAgentConfigMixin:
         `/fast` is enabled and the model supports Priority Processing /
         Anthropic fast mode, attach `request_overrides` so the API call is
         marked accordingly.
+
+        ``session_key`` is threaded through to ``route_turn`` so the
+        session-aware guard can upgrade a casual reply to a tool-capable
+        model mid-conversation (prevents stranding active sessions on a
+        tool-less local model).
         """
         from gateway.run import logger
 
@@ -64,7 +71,7 @@ class TurnAgentConfigMixin:
                 "api_key": runtime["api_key"],
                 "provider": runtime["provider"],
             }
-            _route = route_turn(user_message, _primary_cfg)
+            _route = route_turn(user_message, _primary_cfg, session_key=session_key)
             if _route is not None:
                 model = _route.model
                 runtime["base_url"] = _route.base_url

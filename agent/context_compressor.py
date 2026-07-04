@@ -626,8 +626,69 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
+    def _fmt_mcp_gbrain_page(args, content, content_len, line_count):
+        """GBrain page read/write — compress the page slug + body into a terse summary."""
+        slug = args.get("slug", "?")
+        return f"[gbrain:{tool_name.split('_', 3)[-1]}] {slug} ({content_len:,} chars)"
+
+    def _fmt_mcp_gbrain_query(args, content, content_len, line_count):
+        query = args.get("query", "?")
+        limit = args.get("limit", "")
+        lim = f" top-{limit}" if limit and str(limit) != "20" else ""
+        return f"[gbrain:query] '{query[:60]}'{lim} ({content_len:,} chars)"
+
+    def _fmt_mcp_gbrain_search(args, content, content_len, line_count):
+        query = args.get("query", "?")
+        return f"[gbrain:search] '{query[:60]}' ({content_len:,} chars)"
+
+    def _fmt_mcp_gbrain_link(args, content, content_len, line_count):
+        frm = args.get("from", "?")
+        to = args.get("to", "?")
+        return f"[gbrain:link] {frm} → {to}"
+
+    def _fmt_mcp_gbrain_timeline(args, content, content_len, line_count):
+        slug = args.get("slug", "?")
+        return f"[gbrain:timeline] {slug} ({content_len:,} chars)"
+
+    def _fmt_mcp_gbrain_recall(args, content, content_len, line_count):
+        entity = args.get("entity", "?")
+        return f"[gbrain:recall] entity={entity} ({content_len:,} chars)"
+
+    def _fmt_mcp_gbrain_code(args, content, content_len, line_count):
+        """GBrain code tools — symbol-level lookups."""
+        symbol = args.get("symbol", "?")
+        action = tool_name.replace("mcp_gbrain_code_", "")
+        return f"[gbrain:code:{action}] {symbol}"
+
+    def _fmt_mcp_gbrain_generic(args, content, content_len, line_count):
+        """Catch-all for remaining mcp_gbrain_* tools."""
+        action = tool_name.replace("mcp_gbrain_", "")
+        slug = args.get("slug", "")
+        query = args.get("query", "")
+        entity = args.get("entity", "")
+        detail = slug or query or entity
+        if detail and len(str(detail)) > 60:
+            detail = str(detail)[:57] + "..."
+        return f"[gbrain:{action}] {detail} ({content_len:,} chars)"
+
+    def _fmt_mcp_generic(args, content, content_len, line_count):
+        """Generic MCP tool fallback — strips server prefix for readability."""
+        # mcp_<server>_<tool> → just show the tool action
+        parts = tool_name.split("_", 2)
+        action = parts[-1] if len(parts) > 2 else tool_name
+        first_arg = ""
+        for k in ("slug", "query", "path", "name"):
+            v = args.get(k)
+            if v:
+                sv = str(v)[:50]
+                first_arg = f" {k}={sv}"
+                break
+        return f"[mcp:{action}]{first_arg} ({content_len:,} chars)"
+
     # Dispatch table: tool_name set -> formatter function.
     # Grouped tools (browser_*, skill_*) share a single formatter.
+    # MCP tools are matched via prefix-gating below (frozenset of exact names
+    # for high-frequency tools, _fmt_mcp_gbrain_generic for the rest).
     _TOOL_SUMMARIZERS = {
         frozenset({"browser_navigate", "browser_click", "browser_snapshot",
                      "browser_type", "browser_scroll", "browser_vision"}): _fmt_browser,
@@ -648,14 +709,39 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         "web_extract": _fmt_web_extract,
         "web_search": _fmt_web_search,
         "write_file": _fmt_write_file,
+        # MCP: high-frequency gbrain tools with dedicated formatters
+        frozenset({"mcp_gbrain_get_page", "mcp_gbrain_put_page",
+                     "mcp_gbrain_get_chunks", "mcp_gbrain_get_raw_data",
+                     "mcp_gbrain_put_raw_data"}): _fmt_mcp_gbrain_page,
+        "mcp_gbrain_query": _fmt_mcp_gbrain_query,
+        "mcp_gbrain_search": _fmt_mcp_gbrain_search,
+        frozenset({"mcp_gbrain_add_link", "mcp_gbrain_remove_link"}): _fmt_mcp_gbrain_link,
+        "mcp_gbrain_get_timeline": _fmt_mcp_gbrain_timeline,
+        frozenset({"mcp_gbrain_recall", "mcp_gbrain_extract_facts",
+                     "mcp_gbrain_forget_fact"}): _fmt_mcp_gbrain_recall,
+        frozenset({"mcp_gbrain_code_def", "mcp_gbrain_code_refs",
+                     "mcp_gbrain_code_callers", "mcp_gbrain_code_callees",
+                     "mcp_gbrain_code_blast", "mcp_gbrain_code_flow"}): _fmt_mcp_gbrain_code,
     }
 
+    # Prefix-gated fallback: any mcp_gbrain_* tool not in the table above
+    # gets the generic gbrain formatter. Non-gbrain MCP tools get the
+    # generic MCP formatter. This runs after the dispatch table loop.
+    _mcp_handled = False
     for key, formatter in _TOOL_SUMMARIZERS.items():
         if isinstance(key, frozenset):
             if tool_name in key:
+                _mcp_handled = True
                 return formatter(args, content, content_len, line_count)
         elif tool_name == key:
+            _mcp_handled = True
             return formatter(args, content, content_len, line_count)
+
+    # MCP prefix-gated fallback (after dispatch table missed)
+    if tool_name.startswith("mcp_gbrain_"):
+        return _fmt_mcp_gbrain_generic(args, content, content_len, line_count)
+    if tool_name.startswith("mcp_"):
+        return _fmt_mcp_generic(args, content, content_len, line_count)
 
     # Generic fallback
     first_arg = ""

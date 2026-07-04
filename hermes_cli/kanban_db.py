@@ -2231,8 +2231,13 @@ def _claimer_id() -> str:
 # ---------------------------------------------------------------------------
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
-    if assignee is None:
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity).
+
+    Empty/whitespace-only strings return ``None`` (no assignee) instead of
+    raising — callers like ``assign_task`` receive unvalidated user input
+    where an empty string means "clear the assignment," not "crash."
+    """
+    if not assignee or not assignee.strip():
         return None
     from hermes_cli.profiles import normalize_profile_name
 
@@ -2287,6 +2292,13 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    # Coerce priority to int — SQLite INTEGER affinity converts numeric strings
+    # but silently stores non-numeric strings as TEXT, which corrupts
+    # ORDER BY priority DESC in dispatch. Default to 0 for non-coercible values.
+    try:
+        priority = int(priority)
+    except (TypeError, ValueError):
+        priority = 0
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:

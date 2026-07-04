@@ -31,6 +31,15 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 
+def _str_to_bool(value) -> bool:
+    """Coerce schema-passed values (str/bool) to bool. MCP args arrive as strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes")
+    return bool(value)
+
+
 # ---------------------------------------------------------------------------
 # Tool schemas (unchanged from original PR)
 # ---------------------------------------------------------------------------
@@ -47,7 +56,7 @@ FACT_STORE_SCHEMA = {
         "• probe — Entity recall: ALL facts about a person/thing.\n"
         "• related — What connects to an entity? Structural adjacency.\n"
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously.\n"
-        "• contradict — Memory hygiene: find facts making conflicting claims.\n"
+        "• contradict — Memory hygiene: find facts making conflicting claims. Pass llm_verify=true for an LLM precision pass that filters false positives.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
     ),
@@ -66,8 +75,10 @@ FACT_STORE_SCHEMA = {
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
+            "epistemic_status": {"type": "string", "enum": ["stated", "inferred", "verified", "contradicted", "retracted"], "description": "Set fact's epistemic status (for 'update'). Use 'contradicted' to retire a superseded fact."},
             "min_trust": {"type": "number", "description": "Minimum trust filter (default: 0.3)."},
             "limit": {"type": "integer", "description": "Max results (default: 10)."},
+            "llm_verify": {"type": "boolean", "description": "If true, confirm each candidate pair with a local LLM precision pass (default: false). Drops pairs the LLM says aren't real contradictions."},
         },
         "required": ["action"],
     },
@@ -228,24 +239,43 @@ class HolographicMemoryProvider(MemoryProvider):
             # per-turn prefetch. The agent can query gbrain on demand via MCP tools
             # when it needs structured knowledge-graph recall.
             limit = 5
+            # Stage 1 fetches a wider candidate pool (20) so Stage 2 (cross-encoder)
+            # has enough to rerank down to the final limit. Each arm over-fetches;
+            # RRF fuses the union; reranker selects the top by relevance.
+            pool = 20
             hrr_results = self._retriever.search(
-                query, min_trust=self._min_trust, limit=limit
+                query, min_trust=self._min_trust, limit=pool
             ) or []
 
             vec_results = []
             if self._vector_store is not None:
                 try:
-                    vec_results = self._vector_store.search(query, top_k=limit) or []
+                    vec_results = self._vector_store.search(query, top_k=pool) or []
                 except Exception as ve:
                     logger.debug("Vector prefetch failed: %s", ve)
 
-            tree_results = self._memory_tree_search(query, limit=limit)
+            tree_results = self._memory_tree_search(query, limit=pool)
+            session_results = self._session_search(query, limit=pool)
 
-            fused = self._rrf_fuse(hrr_results, vec_results, tree_results, limit=limit)
+            fused = self._rrf_fuse(hrr_results, vec_results, tree_results,
+                                   session_results, limit=pool)
             if not fused:
                 return ""
+            # Stage 2: cross-encoder rerank for precision. RRF gave us broad
+            # recall (up to 20 candidates); the cross-encoder re-scores by genuine
+            # query-doc relevance so a long multi-term fact that merely overlaps
+            # on terms no longer dominates a short fact that actually answers.
+            # Graceful fallback: if the model is unavailable, keep RRF order.
+            try:
+                from .reranker import rerank as _rerank, is_available as _rerank_ok
+                if _rerank_ok() and len(fused) > limit:
+                    docs = [content for _, content, _ in fused]
+                    reranked = _rerank(query, docs, top_k=limit)
+                    fused = [fused[i] for i, _ in reranked]
+            except Exception as re_exc:
+                logger.debug("Rerank stage failed, using RRF order: %s", re_exc)
             lines = []
-            for score, content, badge in fused:
+            for score, content, badge in fused[:limit]:
                 lines.append(f"- [{score:.2f}{badge}] {content}")
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:
@@ -286,8 +316,59 @@ class HolographicMemoryProvider(MemoryProvider):
             logger.debug("Memory Tree prefetch failed: %s", exc)
             return []
 
+    def _session_search(self, query: str, *, limit: int = 5) -> list[dict]:
+        """Lightweight state.db FTS5 search over session messages (episodic recall).
+
+        state.db holds every message the agent has ever processed (67k+ rows) but
+        was previously an island — not fused into prefetch. This gives the "did we
+        literally discuss X?" modality that HRR/VEC/TREE (which index facts/chunks,
+        not raw dialogue) cannot provide. Direct FTS5 MATCH query; sub-20ms on the
+        full corpus. Returns dicts with 'content' and 'score' for RRF fusion.
+        """
+        import sqlite3
+        from hermes_constants import get_hermes_home
+        db_path = get_hermes_home() / "state.db"
+        if not db_path.exists():
+            return []
+        # Build an FTS5 MATCH query: each term is double-quoted per the FTS5
+        # query syntax spec so that special characters (hyphens, asterisks,
+        # colons, parentheses) in user input do not cause syntax errors or
+        # unintended boolean operators. Strip existing double-quotes from
+        # the raw input first to prevent nested-quote injection.
+        terms = [t for t in query.replace('"', "").split() if len(t) >= 2]
+        if not terms:
+            return []
+        match_expr = " ".join(f'"{t}"' for t in terms[:6])  # cap at 6 terms
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            # FTS5 bm25() returns negative scores; more negative = more relevant.
+            # Normalize to a 0-1 score (closer to 0 bm25 = higher relevance).
+            rows = conn.execute(
+                """SELECT substr(m.content, 1, 500) as content,
+                          -rank as score
+                   FROM messages_fts f
+                   JOIN messages m ON m.rowid = f.rowid
+                   WHERE messages_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (match_expr, limit),
+            ).fetchall()
+            conn.close()
+            if not rows:
+                return []
+            # Normalize bm25 scores to 0-1 for RRF (rank-based, so exact value
+            # matters less than relative ordering; RRF uses rank position anyway).
+            max_s = max(float(r["score"] or 0) for r in rows) or 1.0
+            return [{"content": r["content"], "score": float(r["score"] or 0) / max_s}
+                    for r in rows if r["content"]]
+        except Exception as exc:
+            logger.debug("Session FTS prefetch failed: %s", exc)
+            return []
+
     @staticmethod
     def _rrf_fuse(hrr_results: list, vec_results: list, tree_results: list | None = None,
+                  session_results: list | None = None,
                   *, limit: int, k: int = 60):
         """Reciprocal Rank Fusion of HRR + vector + Memory Tree results.
 
@@ -328,6 +409,15 @@ class HolographicMemoryProvider(MemoryProvider):
             entry["rrf"] += 1.0 / (k + rank + 1)
             entry["sources"].add("TREE")
             entry["trust"] = max(entry["trust"], tree_score)
+
+        for rank, r in enumerate(session_results or []):
+            content = (r.get("content") or "").strip()
+            if not content:
+                continue
+            key = content.lower()[:200]
+            entry = scored.setdefault(key, {"content": content, "rrf": 0.0, "sources": set(), "trust": 0.0})
+            entry["rrf"] += 1.0 / (k + rank + 1)
+            entry["sources"].add("SESS")
 
         ranked = sorted(
             scored.values(),
@@ -431,6 +521,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 results = retriever.contradict(
                     category=args.get("category"),
                     limit=int(args.get("limit", 10)),
+                    llm_verify=_str_to_bool(args.get("llm_verify", False)),
                 )
                 return json.dumps({"results": results, "count": len(results)})
 
@@ -441,6 +532,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     trust_delta=float(args["trust_delta"]) if "trust_delta" in args else None,
                     tags=args.get("tags"),
                     category=args.get("category"),
+                    epistemic_status=args.get("epistemic_status"),
                 )
                 return json.dumps({"updated": updated})
 

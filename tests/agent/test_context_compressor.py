@@ -2652,3 +2652,71 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+
+class TestMcpToolResultFormatters:
+    """MCP tool names get dedicated formatters for readable compression summaries.
+
+    Before: generic fallback produced [mcp_gbrain_put_page] slug=X content=--- (N chars)
+    After:  dedicated formatters produce [gbrain:page] X (N chars)
+    """
+
+    def _s(self, name, args, content="result"):
+        from agent.context_compressor import _summarize_tool_result
+        import json
+        return _summarize_tool_result(name, json.dumps(args), content)
+
+    def test_gbrain_page_tools(self):
+        r = self._s("mcp_gbrain_put_page", {"slug": "companies/acme", "content": "# Acme\nBig"}, "OK")
+        assert r == "[gbrain:page] companies/acme (2 chars)"
+        r = self._s("mcp_gbrain_get_page", {"slug": "people/alice"}, '{"name": "Alice"}')
+        assert "alice" in r and "[gbrain:page]" in r
+
+    def test_gbrain_query(self):
+        r = self._s("mcp_gbrain_query", {"query": "who invested in widget-co", "limit": 5}, "{}")
+        assert "[gbrain:query]" in r
+        assert "top-5" in r
+        # default limit (20) should be omitted
+        r = self._s("mcp_gbrain_query", {"query": "test", "limit": 20}, "{}")
+        assert "top-" not in r
+
+    def test_gbrain_search(self):
+        r = self._s("mcp_gbrain_search", {"query": "compression algo"}, "results")
+        assert "[gbrain:search]" in r and "compression algo" in r
+
+    def test_gbrain_link(self):
+        r = self._s("mcp_gbrain_add_link", {"from": "a", "to": "b", "link_type": "works_at"}, "")
+        assert r == "[gbrain:link] a → b"
+
+    def test_gbrain_timeline(self):
+        r = self._s("mcp_gbrain_get_timeline", {"slug": "companies/acme"}, "[]")
+        assert "[gbrain:timeline]" in r and "companies/acme" in r
+
+    def test_gbrain_recall(self):
+        r = self._s("mcp_gbrain_recall", {"entity": "companies/acme"}, "{}")
+        assert "[gbrain:recall]" in r and "companies/acme" in r
+        r = self._s("mcp_gbrain_extract_facts", {"turn_text": "hello"}, "ok")
+        assert "[gbrain:recall]" in r
+
+    def test_gbrain_code_tools(self):
+        r = self._s("mcp_gbrain_code_def", {"symbol": "parseMarkdown"}, "{}")
+        assert r == "[gbrain:code:def] parseMarkdown"
+        r = self._s("mcp_gbrain_code_callers", {"symbol": "compress"}, "{}")
+        assert r == "[gbrain:code:callers] compress"
+
+    def test_gbrain_generic_fallback(self):
+        r = self._s("mcp_gbrain_get_health", {}, '{"score": 95}')
+        assert "[gbrain:get_health]" in r
+
+    def test_non_gbrain_mcp_fallback(self):
+        r = self._s("mcp_hermes_memory_memory_find", {"query": "routing"}, "[]")
+        assert "[mcp:memory_memory_find]" in r
+        assert "query=routing" in r
+
+    def test_existing_formatters_unchanged(self):
+        r = self._s("terminal", {"command": "pytest"}, '{"exit_code": 0}')
+        assert "[terminal]" in r and "exit 0" in r
+        r = self._s("write_file", {"path": "x.py", "content": "a\nb"}, "ok")
+        assert "[write_file]" in r and "2 lines" in r
+        r = self._s("read_file", {"path": "/etc/hosts", "offset": 1}, "data")
+        assert "[read_file]" in r

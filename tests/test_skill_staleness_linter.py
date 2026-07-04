@@ -135,6 +135,35 @@ class TestCrossReferences:
         ref_findings = [f for f in findings if "routing-old" in f.description]
         assert len(ref_findings) == 0
 
+    def test_self_reference_not_flagged(self, tmp_skills):
+        # A skill referencing its OWN slug (e.g. loading its own template) is a
+        # legitimate self-reference, not a broken link. Regression test for the
+        # false-positive that caused 3 working skills to be wrongly flagged.
+        s = tmp_skills / "template-loader"
+        s.mkdir()
+        (s / "SKILL.md").write_text(
+            "Load template: skill_view(name='template-loader', file_path='templates/t.html')"
+        )
+        findings = check_cross_references(tmp_skills)
+        self_ref_findings = [f for f in findings if "template-loader" in f.description]
+        assert len(self_ref_findings) == 0
+
+    def test_bare_name_resolves_under_nested_dir(self, tmp_skills):
+        # Skills live under category subdirs (e.g. creative/architecture-diagram)
+        # but are referenced by bare slug (architecture-diagram). The checker
+        # must resolve bare names against nested directory structures.
+        cat = tmp_skills / "creative"
+        nested = cat / "diagram-skill"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("# diagram skill")
+        # Another skill references it by bare name only
+        other = tmp_skills / "caller"
+        other.mkdir()
+        (other / "SKILL.md").write_text("Uses skill_view(name='diagram-skill')")
+        findings = check_cross_references(tmp_skills)
+        broken = [f for f in findings if "diagram-skill" in f.description]
+        assert len(broken) == 0
+
 
 class TestFindings:
     def test_finding_to_dict(self, tmp_skills):

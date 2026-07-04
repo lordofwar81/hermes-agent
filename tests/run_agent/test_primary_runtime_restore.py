@@ -337,7 +337,18 @@ class TestTryRecoverPrimaryTransport:
         assert result is True
 
     def test_allowed_for_ollama(self):
-        agent = _make_agent(provider="ollama", base_url="http://localhost:11434/v1")
+        # With an empty model name, get_model_context_length() falls through
+        # every probe/local-server/models.dev tier to the hardcoded defaults
+        # (8192 for unmatched models). That value trips Hermes' 64K context
+        # floor in init_agent and raises ValueError before the transport-
+        # recovery path under test is reached. The context window is not what
+        # this test exercises; stub the resolver to a real-world ollama size
+        # so init succeeds and recovery logic runs. context_compressor binds
+        # the resolver at module load; that's the path the built-in
+        # ContextCompressor.__init__ takes (the plugin-engine branch in
+        # agent_init, which also calls the resolver, isn't hit here).
+        with patch("agent.context_compressor.get_model_context_length", return_value=131072):
+            agent = _make_agent(provider="ollama", base_url="http://localhost:11434/v1")
         error = _make_transport_error("ConnectTimeout")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \

@@ -21,24 +21,6 @@ import time
 from unittest.mock import patch
 
 
-def _wait_until(predicate, timeout=10.0, interval=0.005):
-    """Block until ``predicate()`` is truthy or ``timeout`` elapses.
-
-    Returns the predicate's final value. Used instead of a fixed
-    ``time.sleep`` before asserting that a background ticker thread has called
-    tick()/heartbeat() at least N times — under loaded CI the worker thread may
-    not be scheduled within a short fixed sleep, which made these tests flake
-    (``assert 0 >= 1`` / ``provider never called tick()``).
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(interval)
-    return predicate()
-
-
 def test_ticker_calls_tick_at_least_once_then_stops():
     """The gateway in-process ticker loop calls cron.scheduler.tick repeatedly
     and exits promptly once the stop_event is set."""
@@ -52,7 +34,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
         return 0
 
     with patch("cron.scheduler.tick", side_effect=fake_tick):
-        # interval=0 keeps the loop tight; stop after the first observed tick.
+        # interval=0 keeps the loop tight; stop after a brief beat.
         t = threading.Thread(
             target=_start_cron_ticker,
             args=(stop,),
@@ -60,7 +42,7 @@ def test_ticker_calls_tick_at_least_once_then_stops():
             daemon=True,
         )
         t.start()
-        assert _wait_until(lambda: len(calls) >= 1), "ticker never called tick()"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -92,7 +74,7 @@ def test_desktop_ticker_calls_tick_then_stops():
             daemon=True,
         )
         t.start()
-        assert _wait_until(lambda: len(calls) >= 1), "desktop ticker never called tick()"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -162,10 +144,7 @@ def test_inprocess_provider_ticks_and_stops():
             target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True
         )
         t.start()
-        # Wait for the loop to actually call tick() at least once rather than
-        # sleeping a fixed window — under loaded CI the worker thread may not be
-        # scheduled within a short sleep, which made this flake (assert 0 >= 1).
-        assert _wait_until(lambda: len(calls) >= 1), "provider never called tick()"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -193,40 +172,18 @@ def test_default_config_cron_provider_is_empty():
 
 
 def test_discover_cron_schedulers_returns_list():
-    """Discovery returns bundled non-default providers.
-
-    The built-in is core, not discovered here.
-    """
-    from plugins.cron_providers import discover_cron_schedulers
+    """Discovery returns a list. May be empty — the built-in is core, not
+    discovered, and no bundled non-default provider ships yet."""
+    from plugins.cron import discover_cron_schedulers
 
     result = discover_cron_schedulers()
     assert isinstance(result, list)
-    assert any(name == "chronos" for name, _desc, _available in result)
 
 
 def test_load_unknown_cron_scheduler_returns_none():
-    from plugins.cron_providers import load_cron_scheduler
+    from plugins.cron import load_cron_scheduler
 
     assert load_cron_scheduler("does-not-exist-xyz") is None
-
-
-def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
-    """Putting plugins/ first on sys.path must not hide the core cron package."""
-    from importlib.machinery import PathFinder
-    from pathlib import Path
-
-    repo_root = Path(__file__).resolve().parents[2]
-
-    monkeypatch.syspath_prepend(str(repo_root))
-    monkeypatch.syspath_prepend(str(repo_root / "plugins"))
-
-    cron_spec = PathFinder.find_spec("cron")
-    assert cron_spec is not None
-    assert Path(cron_spec.origin).resolve() == repo_root / "cron" / "__init__.py"
-
-    jobs_spec = PathFinder.find_spec("cron.jobs", [str(repo_root / "cron")])
-    assert jobs_spec is not None
-    assert Path(jobs_spec.origin).resolve() == repo_root / "cron" / "jobs.py"
 
 
 def test_resolve_defaults_to_builtin(monkeypatch):
@@ -262,7 +219,7 @@ def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
 def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
     import hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import plugins.cron as pc
     from cron import scheduler_provider as sp
     from cron.scheduler_provider import CronScheduler
 
@@ -286,7 +243,7 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
 def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
     import hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import plugins.cron as pc
     from cron import scheduler_provider as sp
     from cron.scheduler_provider import CronScheduler
 
@@ -399,9 +356,7 @@ def test_ticker_survives_baseexception_from_tick():
          patch("cron.jobs.record_ticker_heartbeat"):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
-        # Survive the BaseException AND keep ticking: wait for ≥2 calls.
-        assert _wait_until(lambda: len(calls) >= 2), \
-            "ticker did not keep ticking after the BaseException"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -422,10 +377,7 @@ def test_ticker_records_heartbeat_each_iteration():
                side_effect=lambda success=False: beats.append(success)):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
-        # Wait for the pre-loop liveness beat AND at least one successful
-        # post-tick beat before stopping (was a fixed 0.2s sleep → flaky).
-        assert _wait_until(lambda: any(b is True for b in beats[1:])), \
-            "successful tick did not bump success marker"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -448,9 +400,7 @@ def test_failing_tick_records_liveness_but_not_success():
                side_effect=lambda success=False: beats.append(success)):
         t = threading.Thread(target=prov.start, args=(stop,), kwargs={"interval": 0}, daemon=True)
         t.start()
-        # Wait for the pre-loop beat + at least one post-tick beat (was flaky
-        # with a fixed 0.2s sleep under loaded CI).
-        assert _wait_until(lambda: len(beats) >= 2), "ticker did not record heartbeats"
+        time.sleep(0.2)
         stop.set()
         t.join(timeout=5)
 
@@ -571,66 +521,3 @@ def test_cron_status_reports_stalled_when_no_heartbeat(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "STALLED" in out
     assert "will fire automatically" not in out
-
-
-# ── F8: runtime backstop — never resolve a stored pair that exfiltrates a key ──
-
-
-class TestGuardJobCredentialExfil:
-    """run_job() must fail closed before provider resolution when a job's stored
-    provider/base_url pair would ship a named provider's stored credential to an
-    off-host endpoint — covering jobs persisted before the create/update guard
-    or written directly to the store (F8 stored-job path; CWE-200/CWE-522)."""
-
-    def test_named_registry_provider_offhost_is_blocked(self):
-        import pytest
-        from cron.scheduler import _guard_job_credential_exfil
-
-        job = {"id": "j1", "provider": "anthropic",
-               "base_url": "https://evil.example/v1"}
-        with pytest.raises(RuntimeError) as exc:
-            _guard_job_credential_exfil(job)
-        assert "blocked for safety" in str(exc.value)
-
-    def test_named_custom_offhost_is_blocked(self, monkeypatch):
-        import pytest
-        import hermes_cli.runtime_provider as rp
-        from cron.scheduler import _guard_job_credential_exfil
-
-        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
-        monkeypatch.setattr(
-            rp, "_get_named_custom_provider",
-            lambda n: {"name": "legit", "base_url": "https://legit.example/v1",
-                       "api_key": "sk-legit"},
-        )
-        job = {"id": "j2", "provider": "custom:legit",
-               "base_url": "https://evil.example/v1"}
-        with pytest.raises(RuntimeError):
-            _guard_job_credential_exfil(job)
-
-    def test_named_custom_matching_host_is_allowed(self, monkeypatch):
-        import hermes_cli.runtime_provider as rp
-        from cron.scheduler import _guard_job_credential_exfil
-
-        monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
-        monkeypatch.setattr(
-            rp, "_get_named_custom_provider",
-            lambda n: {"name": "legit", "base_url": "https://legit.example/v1",
-                       "api_key": "sk-legit"},
-        )
-        job = {"id": "j3", "provider": "custom:legit",
-               "base_url": "https://legit.example/v1"}
-        assert _guard_job_credential_exfil(job) is None
-
-    def test_bare_custom_is_allowed(self):
-        from cron.scheduler import _guard_job_credential_exfil
-
-        job = {"id": "j4", "provider": "custom",
-               "base_url": "https://anything.example/v1"}
-        assert _guard_job_credential_exfil(job) is None
-
-    def test_no_base_url_is_allowed(self):
-        from cron.scheduler import _guard_job_credential_exfil
-
-        assert _guard_job_credential_exfil({"id": "j5", "provider": "anthropic"}) is None
-        assert _guard_job_credential_exfil({"id": "j6"}) is None

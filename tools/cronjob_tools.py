@@ -312,6 +312,10 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     Returns ``None`` when the user explicitly asked for ``local`` (no surprise),
     or when the job resolves to a real delivery target.
     """
+    # Normalize list/tuple deliver params to string before checking
+    if isinstance(user_deliver, (list, tuple)):
+        parts = [str(p).strip() for p in user_deliver if str(p).strip()]
+        user_deliver = ",".join(parts) if parts else None
     if (user_deliver or "").strip().lower() == "local":
         return None
     try:

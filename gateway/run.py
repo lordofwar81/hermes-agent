@@ -227,6 +227,7 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 

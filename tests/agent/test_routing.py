@@ -73,6 +73,25 @@ class TestTaskClassifier:
         assert TaskClassifier.classify("high quality output") == Category.SIMPLE
         assert TaskClassifier.classify("this is a hit") == Category.SIMPLE
 
+    def test_health_classification(self):
+        from agent.routing import TaskClassifier, Category
+        # The peptide/dosing vocabulary that triggered the Gemma refusal.
+        assert TaskClassifier.classify("how much bac water for 10mg tesamorelin?") == Category.HEALTH
+        assert TaskClassifier.classify("how do I reconstitute BPC-157?") == Category.HEALTH
+        assert TaskClassifier.classify("what is my peptide schedule this week?") == Category.HEALTH
+        assert TaskClassifier.classify("track my CJC/ipamorelin dose") == Category.HEALTH
+        assert TaskClassifier.classify("250mcg of BPC-157 blend where do I inject") == Category.HEALTH
+        assert TaskClassifier.classify("Given our current dosing. How much bac do I need to put in 10mg tesamorelin and 10mg of tb 500") == Category.HEALTH
+
+    def test_health_not_false_positive(self):
+        from agent.routing import TaskClassifier, Category
+        # 'dose'/'mg'/'ml' alone are NOT health triggers (no unambiguous compound).
+        assert TaskClassifier.classify("how much does it cost") == Category.SIMPLE
+        # 'glow' alone is not health (BPC blend is multiword 'glow blend').
+        assert TaskClassifier.classify("explain the glow effect in rendering") == Category.SIMPLE
+        assert TaskClassifier.classify("fix the mac address lookup") == Category.CODE
+        assert TaskClassifier.classify("") == Category.SIMPLE
+
     def test_code_classification(self):
         from agent.routing import TaskClassifier, Category
         assert TaskClassifier.classify("fix this bug") == Category.CODE

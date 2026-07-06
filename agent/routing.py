@@ -43,6 +43,7 @@ RECOVERY_TIMEOUT_SECONDS = 180  # 3 minutes per blocked provider
 HEALTH_CHECK_TIMEOUT = 5        # seconds for local model pre-flight ping
 HEALTH_CACHE_TTL = 30           # seconds between health checks
 LOCAL_CONTEXT_RATIO = 0.6       # use 60% of local model context for safety
+BUDGET_RESET_HOUR_PST = 17      # Venice account quota resets 5pm Pacific
 
 
 # ─── Task Categories ─────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ class Category(Enum):
     REASONING = "reasoning"    # explain why, how, design questions
     ANALYSIS = "analysis"      # compare, evaluate, audit, metrics
     EXPERT = "expert"          # full system design, end-to-end, multi-step
+    HEALTH = "health"          # peptide/dosing/reconstitution (Gemma refuses; route to abliterated)
 
 
 # ─── Data Classes ────────────────────────────────────────────────────────
@@ -158,6 +160,33 @@ class TaskClassifier:
         "system design", "system architecture",
     ]
 
+    # HEALTH keywords — peptide/dosing/reconstitution turns that Gemma refuses.
+    # Checked FIRST in classify() so health math isn't hijacked by code/greeting
+    # branches. Single-word compounds use word boundaries; multiword + unit
+    # patterns use substring. Route to the abliterated Qwen on mac-studio.
+    _HEALTH_SINGLE_WORDS = frozenset({
+        # peptide compounds (operator's documented protocol)
+        "tesamorelin", "tb-500", "tb500", "bpc-157", "bpc157",
+        "ipamorelin", "cjc", "cjc-1295", "semaglutide", "retatrutide",
+        "ghk-cu", "ghkcu", "pregnyl", "melanotan", "pt-141",
+        # dosing/reconstitution vocabulary
+        "peptide", "peptides", "reconstitute", "reconstitution",
+        "bacteriostatic", "reconstituted", "subcutaneous", "subq",
+        "mcg", "syringe", "intramuscular",
+    })
+    _HEALTH_MULTIWORD_PHRASES = frozenset({
+        "bac water", "bpc-157 blend", "glow blend", "dose me", "injection site",
+        "dose volume", "weekly dose",
+    })
+    _HEALTH_KW = _HEALTH_SINGLE_WORDS | _HEALTH_MULTIWORD_PHRASES
+    # Word-boundary regex for single-word compounds (so "dose" won't match
+    # "proposal" — but "dose" alone is intentionally NOT in the single-word
+    # set; only unambiguous compounds are).
+    _HEALTH_BOUNDARY_RE = re.compile(
+        r'\b(?:' + '|'.join(re.escape(kw) for kw in sorted(_HEALTH_SINGLE_WORDS)) + r')\b',
+        re.IGNORECASE,
+    )
+
     # Pre-compiled regex: single-word CODE keywords joined with \| for
     # a single word-boundary match. Derived from _CODE_SINGLE_WORDS so it
     # cannot drift from the frozenset above.
@@ -182,6 +211,21 @@ class TaskClassifier:
                 return True
         return False
 
+    @classmethod
+    def _has_health_keyword(cls, text_lower: str) -> bool:
+        """Check for HEALTH keywords: peptide/dosing/reconstitution vocabulary.
+
+        Single-word compounds (tesamorelin, bpc-157, ipamorelin, etc.) use
+        the compiled word-boundary regex so 'glow' won't match 'glowering'.
+        Multi-word phrases (bac water, injection site) use substring match.
+        """
+        if cls._HEALTH_BOUNDARY_RE.search(text_lower):
+            return True
+        for kw in cls._HEALTH_MULTIWORD_PHRASES:
+            if kw in text_lower:
+                return True
+        return False
+
 
     @classmethod
     def classify(cls, message: str) -> Category:
@@ -191,6 +235,13 @@ class TaskClassifier:
         # Code: code blocks (checked BEFORE greeting)
         if "```" in text or "`" in text:
             return Category.CODE
+
+        # HEALTH: peptide/dosing/reconstitution. Checked before everything
+        # else (except code blocks) because Gemma refuses these and the
+        # classifier otherwise lands them in SIMPLE → local Gemma. Routes
+        # to the abliterated Qwen on mac-studio via the health chain.
+        if cls._has_health_keyword(text_lower):
+            return Category.HEALTH
 
         # Greeting: short message with greeting keyword, but NOT if it contains
         # code intent (e.g., "ok, deploy it" is CODE, not GREETING).
@@ -487,7 +538,7 @@ class BudgetTracker:
             return self._cache
 
         now_pst = self._now_pst()
-        date_str = now_pst.strftime("%Y-%m-%d")
+        date_str = self._budget_cycle_label(now_pst)
         data = {"last_reset": date_str, "spent": 0.0}
 
         if self._file.exists():
@@ -528,6 +579,29 @@ class BudgetTracker:
         # the budget day boundary). Name kept for backward compat.
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("America/Los_Angeles"))
+
+    @classmethod
+    def _budget_cycle_label(cls, now_pst: Optional[datetime] = None) -> str:
+        """Label the current Venice budget cycle.
+
+        Venice's account quota resets at 5pm Pacific (BUDGET_RESET_HOUR_PST),
+        not local midnight. So the cycle "2026-06-25" runs from
+        2026-06-25 17:00 PT through 2026-06-26 17:00 PT. A spend recorded at
+        4pm on the 26th still belongs to the 25th's cycle; one at 5:01pm on
+        the 25th belongs to the 26th's.
+
+        Returns a YYYY-MM-DD string: the calendar date of the cycle start.
+        """
+        from zoneinfo import ZoneInfo
+        if now_pst is None:
+            now_pst = cls._now_pst()
+        if now_pst.hour < BUDGET_RESET_HOUR_PST:
+            # Before 5pm: still in the cycle that started yesterday at 5pm.
+            cycle_start = now_pst - timedelta(days=1)
+        else:
+            # 5pm or later: in the cycle that started today at 5pm.
+            cycle_start = now_pst
+        return cycle_start.strftime("%Y-%m-%d")
 
 
 # ─── Provider Registry ───────────────────────────────────────────────────

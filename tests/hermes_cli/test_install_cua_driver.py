@@ -1,0 +1,446 @@
+"""Tests for ``install_cua_driver`` upgrade semantics and architecture pre-check.
+
+The cua-driver upstream installer always pulls the latest release tag, so
+re-running it is the canonical upgrade path. ``install_cua_driver(upgrade=True)``
+must:
+
+* Be cross-platform — run on macOS, Windows, and Linux. Only genuinely
+  unsupported platforms no-op silently on upgrade so ``hermes update`` can
+  call it unconditionally without warning those users.
+* Choose the right installer per OS: ``install.sh`` via ``curl | bash`` on
+  macOS/Linux, ``install.ps1`` via PowerShell ``irm | iex`` on Windows.
+* Re-run the installer even when the binary is already on PATH (this is the
+  fix for the "we only pulled cua-driver once on enable" complaint).
+* Preserve original ``upgrade=False`` behaviour for the toolset-enable flow:
+  skip if installed, install otherwise, warn on unsupported platforms.
+* Pre-check architecture compatibility before downloading to avoid raw 404
+  errors when the upstream release lacks an asset for this OS+arch.
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+
+class TestInstallCuaDriverUpgrade:
+    def test_upgrade_on_unsupported_platform_is_silent_noop(self):
+        from hermes_cli import tools_config
+
+        with patch.object(tools_config, "_print_warning") as warn, \
+             patch("platform.system", return_value="FreeBSD"):
+            assert tools_config.install_cua_driver(upgrade=True) is False
+            warn.assert_not_called()
+
+    def test_non_upgrade_on_unsupported_platform_warns(self):
+        from hermes_cli import tools_config
+
+        with patch.object(tools_config, "_print_warning") as warn, \
+             patch("platform.system", return_value="FreeBSD"):
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            warn.assert_called()
+
+    def test_upgrade_on_macos_with_binary_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_called_once()
+            kwargs = runner.call_args.kwargs
+            assert kwargs.get("verbose") is False
+
+    def test_upgrade_on_macos_without_binary_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_called_once()
+
+    def test_non_upgrade_on_macos_with_binary_skips_install(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_not_called()
+
+    def test_non_upgrade_on_macos_without_binary_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is True
+
+
+class TestCheckCuaDriverAssetForArch:
+    def test_arm64_macos_always_returns_true(self):
+        from hermes_cli import tools_config
+
+        # Apple Silicon assets are always published — short-circuits without
+        # a network probe.
+        with patch("platform.system", return_value="Darwin"), \
+             patch("platform.machine", return_value="arm64"):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_x86_64_with_asset_returns_true(self):
+        from hermes_cli import tools_config
+
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [
+                {"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"},
+                {"name": "cua-driver-rs-0.1.6-darwin-x86_64.tar.gz"},
+            ],
+        }]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(releases).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=mock_resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_x86_64_without_asset_returns_false(self):
+        from hermes_cli import tools_config
+
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [
+                {"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"},
+                {"name": "cua-driver-rs.tar.gz"},
+            ],
+        }]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(releases).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"):
+            assert tools_config._check_cua_driver_asset_for_arch() is False
+            warn.assert_called_once()
+            assert "no Intel" in warn.call_args[0][0].lower() or "x86_64" in warn.call_args[0][0]
+
+    def test_x86_64_api_failure_returns_true(self):
+        """Network failure should fail open — let the installer handle it."""
+        from hermes_cli import tools_config
+
+        with patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_fresh_install_x86_64_no_asset_skips_installer(self):
+        """When the latest release has no Intel asset, skip the installer."""
+        from hermes_cli import tools_config
+
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [{"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"}],
+        }]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(releases).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            runner.assert_not_called()
+
+    def test_upgrade_x86_64_no_asset_returns_existing_status(self):
+        """On upgrade with no Intel asset, return whether binary existed."""
+        from hermes_cli import tools_config
+
+        releases = [{
+            "tag_name": "cua-driver-rs-v0.1.6",
+            "assets": [{"name": "cua-driver-rs-0.1.6-darwin-arm64.tar.gz"}],
+        }]
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(releases).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        # With binary installed — returns True (binary exists)
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in ("cua-driver", "curl") else None), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_not_called()
+
+        # Without binary — returns False
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch.object(tools_config, "_print_warning"), \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=True) is False
+            runner.assert_not_called()
+
+
+class TestInstallCuaDriverWindows:
+    """install_cua_driver dispatch on Windows hosts."""
+
+    def test_fresh_install_runs_installer(self):
+        from hermes_cli import tools_config
+
+        # PowerShell present, cua-driver not yet installed.
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: r"C:\\Windows\\powershell.exe"
+                                                 if n == "powershell" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_called_once()
+
+    def test_fresh_install_without_powershell_fails(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which", lambda n: None), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_run_cua_driver_installer") as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is False
+            runner.assert_not_called()
+            # The warning should name the missing fetch tool (powershell).
+            assert "powershell" in warn.call_args[0][0].lower()
+
+    def test_upgrade_with_binary_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: r"C:\\bin\\" + n
+                                                 if n in {"cua-driver", "powershell"} else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_called_once()
+            assert runner.call_args.kwargs.get("verbose") is False
+
+    def test_installer_uses_powershell_irm_command(self):
+        """_run_cua_driver_installer must shell out to PowerShell irm|iex."""
+        from hermes_cli import tools_config
+
+        completed = MagicMock(returncode=0)
+        with patch("platform.system", return_value="Windows"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: r"C:\\bin\\" + n
+                                                 if n == "cua-driver" else None), \
+             patch("subprocess.run", return_value=completed) as run, \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"):
+            assert tools_config._run_cua_driver_installer() is True
+            cmd = run.call_args[0][0]
+            # Argument list (shell=False), not a string.
+            assert isinstance(cmd, list)
+            assert cmd[0] == "powershell"
+            assert run.call_args.kwargs.get("shell") is False
+            joined = " ".join(cmd)
+            assert "install.ps1" in joined
+            assert "iex" in joined
+
+
+class TestInstallCuaDriverLinux:
+    """install_cua_driver dispatch on Linux hosts (alpha)."""
+
+    def test_fresh_install_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/bin/curl" if n == "curl" else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner:
+            assert tools_config.install_cua_driver(upgrade=False) is True
+            runner.assert_called_once()
+
+    def test_upgrade_with_binary_runs_installer(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n in {"cua-driver", "curl"} else None), \
+             patch.object(tools_config, "_check_cua_driver_asset_for_arch",
+                          return_value=True), \
+             patch.object(tools_config, "_run_cua_driver_installer",
+                          return_value=True) as runner, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(upgrade=True) is True
+            runner.assert_called_once()
+
+    def test_installer_uses_curl_bash_command(self):
+        """_run_cua_driver_installer must shell out to curl | bash install.sh."""
+        from hermes_cli import tools_config
+
+        completed = MagicMock(returncode=0)
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(tools_config.shutil, "which",
+                          side_effect=lambda n: "/usr/local/bin/" + n
+                                                 if n == "cua-driver" else None), \
+             patch("subprocess.run", return_value=completed) as run, \
+             patch.object(tools_config, "_print_info"), \
+             patch.object(tools_config, "_print_success"), \
+             patch.object(tools_config, "_print_warning"):
+            assert tools_config._run_cua_driver_installer() is True
+            cmd = run.call_args[0][0]
+            assert isinstance(cmd, str)  # shell string on POSIX
+            assert run.call_args.kwargs.get("shell") is True
+            assert "install.sh" in cmd
+            assert "curl" in cmd
+
+
+class TestCheckCuaDriverAssetCrossPlatform:
+    """_check_cua_driver_asset_for_arch recognizes Windows/Linux asset names."""
+
+    @staticmethod
+    def _mock_release(asset_names):
+        # The probe lists /releases and picks the newest cua-driver-rs-v* tag,
+        # so the mock returns a LIST of releases with that tag prefix.
+        releases = [{"tag_name": "cua-driver-rs-v0.5.0",
+                     "assets": [{"name": n} for n in asset_names]}]
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(releases).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_windows_amd64_with_asset_returns_true(self):
+        from hermes_cli import tools_config
+
+        resp = self._mock_release([
+            "cua-driver-rs-0.5.0-windows-x86_64.zip",
+            "cua-driver-rs-0.5.0-darwin-arm64.tar.gz",
+        ])
+        with patch("platform.system", return_value="Windows"), \
+             patch("platform.machine", return_value="AMD64"), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_windows_arm64_without_asset_returns_false(self):
+        from hermes_cli import tools_config
+
+        resp = self._mock_release([
+            "cua-driver-rs-0.5.0-windows-x86_64.zip",
+        ])
+        with patch("platform.system", return_value="Windows"), \
+             patch("platform.machine", return_value="ARM64"), \
+             patch("urllib.request.urlopen", return_value=resp), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"):
+            assert tools_config._check_cua_driver_asset_for_arch() is False
+            warn.assert_called_once()
+            assert "arm64" in warn.call_args[0][0].lower()
+
+    def test_linux_x86_64_with_asset_returns_true(self):
+        from hermes_cli import tools_config
+
+        resp = self._mock_release([
+            "cua-driver-rs-0.5.0-linux-x86_64.tar.gz",
+        ])
+        with patch("platform.system", return_value="Linux"), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_linux_aarch64_with_asset_returns_true(self):
+        from hermes_cli import tools_config
+
+        resp = self._mock_release([
+            "cua-driver-rs-0.5.0-linux-arm64.tar.gz",
+        ])
+        with patch("platform.system", return_value="Linux"), \
+             patch("platform.machine", return_value="aarch64"), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True
+
+    def test_linux_aarch64_without_asset_returns_false(self):
+        from hermes_cli import tools_config
+
+        resp = self._mock_release([
+            "cua-driver-rs-0.5.0-linux-x86_64.tar.gz",
+        ])
+        with patch("platform.system", return_value="Linux"), \
+             patch("platform.machine", return_value="aarch64"), \
+             patch("urllib.request.urlopen", return_value=resp), \
+             patch.object(tools_config, "_print_warning") as warn, \
+             patch.object(tools_config, "_print_info"):
+            assert tools_config._check_cua_driver_asset_for_arch() is False
+            warn.assert_called_once()
+
+    def test_releases_latest_tag_ignored_picks_driver_rs_tag(self):
+        """A non-driver tag at the head of the list must not gate the probe.
+
+        Regression guard: the monorepo's newest release is often a Python
+        component (agent-*, computer-*) with zero binary assets. The probe
+        must skip past it to the newest cua-driver-rs-v* release.
+        """
+        from hermes_cli import tools_config
+
+        releases = [
+            {"tag_name": "agent-v0.8.3", "assets": []},
+            {"tag_name": "computer-v0.5.19", "assets": []},
+            {"tag_name": "cua-driver-rs-v0.6.0",
+             "assets": [{"name": "cua-driver-rs-0.6.0-linux-x86_64-binary.tar.gz"}]},
+        ]
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(releases).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("platform.system", return_value="Linux"), \
+             patch("platform.machine", return_value="x86_64"), \
+             patch("urllib.request.urlopen", return_value=resp):
+            assert tools_config._check_cua_driver_asset_for_arch() is True

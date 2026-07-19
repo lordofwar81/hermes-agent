@@ -573,7 +573,8 @@ class BudgetTracker:
 
     def __init__(self, daily_limit: float = 7.40):
         self._daily_limit = daily_limit
-        self._file = Path.home() / ".hermes" / "venice_budget.json"
+        from hermes_constants import get_hermes_home  # audit D2: respect HERMES_HOME overrides
+        self._file = get_hermes_home() / "venice_budget.json"  # was Path.home()/.hermes (bypassed HERMES_HOME)
         self._cache: Optional[dict] = None
         self._cache_time: float = 0
 

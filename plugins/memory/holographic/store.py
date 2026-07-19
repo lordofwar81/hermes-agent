@@ -85,7 +85,10 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 _HELPFUL_DELTA   =  0.05
 _UNHELPFUL_DELTA = -0.10
 _TRUST_MIN       =  0.0
-_TRUST_MAX       =  1.0
+_TRUST_MAX       =  0.95  # capped from 1.0 (audit H-3): no fact should
+                         # ever lock at the ceiling where score=relevance*1.0
+                         # lets it dominate retrieval permanently. A fact must
+                         # earn trust via helpful_count; even then 0.95 ceiling.
 
 # Epistemic lifecycle of a fact: stated → inferred → verified, or →
 # contradicted / retracted when superseded. Used by update_fact() and

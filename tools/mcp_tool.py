@@ -252,7 +252,7 @@ try:
     # authorization). Missing types just disable the feature; everything
     # else keeps working.
     try:
-        from mcp.types import ElicitRequestParams, ElicitResult
+        from mcp.types import ElicitResult
         _MCP_ELICITATION_TYPES = True
     except ImportError:
         logger.debug("MCP elicitation types not available -- elicitation disabled")

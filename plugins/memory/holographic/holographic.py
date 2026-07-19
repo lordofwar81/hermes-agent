@@ -42,7 +42,7 @@ def _require_numpy() -> None:
 
 
 @lru_cache(maxsize=8192)
-def encode_atom(word: str, dim: int = 4096) -> "np.ndarray":
+def encode_atom(word: str, dim: int = 8192) -> "np.ndarray":
     """Deterministic phase vector via SHA-256 counter blocks.
 
     Uses hashlib (not numpy RNG) for cross-platform reproducibility.
@@ -116,7 +116,7 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     return float(np.mean(np.cos(a - b)))
 
 
-def encode_text(text: str, dim: int = 4096) -> "np.ndarray":
+def encode_text(text: str, dim: int = 8192) -> "np.ndarray":
     """Bag-of-words: bundle of atom vectors for each token.
 
     Tokenizes by lowercasing, splitting on whitespace, and stripping
@@ -140,7 +140,7 @@ def encode_text(text: str, dim: int = 4096) -> "np.ndarray":
     return bundle(*atom_vectors)
 
 
-def encode_fact(content: str, entities: list[str], dim: int = 4096) -> "np.ndarray":
+def encode_fact(content: str, entities: list[str], dim: int = 8192) -> "np.ndarray":
     """Structured encoding: content bound to ROLE_CONTENT, each entity bound to ROLE_ENTITY, all bundled.
 
     Role vectors are reserved atoms: "__hrr_role_content__", "__hrr_role_entity__"

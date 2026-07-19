@@ -106,8 +106,13 @@ def _emit_terminal_post_tool_call(
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
-    except Exception:
-        pass
+    except Exception as _telemetry_err:
+        # Fail-open: tool call succeeded, don't block on telemetry hiccup.
+        # But log it so the operator can tell the hook stopped firing (audit D3).
+        logger.warning(
+            "post_tool_call hook failed for %s (telemetry degraded, continuing): %s",
+            function_name, _telemetry_err,
+        )
 
 
 def _cancelled_tool_result(reason: str = "user interrupt") -> str:

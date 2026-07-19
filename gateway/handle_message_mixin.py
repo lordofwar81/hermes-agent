@@ -397,6 +397,24 @@ class HandleMessageMixin:
                     _quick_key, _stale_age, _stale_idle,
                     _raw_stale_timeout, _stale_detail,
                 )
+                # Notify the user that their previous session stalled.
+                # Without this, the eviction is invisible — the user's
+                # unanswered messages just vanish and a fresh session
+                # starts silently, which caused the audit-session incident
+                # (user sent 3 messages, never got a response or explanation).
+                _evict_adapter = self.adapters.get(source.platform)
+                if _evict_adapter:
+                    _idle_min = int(_stale_idle // 60) or 1
+                    try:
+                        await _evict_adapter.send(
+                            source.chat_id,
+                            f"⚠️ Previous session was inactive for {_idle_min}m "
+                            f"and has been reset. Starting fresh — "
+                            f"your new message will be processed normally.",
+                            metadata=getattr(self, "_last_status_metadata", None),
+                        )
+                    except Exception as _evict_err:
+                        logger.debug("Eviction notification send error: %s", _evict_err)
                 self._invalidate_session_run_generation(
                     _quick_key,
                     reason="stale_running_agent_eviction",

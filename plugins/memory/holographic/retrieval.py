@@ -189,7 +189,7 @@ class FactRetriever:
         jaccard_weight: float = 0.2,
         hrr_weight: float = 0.2,
         neural_weight: float = 0.3,
-        hrr_dim: int = 1024,
+        hrr_dim: int = 8192,
         llm_verifier: LLMVerifier | None = None,
     ):
         self.store = store

@@ -21,21 +21,32 @@ _model = None
 _tokenizer = None
 _lock = threading.Lock()
 _load_attempted = False
-_disabled = False  # set True if deps missing, to avoid re-trying every call
+_last_fail_ts: float = 0.0  # timestamp of last load failure (0 = never failed)
+_RETRY_COOLDOWN_SECONDS: float = 600.0  # 10 min — retry load after this long (audit H-1)
+
+# _disabled removed: a permanent disable flag meant a transient failure (missing
+# transformers, model download timeout, OOM) stuck the process on RRF-only ranking
+# forever. Now _last_fail_ts + cooldown gates retries so recovery is automatic.
 
 
 def _load():
-    """Lazily load the cross-encoder. Returns (model, tokenizer) or (None, None)."""
-    global _model, _tokenizer, _load_attempted, _disabled
-    if _disabled:
-        return None, None
+    """Lazily load the cross-encoder. Returns (model, tokenizer) or (None, None).
+
+    Uses a cooldown instead of permanent disable: after a load failure, retries
+    are suppressed for _RETRY_COOLDOWN_SECONDS, then allowed again. This lets a
+    long-lived process recover when transformers is installed, the model finishes
+    downloading, or a transient network/OOM condition clears (audit H-1).
+    """
+    global _model, _tokenizer, _load_attempted, _last_fail_ts
+    import time as _time
     if _model is not None:
         return _model, _tokenizer
+    # Cooldown gate: if we failed recently, don't retry yet.
+    if _last_fail_ts and (_time.time() - _last_fail_ts) < _RETRY_COOLDOWN_SECONDS:
+        return None, None
     with _lock:
         if _model is not None:
             return _model, _tokenizer
-        if _load_attempted:
-            return None, None
         _load_attempted = True
         try:
             import torch  # noqa: F401 — transformers needs it importable
@@ -44,22 +55,44 @@ def _load():
             _tokenizer = AutoTokenizer.from_pretrained(model_id)
             _model = AutoModelForSequenceClassification.from_pretrained(model_id)
             _model.eval()
+            _last_fail_ts = 0.0  # success — clear the cooldown
             logger.info("cross-encoder reranker loaded: %s", model_id)
         except Exception as e:
-            logger.warning("cross-encoder unavailable, prefetch will use RRF only: %s", e)
-            _disabled = True
+            _last_fail_ts = _time.time()
+            logger.warning(
+                "cross-encoder unavailable, prefetch will use RRF only "
+                "(retry in %ds): %s", int(_RETRY_COOLDOWN_SECONDS), e
+            )
             return None, None
     return _model, _tokenizer
 
 
 def is_available() -> bool:
-    """Cheap check: has the model been loaded (or is it loadable)?"""
+    """Cheap check: has the model been loaded (or is it loadable)?
+
+    Returns False if the last load attempt failed and the cooldown hasn't
+    expired, but will re-attempt after _RETRY_COOLDOWN_SECONDS. This means
+    is_available() can flip from False to True without a process restart
+    once the blocker (missing deps, network) resolves.
+    """
     if _model is not None:
         return True
-    if _disabled:
-        return False
     _load()
     return _model is not None
+
+
+def reset_cache() -> None:
+    """Force the reranker to re-probe on the next call.
+
+    Called by HolographicMemoryProvider.initialize() so each new session re-attempts
+    the load instead of inheriting a stale failure state from the process start.
+    """
+    global _model, _tokenizer, _load_attempted, _last_fail_ts
+    with _lock:
+        # Keep a successfully-loaded model (no need to reload), only clear failure state.
+        if _model is None:
+            _load_attempted = False
+            _last_fail_ts = 0.0
 
 
 def rerank(query: str, documents: list[str], top_k: int = 5) -> list[tuple[int, float]]:

@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "crawl4ai"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -224,6 +224,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "crawl4ai":
+        return _has_env("CRAWL4AI_URL")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":

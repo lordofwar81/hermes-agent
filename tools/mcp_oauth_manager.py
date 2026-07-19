@@ -298,6 +298,38 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
+            # Pre-flow client_credentials mint. If the loaded token is expired
+            # (or missing) and the SDK has no refresh path (client_credentials
+            # clients have no refresh_token per RFC 6749 §4.4), proactively
+            # mint a fresh token before the request goes out. Without this, a
+            # process restart with an expired client_credentials token sends
+            # the stale bearer to the server, the SDK's 401 branch fires but
+            # ``can_refresh_token()`` returns False, and the connection dies
+            # with "MCP server is not connected" — exactly the gbrain symptom.
+            try:
+                ctx = self.context
+                if (
+                    ctx.current_tokens is not None
+                    and not ctx.is_token_valid()
+                    and not ctx.can_refresh_token()
+                ):
+                    mgr = get_manager()
+                    entry = mgr._entries.get(self._hermes_server_name)
+                    if entry is not None:
+                        await mgr._mint_client_credentials_token(
+                            self._hermes_server_name, entry
+                        )
+                        # Reload from disk so the SDK sees the fresh token.
+                        await mgr.invalidate_if_disk_changed(
+                            self._hermes_server_name
+                        )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "MCP OAuth '%s': pre-flow client_credentials mint "
+                    "failed (non-fatal): %s",
+                    self._hermes_server_name, exc,
+                )
+
             # Manually bridge the bidirectional generator protocol. httpx's
             # auth_flow driver (httpx._client._send_handling_auth) calls
             # ``auth_flow.asend(response)`` to feed HTTP responses back into
@@ -503,6 +535,146 @@ class MCPOAuthManager:
                 return True
             return False
 
+    # -- client_credentials mint ---------------------------------------------
+    #
+    # OAuth 2.0 RFC 6749 §4.4: the client_credentials grant issues access
+    # tokens WITHOUT a refresh_token. The MCP SDK's refresh path is gated on
+    # ``can_refresh_token()`` which requires a refresh_token — so
+    # client_credentials tokens have NO in-process refresh path and silently
+    # expire after their TTL. This mint method is the recovery path: when a
+    # 401 arrives and the client is registered for client_credentials, we
+    # POST to the AS token endpoint for a fresh access token and persist it
+    # to disk (the disk-watch path picks it up on the next request).
+    #
+    # The AS metadata (token_endpoint URL) is required; it's persisted by
+    # ``HermesMCPOAuthProvider._prefetch_oauth_metadata`` / the SDK's 401-
+    # branch discovery. If metadata is missing we fall back to the SDK's
+    # ``{server_url}/token`` guess (works for gbrain, which serves the AS
+    # on the same origin).
+
+    async def _mint_client_credentials_token(
+        self, server_name: str, entry: "_ProviderEntry"
+    ) -> bool:
+        """Mint a fresh access token via the client_credentials grant.
+
+        Returns True if a new token was minted and persisted to disk.
+        The caller (``handle_401``) should then report recovery so the
+        MCP session reconnects and picks up the new token via the
+        disk-watch reload path.
+        """
+        import json as _json
+        import urllib.parse
+        import urllib.request
+
+        from tools.mcp_oauth import HermesTokenStorage
+
+        storage = HermesTokenStorage(server_name)
+
+        # Resolve client credentials from the persisted client info.
+        client_info = await storage.get_client_info()
+        if client_info is None:
+            logger.debug(
+                "MCP OAuth '%s': no client_info — cannot mint "
+                "client_credentials token", server_name,
+            )
+            return False
+        grant_types = getattr(client_info, "grant_types", None) or []
+        if "client_credentials" not in grant_types:
+            return False  # Not a client_credentials client; not our path.
+        client_id = getattr(client_info, "client_id", None)
+        client_secret = getattr(client_info, "client_secret", None)
+        if not client_id or not client_secret:
+            logger.debug(
+                "MCP OAuth '%s': client_credentials client missing "
+                "id/secret — cannot mint", server_name,
+            )
+            return False
+
+        # Resolve the token endpoint. Prefer persisted AS metadata; fall
+        # back to ``{server_url}/token`` (SDK's guess; works for same-origin
+        # AS like gbrain).
+        meta = storage.load_oauth_metadata()
+        token_endpoint = None
+        if meta is not None and getattr(meta, "token_endpoint", None):
+            token_endpoint = str(meta.token_endpoint)
+        if not token_endpoint:
+            # Fall back to constructing from the server URL. Strip path/query.
+            from urllib.parse import urlsplit, urlunsplit
+            parts = urlsplit(entry.server_url)
+            base = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+            token_endpoint = base.rstrip("/") + "/token"
+            logger.debug(
+                "MCP OAuth '%s': no AS metadata — using fallback token "
+                "endpoint %s", server_name, token_endpoint,
+            )
+
+        # Resolve scope from stored tokens (reuse the last-known scope) or
+        # the oauth_config.
+        scope = None
+        existing_tokens = await storage.get_tokens()
+        if existing_tokens is not None and getattr(existing_tokens, "scope", None):
+            scope = existing_tokens.scope
+        if not scope:
+            scope = (entry.oauth_config or {}).get("scope")
+
+        body = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+        if scope:
+            body["scope"] = scope
+        encoded = urllib.parse.urlencode(body).encode("utf-8")
+        req = urllib.request.Request(
+            token_endpoint,
+            data=encoded,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = _json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.warning(
+                "MCP OAuth '%s': client_credentials mint to %s failed: %s",
+                server_name, token_endpoint, exc,
+            )
+            return False
+
+        access_token = payload.get("access_token")
+        if not access_token:
+            logger.warning(
+                "MCP OAuth '%s': client_credentials mint returned no "
+                "access_token (keys=%s)", server_name, list(payload.keys()),
+            )
+            return False
+
+        # Persist via the same storage path the SDK reads from. We construct
+        # an OAuthToken so ``set_tokens`` records ``expires_at`` (the absolute
+        # wall-clock expiry that ``get_tokens`` rewrites to remaining TTL).
+        try:
+            from mcp.client.auth.oauth2 import OAuthToken
+            new_token = OAuthToken(
+                access_token=access_token,
+                token_type=payload.get("token_type", "bearer"),
+                expires_in=int(payload.get("expires_in", 3600)),
+                scope=payload.get("scope", scope),
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "MCP OAuth '%s': failed to build OAuthToken from mint: %s",
+                server_name, exc,
+            )
+            return False
+
+        await storage.set_tokens(new_token)
+        logger.info(
+            "MCP OAuth '%s': minted fresh client_credentials token "
+            "(expires_in=%ss)", server_name, payload.get("expires_in"),
+        )
+        return True
+
     # -- 401 handler (dedup'd) -----------------------------------------------
 
     async def handle_401(
@@ -560,6 +732,29 @@ class MCPOAuthManager:
                                     can_refresh = bool(can_refresh_fn())
                                 except Exception:
                                     can_refresh = False
+
+                        # Step 3: client_credentials recovery. If the SDK
+                        # can't refresh (no refresh_token — normal for
+                        # client_credentials clients per RFC 6749 §4.4), but
+                        # the client is registered for the client_credentials
+                        # grant, mint a fresh token directly. This is the
+                        # only refresh path for these clients; without it
+                        # they silently die on every TTL expiry.
+                        if not can_refresh:
+                            try:
+                                minted = await self._mint_client_credentials_token(
+                                    server_name, entry
+                                )
+                            except Exception as exc:  # pragma: no cover
+                                logger.warning(
+                                    "MCP OAuth '%s': client_credentials "
+                                    "mint raised: %s", server_name, exc,
+                                )
+                                minted = False
+                            if minted and not pending.done():
+                                pending.set_result(True)
+                                return
+
                         if not pending.done():
                             pending.set_result(can_refresh)
                     except Exception as exc:  # pragma: no cover — defensive

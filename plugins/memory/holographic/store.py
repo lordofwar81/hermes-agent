@@ -85,7 +85,10 @@ CREATE TABLE IF NOT EXISTS memory_banks (
 _HELPFUL_DELTA   =  0.05
 _UNHELPFUL_DELTA = -0.10
 _TRUST_MIN       =  0.0
-_TRUST_MAX       =  1.0
+_TRUST_MAX       =  0.95  # capped from 1.0 (audit H-3): no fact should
+                         # ever lock at the ceiling where score=relevance*1.0
+                         # lets it dominate retrieval permanently. A fact must
+                         # earn trust via helpful_count; even then 0.95 ceiling.
 
 # Epistemic lifecycle of a fact: stated → inferred → verified, or →
 # contradicted / retracted when superseded. Used by update_fact() and
@@ -174,9 +177,12 @@ _log = logging.getLogger(__name__)
 
 # ── Neural embed client ────────────────────────────────────────────
 
-# Default embed server — local llama.cpp with mxbai-embed-large-v1
-_DEFAULT_EMBED_URL = "http://localhost:11434/v1/embeddings"
-_DEFAULT_EMBED_MODEL = "mxbai-embed-large-v1-f16.gguf"
+# Default embed server — local llama-server with qwen3-embed-8b (4096d).
+# Changed 2026-07-06: was mxbai-embed-large-v1-f16.gguf, but :11434 only
+# serves qwen3-embed-8b. The old name silently fell through to whatever
+# model was loaded, producing mislabeled-but-valid vectors.
+_DEFAULT_EMBED_URL = os.environ.get("EMBED_SERVER_URL", "http://localhost:11434/v1/embeddings")
+_DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "qwen3-embed-8b")
 _DEFAULT_EMBED_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 _EMBED_TIMEOUT = 5  # seconds — fail fast, don't block memory writes
 
@@ -196,13 +202,29 @@ class EmbedClient:
         self.api_key = api_key
         self.timeout = timeout
         self._alive: bool | None = None  # None = not yet probed
+        self._alive_false_ts: float = 0.0  # when _alive was last set False (for TTL)
+        import time as _time
+        self._time = _time
+        self._alive_ttl_seconds: float = 60.0  # re-probe after this long if last probe was False
 
     @property
     def alive(self) -> bool:
-        """Check if embed server is reachable (cached after first call)."""
-        if self._alive is not None:
-            return self._alive
+        """Check if embed server is reachable.
+
+        Cached True stays True (server up). A cached False expires after
+        ``_alive_ttl_seconds`` so a transient failure doesn't permanently
+        disable neural embeds for the process lifetime (audit H-2).
+        """
+        if self._alive is True:
+            return True
+        # False is cached but expires — re-probe after the TTL window.
+        if self._alive is False:
+            if (self._time.time() - self._alive_false_ts) < self._alive_ttl_seconds:
+                return False
+            # TTL expired — fall through and re-probe.
         self._alive = self._probe()
+        if self._alive is False:
+            self._alive_false_ts = self._time.time()
         return self._alive
 
     def _probe(self) -> bool:
@@ -242,9 +264,17 @@ class EmbedClient:
                 result = json.loads(resp.read())
                 vec = np.array(result["data"][0]["embedding"], dtype=np.float32)
                 return vec
+        except urllib.error.HTTPError as he:
+            # HTTP 4xx (esp 401) is a config/auth bug, NOT a down server.
+            # Don't flip _alive False — the server IS reachable, the request is wrong.
+            # Flipping False here would silently disable embeds for the TTL window
+            # on every auth failure (audit H-2 root cause).
+            _log.warning("Embed request got HTTP %s (auth/config issue, not marking server down)", he.code)
+            return None
         except Exception:
-            _log.debug("Embed request failed, marking server as down")
+            _log.debug("Embed request failed (connection/timeout), marking server down for TTL window")
             self._alive = False
+            self._alive_false_ts = self._time.time()
             return None
 
     def embed_batch(self, texts: list[str]) -> list["np.ndarray | None"]:
@@ -259,7 +289,7 @@ class MemoryStore:
         self,
         db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
-        hrr_dim: int = 1024,
+        hrr_dim: int = 8192,
         embed_client: EmbedClient | None = None,
     ) -> None:
         if db_path is None:
@@ -381,14 +411,18 @@ class MemoryStore:
             # Compute neural embedding (async-safe, graceful on failure)
             self._compute_neural_embed(fact_id, content)
 
-            # Dual-mode fan-out: mirror the fact into the LanceDB vector store so
-            # dense-vector semantic retrieval (vector_memory + BM25) can also find
-            # it. Best-effort: a vector-store/embedding failure must NEVER break
-            # the primary fact write above, which already succeeded.
-            try:
-                self._fan_out_to_vector_store(fact_id, content, category, tags)
-            except Exception as exc:  # noqa: BLE001 - intentional broad guard
-                _log.debug("Vector-memory fan-out failed for fact %s: %s", fact_id, exc)
+            # [DISABLED 2026-07-15] LanceDB fan-out was creating 3-5 redundant
+            # copies of every fact (SQLite + HRR + neural_embed + LanceDB + BM25).
+            # The holographic store's own neural_embed column provides the same
+            # semantic search capability. The RRF fusion deduped these at read
+            # time anyway (content.lower()[:200] keying). Stopping the fan-out
+            # eliminates ~60% of write latency per fact with zero read loss.
+            # Existing LanceDB rows remain for backward-compatible reads.
+            # To re-enable: uncomment the block below.
+            # try:
+            #     self._fan_out_to_vector_store(fact_id, content, category, tags)
+            # except Exception as exc:
+            #     _log.debug("Vector-memory fan-out failed for fact %s: %s", fact_id, exc)
 
             self._rebuild_bank(category)
 

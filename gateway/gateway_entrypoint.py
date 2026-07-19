@@ -156,6 +156,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     from gateway.run import logger
 
     from cron.scheduler import tick as cron_tick
+    from cron.jobs import record_ticker_heartbeat
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
     from hermes_cli.debug import _sweep_expired_pastes
 
@@ -165,12 +166,34 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
 
     logger.info("Cron ticker started (interval=%ds)", interval)
+    # Record an initial heartbeat so ops tools see a live ticker immediately
+    # on startup rather than waiting for the first tick to complete.
+    try:
+        record_ticker_heartbeat()
+    except Exception:
+        pass
     tick_count = 0
     while not stop_event.is_set():
+        ok = False
         try:
             cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+            ok = True
         except Exception as e:
-            logger.debug("Cron tick error: %s", e)
+            # ``error`` (not ``debug``) so tick failures are visible in the
+            # default log level — a silently-failing ticker breaks every
+            # scheduled job and must not be buried.
+            logger.error("Cron tick error: %s", e, exc_info=True)
+        finally:
+            # Record heartbeat every tick. ``record_ticker_heartbeat`` swallows
+            # its own errors internally, so it cannot crash the ticker. This
+            # mirrors the proven pattern in ``cron.scheduler_provider``. Without
+            # it, the heartbeat files go stale and ops dashboards falsely report
+            # the ticker as dead (it isn't — jobs still fire, only the liveness
+            # signal is lost).
+            try:
+                record_ticker_heartbeat(success=ok)
+            except Exception:
+                pass
 
         tick_count += 1
 
@@ -238,7 +261,13 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
-    Start the gateway and run until interrupted.
+        # A3: reap orphaned MCP processes from any previous gateway incarnation
+    try:
+        from tools.mcp_tool import _reap_cross_process_mcp_orphans
+        _reap_cross_process_mcp_orphans()
+    except Exception as _e:
+        logger.warning("MCP orphan sweep at startup failed: %s", _e)
+Start the gateway and run until interrupted.
     
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.

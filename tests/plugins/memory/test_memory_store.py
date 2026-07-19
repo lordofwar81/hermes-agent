@@ -57,7 +57,7 @@ class TestEmbedClient:
 
 class TestClampTrust:
     def test_clamps_high(self):
-        assert _clamp_trust(1.5) == 1.0
+        assert _clamp_trust(1.5) == 0.95  # audit H-3: _TRUST_MAX capped at 0.95
 
     def test_clamps_low(self):
         assert _clamp_trust(-0.5) == 0.0
@@ -67,7 +67,7 @@ class TestClampTrust:
 
     def test_boundary(self):
         assert _clamp_trust(0.0) == 0.0
-        assert _clamp_trust(1.0) == 1.0
+        assert _clamp_trust(1.0) == 0.95  # audit H-3
 
 
 # ─── MemoryStore CRUD ──────────────────────────────────────────────────
@@ -132,7 +132,7 @@ class TestMemoryStoreCRUD:
         store.update_fact(fid, trust_delta=1.0)  # 0.5 + 1.0 = 1.5, clamped to 1.0
         facts = store.list_facts()
         found = [f for f in facts if f["fact_id"] == fid]
-        assert found[0]["trust_score"] == 1.0
+        assert found[0]["trust_score"] == 0.95  # audit H-3
 
     def test_update_nonexistent_returns_false(self, store):
         assert store.update_fact(999999, content="nope") is False
@@ -262,7 +262,7 @@ class TestTrustFeedback:
         for _ in range(20):
             store.record_feedback(fid, helpful=True)
         fact = [f for f in store.list_facts() if f["fact_id"] == fid][0]
-        assert fact["trust_score"] == 1.0
+        assert fact["trust_score"] == 0.95  # audit H-3
 
         # Now negative — should stay at 1.0 (helpful goes up by 0.05, unhelpful goes down by 0.10)
         # Actually helpful=True adds, and clamps to 1.0. Let's test clamping at 0.

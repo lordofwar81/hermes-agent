@@ -50,7 +50,7 @@ DEFAULT_VECTOR_MEMORY_PATH = Path.home() / ".hermes" / "vector_memory"
 
 # Embedding endpoint (same as adaptive_context_manager.py)
 EMBED_ENDPOINT = "http://localhost:11434/v1"
-EMBED_MODEL = "qwen3-embedding-8b"
+EMBED_MODEL = "qwen3-embed-8b"
 EMBED_API_KEY = os.environ.get("EMBED_SERVER_KEY", "")
 
 # Default epistemic status values

@@ -177,6 +177,13 @@ voice = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+# OCR — PP-OCRv4 via ONNX Runtime. Chosen over paddlepaddle (the original
+# hermes ocr-and-documents skill backend) because paddlepaddle==3.2.0 forces
+# numpy<2.4 / pyyaml<6.0.3 downgrades that conflict with the core pins.
+# RapidOCR runs the same PP-OCR detection+recognition models on ONNX Runtime,
+# so accuracy is comparable (v4 models, not paddles v6) with zero conflicts.
+# Wheel-only transitive deps (onnxruntime, opencv-python) keep it opt-in.
+ocr = ["rapidocr-onnxruntime==1.4.4", "pymupdf==1.28.0"]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
   # in the main `dependencies` list (with the same platform markers), so

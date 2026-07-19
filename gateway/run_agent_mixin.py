@@ -1122,7 +1122,11 @@ class RunAgentMixin:
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, session_key=session_key)
+            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs, session_key=session_key, platform=source.platform.value if source and source.platform else None)
+
+            # Per-turn tool suppression — resolved from the router, applies
+            # whether the agent is fresh or reused from cache.
+            _suppress = turn_route.get("suppress_tools", False)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -1233,6 +1237,7 @@ class RunAgentMixin:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            agent.suppress_tools = _suppress
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
@@ -2166,12 +2171,46 @@ class RunAgentMixin:
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
             _warning_fired = False
+            _run_start_ts = time.time()
             _executor_task = asyncio.ensure_future(
                 _run_in_executor_with_context(run_sync)
             )
 
             _inactivity_timeout = False
             _POLL_INTERVAL = 5.0
+
+            # Progress narration: send a brief "still working on X" message
+            # every ~90s during long operations so the user never stares at
+            # silence wondering if the agent stalled. Uses the agent's own
+            # activity tracker to describe what it's doing. Disabled when
+            # HERMES_PROGRESS_NARRATION_INTERVAL is 0.
+            _PROGRESS_INTERVAL = _float_env("HERMES_PROGRESS_NARRATION_INTERVAL", 90.0)
+            _last_progress_sent = 0.0
+            _progress_msg_id = [None]  # for edit-in-place on platforms that support it
+
+            async def _send_progress_narration(elapsed_total: float, activity_desc: str):
+                """Send or update a progress message in the chat."""
+                _padapter = self.adapters.get(source.platform)
+                if not _padapter:
+                    return
+                _elapsed_min = int(elapsed_total // 60) or 1
+                _text = f"⏳ Still working ({_elapsed_min}m) — {_activity_desc}"
+                try:
+                    # Try edit-in-place first (Telegram supports this)
+                    if _progress_msg_id[0] is not None and hasattr(_padapter, "edit_message"):
+                        try:
+                            await _padapter.edit_message(source.chat_id, _progress_msg_id[0], _text)
+                            return
+                        except Exception:
+                            _progress_msg_id[0] = None  # edit failed, fall through to send
+                    result = await _padapter.send(
+                        source.chat_id, _text, metadata=_status_thread_metadata,
+                    )
+                    _new_id = getattr(result, "message_id", None)
+                    if _new_id:
+                        _progress_msg_id[0] = _new_id
+                except Exception as _pe:
+                    logger.debug("Progress narration send error: %s", _pe)
 
             if _agent_timeout is None:
                 # Unlimited — still poll periodically for backup interrupt
@@ -2184,6 +2223,20 @@ class RunAgentMixin:
                     if done:
                         response = _executor_task.result()
                         break
+                    # Progress narration for unlimited-timeout sessions too.
+                    if _PROGRESS_INTERVAL > 0:
+                        _agent_ref_u = agent_holder[0]
+                        _desc_u = "processing"
+                        if _agent_ref_u and hasattr(_agent_ref_u, "get_activity_summary"):
+                            try:
+                                _desc_u = _agent_ref_u.get_activity_summary().get("last_activity_desc", "processing")
+                            except Exception:
+                                pass
+                        _now_u = time.time()
+                        if _now_u - _last_progress_sent >= _PROGRESS_INTERVAL:
+                            _last_progress_sent = _now_u
+                            _elapsed_u = _now_u - _run_start_ts
+                            asyncio.create_task(_send_progress_narration(_elapsed_u, _desc_u))
                     # Backup interrupt check: if the monitor task died or
                     # missed the interrupt, catch it here.
                     if not _interrupt_detected.is_set() and session_key:
@@ -2217,12 +2270,27 @@ class RunAgentMixin:
                     # Agent still running — check inactivity.
                     _agent_ref = agent_holder[0]
                     _idle_secs = 0.0
+                    _activity_desc = "processing"
                     if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                         try:
                             _act = _agent_ref.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            _activity_desc = _act.get("last_activity_desc", "processing")
                         except Exception:
                             pass
+                    # Progress narration: send periodic "still working" updates.
+                    # Only fires when agent has been running long enough that
+                    # silence would feel like a stall. Skips if idle (that's
+                    # the warning's job).
+                    if (_PROGRESS_INTERVAL > 0 and _idle_secs < _agent_warning
+                            and _idle_secs > 0):
+                        _now_ts = time.time()
+                        if _now_ts - _last_progress_sent >= _PROGRESS_INTERVAL:
+                            _last_progress_sent = _now_ts
+                            _run_elapsed = time.time() - _run_start_ts
+                            asyncio.create_task(
+                                _send_progress_narration(_run_elapsed, _activity_desc)
+                            )
                     # Staged warning: fire once before escalating to full timeout.
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):

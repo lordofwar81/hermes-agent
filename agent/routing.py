@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """
-agent.routing — Single-source model routing for Hermes Agent.
+[DEPRECATED 2026-07-15] This module is legacy. All routing is now handled
+by the hermes-router microservice (:4090) with Thompson Sampling bandit,
+circuit breakers, quota tracking, and silent-failure detection. When the
+router provider snippet is installed (config.yaml -> providers: router),
+this module's classification runs as a no-op -- everything funnels to
+localhost:4090/model=auto. The module is kept because gateway files still
+import it, but should not be extended. New routing logic belongs in the
+microservice.
+
+agent.routing -- Single-source model routing for Hermes Agent.
 
 Replaces all prior routing attempts (model_router.py, turn_router.py,
 smart_model_routing.py, model_selector.py, priority_router.py, etc.).
@@ -26,13 +35,13 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from typing import Dict, List, Optional
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +53,6 @@ HEALTH_CHECK_TIMEOUT = 5        # seconds for local model pre-flight ping
 HEALTH_CACHE_TTL = 30           # seconds between health checks
 LOCAL_CONTEXT_RATIO = 0.6       # use 60% of local model context for safety
 BUDGET_RESET_HOUR_PST = 17      # Venice account quota resets 5pm Pacific
-
-# Session-aware routing guard. Once a session has had substantive work
-# (a prior turn classified as CODE/REASONING/ANALYSIS/EXPERT), a later
-# short/casual message that would otherwise classify as SIMPLE or
-# GREETING is upgraded so it is NOT routed to a tool-less local model
-# mid-conversation. The classifier is stateless per turn; without this
-# guard, turn 8 of a 51-tool-call session can still get dumped to a
-# slow local model because one short reply ("estradiol was high...")
-# hit the keyword default. See routing_history.jsonl 2026-06-25.
 SESSION_ACTIVE_WINDOW_S = 1800  # a session counts as "active" for 30 min
 SESSION_MIN_PRIOR_TURNS = 1     # >=1 prior substantive turn triggers guard
 SESSION_UPGRADE_CATEGORY = None  # set below after Category is defined
@@ -68,6 +68,7 @@ class Category(Enum):
     REASONING = "reasoning"    # explain why, how, design questions
     ANALYSIS = "analysis"      # compare, evaluate, audit, metrics
     EXPERT = "expert"          # full system design, end-to-end, multi-step
+    HEALTH = "health"          # peptide/dosing/reconstitution (Gemma refuses; route to abliterated)
 
 
 # Categories that represent substantive work. Seeing one of these in a
@@ -80,6 +81,19 @@ SUBSTANTIVE_CATEGORIES = frozenset(
 # promoted to CODE — the safe default that is API-first in every chain and
 # keeps tools enabled (so a follow-up question mid-task still has tools).
 SESSION_UPGRADE_CATEGORY = Category.CODE
+
+# Platforms where tool suppression is safe — CLI sessions and automated
+# webhooks that never issue ad-hoc commands. Everything else (Discord,
+# Telegram, Matrix, Slack, etc.) is an agentic session where the user
+# may issue a command ("sync", "deploy", "run X") at any moment, so
+# tool definitions must always reach the model.
+MESSAGING_EXCLUDE_PLATFORMS = frozenset({
+    "local",        # CLI — quick Q&A is genuinely tool-free
+    "webhook",      # automated hooks
+    "msgraph_webhook",
+    "api_server",   # programmatic API callers
+})
+
 
 
 # ─── Data Classes ────────────────────────────────────────────────────────
@@ -126,27 +140,18 @@ class TaskClassifier:
     _CODE_SINGLE_WORDS = frozenset({
         "debug", "debugging", "implement", "implementation", "patch",
         "traceback", "stacktrace", "exception", "fix", "bug", "module",
-        "script", "server", "test", "tests", "security", "deploy", "compile",
+        "script", "server", "test", "security", "deploy", "compile",
         "refactor", "rewrite", "rework", "design",
         "cron", "docker", "compose",
         "container", "pipeline", "workflow",
-        # Code-execution vocabulary (eval-set gaps): these words appear in
-        # debugging/implementation requests without any other code keyword,
-        # causing the classifier to default to SIMPLE.
-        "function", "error", "errors", "crash", "crashed", "crashing",
-        "throw", "throwing", "throws", "failed", "failing", "failure",
-        "exception", "broken", "broke",
-        "validation", "validate", "regex", "callback", "async", "await",
-        "git", "merge", "commit", "branch",
-        # Test/CI vocabulary
-        "pytest", "unittest", "ci",
-        # Language/runtime nouns that imply code context
-        "keyerror", "indexerror", "attributeerror", "segfault",
-        # Operational debugging vocabulary (stress-test gaps): common words
-        # in real debugging descriptions that lack explicit code keywords.
-        "hangs", "hang", "hanging", "timeout", "timed", "upload", "download",
-        "request", "response", "endpoint", "latency", "memory", "leak",
-        "stack", "trace", "log", "logs", "logging",
+        # Sysadmin/operations — tasks that need terminal/tools
+        "system", "load", "status", "service", "services", "logs",
+        "process", "processes", "memory", "cpu", "disk", "network",
+        "port", "socket", "firewall", "nginx", "systemd",
+        "journalctl", "restart", "start", "stop",
+        "dashboard", "down", "crashed", "hung", "stuck",
+        "health", "monitor", "metric", "latency", "timeout",
+        "ssh", "host", "endpoint", "database", "db",
     })
     _CODE_MULTIWORD_PHRASES = frozenset({
         "next step",
@@ -184,79 +189,48 @@ class TaskClassifier:
         "explain why", "explain how", "why does", "how does",
         "what causes", "redesign", "improve", "tradeoff", "trade-off",
         "advantage", "disadvantage",
-        "explain the difference",
-        # Eval-set gaps: reasoning-seeking phrasings the keyword path missed.
-        "help me understand", "walk me through", "right way to",
-        "overcomplicating", "thought process",
     })
 
     _GREETING_KW = frozenset({
         "hello", "hi", "hey", "thanks", "thank you", "ty",
         "cheers", "ok", "okay", "got it", "understood", "bye", "goodbye",
-        # Time-of-day greetings (eval-set gap).
-        "morning", "afternoon", "evening", "good morning", "good afternoon",
-        "good evening",
     })
-
-    # Action-intent phrases: messages asking the agent to DO something —
-    # use a skill, check status, look something up, configure, monitor.
-    # These must NOT classify as SIMPLE (which strips tools and routes to
-    # a weak local model). Multi-word phrases matched as substrings on the
-    # lowercased text. Replaces the prior _RESEARCH_KW set with broader
-    # coverage of action verbs that the unifi-skill failure exposed.
-    _ACTION_MULTIWORD = frozenset({
-        # Information requests
-        "tell me if", "tell me whether", "tell me what", "tell me when",
-        "tell me about", "tell me how", "tell me which",
-        "show me", "show me if", "show me what", "show me how",
-        "check if", "check whether", "check for", "check the", "check on",
-        "check this", "check that", "check any", "check all",
-        "look up", "lookup", "find out", "find me", "find any", "find all",
-        "search for", "google", "research",
-        # Setup/config actions
-        "set up", "configure",
-        # Monitoring/scanning
-        "scan for", "scan the", "watch for", "watch the",
-        "alert me", "notify me", "notify when", "notify if",
-        "monitor the", "monitor for",
-        # Listing/reporting
-        "list all", "list the", "list any",
-        "report on", "report back",
-        "summarize this", "summarize the", "summarize what",
-        # Investigation/lookup
-        "what's at", "what is at", "what's on", "what's new on",
-        "what is the latest on", "anything on",
-        "info on", "information on",
-        "learn about", "read about", "read me",
-        # Skill invocation
-        "use skill", "use the skill", "use your",
-    })
-
-    # Imperative-start verbs: a sentence that STARTS with an action verb is
-    # an action request even when no multi-word phrase matches (e.g.,
-    # "Use unifi skill" → "use" at start, "restart the gateway" → "restart").
-    # Only checked at sentence boundaries to avoid false positives like
-    # "I use vim" (where "use" is not imperative).
-    _ACTION_IMPERATIVE_RE = re.compile(
-        r'(?:^|[.!?]\s+)'
-        r'(?:use|check|show|tell|find|list|scan|monitor|configure|'
-        r'summarize|report|watch|alert|notify|search|lookup|start|stop|'
-        r'restart|create|delete|add|remove|update|install|run|test|ping|'
-        r'fetch|pull|push|deploy|build|kill|send|post|get|set)\b'
-    )
 
     _EXPERT_PHRASES = [
         "design a system", "design a complete system", "design an architecture",
-        "design a microservice", "design a distributed", "design a scalable",
-        # Eval-set gap: "design a complete distributed system" wasn't caught
-        # because the phrase required an exact "design a complete system".
-        "design a complete",
         "implement a complete", "end-to-end", "full system",
         "architect a", "architect the",
         "build a complete", "build an entire", "comprehensive system",
         "from scratch", "production-ready", "production ready", "multi-region",
         "system design", "system architecture",
     ]
+
+    # HEALTH keywords — peptide/dosing/reconstitution turns that Gemma refuses.
+    # Checked FIRST in classify() so health math isn't hijacked by code/greeting
+    # branches. Single-word compounds use word boundaries; multiword + unit
+    # patterns use substring. Route to the abliterated Qwen on mac-studio.
+    _HEALTH_SINGLE_WORDS = frozenset({
+        # peptide compounds (operator's documented protocol)
+        "tesamorelin", "tb-500", "tb500", "bpc-157", "bpc157",
+        "ipamorelin", "cjc", "cjc-1295", "semaglutide", "retatrutide",
+        "ghk-cu", "ghkcu", "pregnyl", "melanotan", "pt-141",
+        # dosing/reconstitution vocabulary
+        "peptide", "peptides", "reconstitute", "reconstitution",
+        "bacteriostatic", "reconstituted", "subcutaneous", "subq",
+        "mcg", "syringe", "intramuscular",
+    })
+    _HEALTH_MULTIWORD_PHRASES = frozenset({
+        "bac water", "bpc-157 blend", "glow blend", "dose me", "injection site",
+        "dose volume", "weekly dose",
+    })
+    _HEALTH_KW = _HEALTH_SINGLE_WORDS | _HEALTH_MULTIWORD_PHRASES
+    # Word-boundary regex for single-word compounds (so "dose" won't match
+    # "proposal" — but "dose" alone is intentionally NOT in the single-word
+    # set; only unambiguous compounds are).
+    _HEALTH_BOUNDARY_RE = re.compile(
+        r'\b(?:' + '|'.join(re.escape(kw) for kw in sorted(_HEALTH_SINGLE_WORDS)) + r')\b',
+        re.IGNORECASE,
+    )
 
     # Pre-compiled regex: single-word CODE keywords joined with \| for
     # a single word-boundary match. Derived from _CODE_SINGLE_WORDS so it
@@ -283,37 +257,20 @@ class TaskClassifier:
         return False
 
     @classmethod
-    def _has_action_intent(cls, message: str) -> bool:
-        """True when a message asks the agent to DO something actionable.
+    def _has_health_keyword(cls, text_lower: str) -> bool:
+        """Check for HEALTH keywords: peptide/dosing/reconstitution vocabulary.
 
-        Catches imperative action requests ("use unifi skill", "tell me if a
-        new device came online", "check the logs", "show me what's at X")
-        that the keyword classifier would otherwise bucket as SIMPLE and
-        route to a tool-less local model. This is the fix for the failure
-        where the unifi-skill query got stranded on mac-qwen36 with no tools.
+        Single-word compounds (tesamorelin, bpc-157, ipamorelin, etc.) use
+        the compiled word-boundary regex so 'glow' won't match 'glowering'.
+        Multi-word phrases (bac water, injection site) use substring match.
         """
-        text_lower = (message or "").lower()
-        if any(kw in text_lower for kw in cls._ACTION_MULTIWORD):
+        if cls._HEALTH_BOUNDARY_RE.search(text_lower):
             return True
-        if cls._ACTION_IMPERATIVE_RE.search(text_lower):
-            return True
+        for kw in cls._HEALTH_MULTIWORD_PHRASES:
+            if kw in text_lower:
+                return True
         return False
 
-    @classmethod
-    def _should_suppress_tools(cls, message: str, category: Category) -> bool:
-        """Decide whether tool definitions should be suppressed for a turn.
-
-        Only genuinely trivial messages suppress tools: short greeting/simple
-        turns with no action intent, no external subject lookup, and no
-        code/skill vocabulary. The prior rule (category in GREETING/SIMPLE →
-        suppress) was too blunt — it stranded action requests misbucketed as
-        SIMPLE by stripping the very tools they needed.
-        """
-        if category not in (Category.GREETING, Category.SIMPLE):
-            return False
-        if cls._has_action_intent(message):
-            return False
-        return True
 
     @classmethod
     def classify(cls, message: str) -> Category:
@@ -324,16 +281,18 @@ class TaskClassifier:
         if "```" in text or "`" in text:
             return Category.CODE
 
+        # HEALTH: peptide/dosing/reconstitution. Checked before everything
+        # else (except code blocks) because Gemma refuses these and the
+        # classifier otherwise lands them in SIMPLE → local Gemma. Routes
+        # to the abliterated Qwen on mac-studio via the health chain.
+        if cls._has_health_keyword(text_lower):
+            return Category.HEALTH
+
         # Greeting: short message with greeting keyword, but NOT if it contains
-        # code intent (e.g., "ok, deploy it" is CODE, not GREETING) or action/
-        # research intent (e.g., "hey what's the weather" needs tools, not a
-        # tool-less greeting model). Uses word-boundary matching so 'fix'
-        # doesn't block 'fixed' greetings.
-        # Threshold is 35 chars: covers "thanks, that worked perfectly" (30)
-        # and "morning! how are you today?" (27) while still excluding real
-        # tasks. Code-keyword + action-intent guards backstop longer messages.
-        if len(text) <= 35:
-            if not cls._has_code_keyword(text_lower) and not cls._has_action_intent(text):
+        # code intent (e.g., "ok, deploy it" is CODE, not GREETING).
+        # Uses word-boundary matching so 'fix' doesn't block 'fixed' greetings.
+        if len(text) <= 25:
+            if not cls._has_code_keyword(text_lower):
                 for g in cls._GREETING_KW:
                     if len(g.split()) == 1:
                         if re.search(r'\b' + re.escape(g) + r'\b', text_lower):
@@ -374,16 +333,6 @@ class TaskClassifier:
 
         # Analysis: comparison/evaluation (non-override path, no code kw overlap)
         if any(kw in text_lower for kw in cls._ANALYSIS_KW):
-            return Category.ANALYSIS
-
-        # Action intent: a message asking the agent to DO something (use a
-        # skill, check status, look something up) must NOT fall through to
-        # SIMPLE — that would route it to a tool-less local model and strand
-        # the agent. Upgrade to ANALYSIS (cloud-first, tools on). This is the
-        # fix for the unifi-skill failure: "Use unifi skill. Tell me if a new
-        # wired Linux device just came online" was bucketed SIMPLE → local →
-        # no tools → 8 minutes of thrashing → empty reply.
-        if cls._has_action_intent(text):
             return Category.ANALYSIS
 
         # Default: simple
@@ -458,38 +407,6 @@ class TaskClassifier:
                 return cat
         return None
 
-    # Cached classifier provider/model from config. Read once, lives for the
-    # process lifetime — the semantic classifier runs on a fixed aux model
-    # and config changes take effect on gateway restart anyway.
-    _clf_provider: Optional[str] = None
-    _clf_model: Optional[str] = None
-    _clf_config_loaded: bool = False
-
-    @classmethod
-    def _load_clf_config(cls) -> tuple:
-        """Resolve (provider, model) for the semantic classifier.
-
-        Reads config once and caches the result. Returns (provider, model).
-        """
-        if cls._clf_config_loaded:
-            return cls._clf_provider or "zai", cls._clf_model or "glm-4.7"
-        provider, model = "zai", "glm-4.7"
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
-            aux = cfg.get("auxiliary", {})
-            if isinstance(aux, dict):
-                clf_cfg = aux.get("classifier", {})
-                if isinstance(clf_cfg, dict):
-                    provider = clf_cfg.get("provider", provider)
-                    model = clf_cfg.get("model", model)
-        except Exception:
-            pass
-        cls._clf_provider = provider
-        cls._clf_model = model
-        cls._clf_config_loaded = True
-        return provider, model
-
     @classmethod
     @lru_cache(maxsize=512)
     def classify_semantic(cls, message: str) -> Optional["Category"]:
@@ -504,15 +421,30 @@ class TaskClassifier:
 
         Provider/model resolution: reads ``auxiliary.classifier.{provider,model}``
         from config if present; defaults to ``zai``/``glm-4.7`` (the
-        cheap model per auxiliary_client.py:340). Config is read once and
-        cached for the process lifetime.
+        cheap model per auxiliary_client.py:340).
         """
         if not message or not message.strip():
             return None
         try:
             from agent.auxiliary_client import call_llm
             messages = cls._build_classify_prompt(message)
-            provider, model = cls._load_clf_config()
+
+            # Resolve provider/model: config override first, then the cheap
+            # default. This keeps the classifier on the fast/cheap model
+            # regardless of the main turn's provider.
+            provider = "zai"
+            model = "glm-4.7"
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config() or {}
+                aux = cfg.get("auxiliary", {})
+                if isinstance(aux, dict):
+                    clf_cfg = aux.get("classifier", {})
+                    if isinstance(clf_cfg, dict):
+                        provider = clf_cfg.get("provider", provider)
+                        model = clf_cfg.get("model", model)
+            except Exception:
+                pass  # config read failure → use defaults
 
             response = call_llm(
                 provider=provider,
@@ -540,7 +472,10 @@ class TaskClassifier:
             return None
 
 
+# ─── Circuit Breaker ─────────────────────────────────────────────────────
 
+
+# ─── Circuit Breaker ─────────────────────────────────────────────────────
 
 class CircuitBreaker:
     """Per-provider circuit breaker with automatic recovery.
@@ -638,7 +573,8 @@ class BudgetTracker:
 
     def __init__(self, daily_limit: float = 7.40):
         self._daily_limit = daily_limit
-        self._file = Path.home() / ".hermes" / "venice_budget.json"
+        from hermes_constants import get_hermes_home  # audit D2: respect HERMES_HOME overrides
+        self._file = get_hermes_home() / "venice_budget.json"  # was Path.home()/.hermes (bypassed HERMES_HOME)
         self._cache: Optional[dict] = None
         self._cache_time: float = 0
 
@@ -687,7 +623,6 @@ class BudgetTracker:
         # Use America/Los_Angeles for correct DST handling (PST/PDT). The old
         # fixed UTC-8 offset was wrong during summer (off by an hour, straddling
         # the budget day boundary). Name kept for backward compat.
-        from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("America/Los_Angeles"))
 
     @classmethod
@@ -702,7 +637,6 @@ class BudgetTracker:
 
         Returns a YYYY-MM-DD string: the calendar date of the cycle start.
         """
-        from zoneinfo import ZoneInfo
         if now_pst is None:
             now_pst = cls._now_pst()
         if now_pst.hour < BUDGET_RESET_HOUR_PST:
@@ -874,7 +808,7 @@ class Router:
 
     def _session_is_active(self, session_key: Optional[str]) -> bool:
         """True if the session has >= SESSION_MIN_PRIOR_TURNS substantive
-        turns within the active window. None/empty session_key → False
+        turns within the active window. None/empty session_key -> False
         (preserves the original stateless behavior for callers that don't
         pass a session, e.g. cron jobs, one-shot CLI invocations)."""
         if not session_key:
@@ -925,6 +859,7 @@ class Router:
         primary_config: dict,
         suppress_tools_override: Optional[bool] = None,
         session_key: Optional[str] = None,
+        platform: Optional[str] = None,
     ) -> RouteResult:
         """Route a message to the optimal model.
 
@@ -938,6 +873,10 @@ class Router:
                 upgraded so it is not routed to a tool-less local model
                 mid-conversation. None/empty preserves the original
                 stateless behavior.
+            platform: Source platform string (e.g. "discord", "telegram").
+                Messaging platforms never get tools suppressed — the user
+                may issue a command at any moment. None/empty preserves
+                the original suppression behavior (for CLI/cron callers).
 
         Returns:
             RouteResult with model, credentials, and routing metadata.
@@ -960,7 +899,6 @@ class Router:
         # classifier judges each turn in isolation; this is the only place it
         # learns the session is mid-task. Upgraded category is recorded below
         # so the session stays "active" for subsequent turns.
-        original_category = category
         if (
             category in (Category.SIMPLE, Category.GREETING)
             and self._session_is_active(session_key)
@@ -1005,14 +943,23 @@ class Router:
                 fallback_count += 1
                 continue
 
-            # Found a valid provider. Decide tool suppression via the unified
-            # predicate — only genuinely trivial GREETING/SIMPLE turns (short,
-            # no action intent) suppress tools. Action requests ("use skill",
-            # "check status", "tell me if") keep tools even if misclassified
-            # as SIMPLE, so they never strand the agent on a tool-less model.
+            # Found a valid provider
             suppress = suppress_tools_override
             if suppress is None:
-                suppress = TaskClassifier._should_suppress_tools(message, category)
+                # Suppress tools for GREETING and SIMPLE — saves ~2K tokens per
+                # turn on short queries (time checks, yes/no, etc.) routed to
+                # local models that don't need tool definitions.
+                # EXCEPTION: messaging platform sessions (Discord, Telegram,
+                # etc.) are always agentic — the user may issue a command
+                # ("sync", "deploy") that needs tools. Stripping tools here
+                # leaves the model unable to call run_terminal_command.
+                is_cli_or_automated = (
+                    platform is None or platform in MESSAGING_EXCLUDE_PLATFORMS
+                )
+                suppress = (
+                    category in (Category.GREETING, Category.SIMPLE)
+                    and is_cli_or_automated
+                )
 
             logger.info(
                 "Route: %s -> %s (%s, local=%s, tools=%s, fallbacks=%d)",
@@ -1113,16 +1060,29 @@ def route_turn(
     primary_config: dict,
     suppress_tools_override: Optional[bool] = None,
     session_key: Optional[str] = None,
+    platform: Optional[str] = None,
 ) -> Optional[RouteResult]:
     """Gateway entry point. Returns None if router not initialized.
 
-    ``session_key`` enables the session-aware guard: when the session is
-    active, SIMPLE/GREETING turns are upgraded rather than routed to a
-    tool-less local model. None preserves the original stateless behavior.
+    [BYPASS 2026-07-15] When the hermes-router microservice (:4090) is the
+    active provider, this function short-circuits and returns None — the
+    microservice does its own classification, bandit selection, and circuit
+    breaking. Running agent/routing.py's classifier in parallel was pure
+    overhead (double-classification every turn, separate circuit breaker
+    that disagrees silently). The microservice router is the single source
+    of truth for routing decisions.
     """
     if _instance is None:
         return None
-    return _instance.route(message, primary_config, suppress_tools_override, session_key)
+    # Detect router microservice: if the primary provider points at the
+    # router, skip classification entirely. The microservice handles it.
+    _base_url = (primary_config or {}).get("base_url", "")
+    if _base_url and ("127.0.0.1:4090" in _base_url or "localhost:4090" in _base_url):
+        return None  # let the microservice router decide
+    return _instance.route(
+        message, primary_config, suppress_tools_override,
+        session_key=session_key, platform=platform,
+    )
 
 
 def record_routing_failure(provider: str) -> None:

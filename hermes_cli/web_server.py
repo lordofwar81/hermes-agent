@@ -8798,6 +8798,383 @@ async def get_memory_status():
     }
 
 
+@app.get("/api/memory/stats")
+async def get_memory_stats():
+    """Memory-system statistics for the visualization dashboard.
+
+    Read-only aggregate counts and distributions across the memory tiers
+    (T2 memory_tree, T3 vector, T4 holographic). Opens each SQLite DB
+    read-only (mode=ro URI) so concurrent writers are never blocked.
+
+    Non-sensitive: counts and distributions only, no fact content or
+    entity names. Auth-gated by the global middleware like other GETs.
+    """
+    import sqlite3
+    import time
+
+    home = get_hermes_home()
+    result: Dict[str, Any] = {"ts": time.time()}
+
+    # ---- T4: holographic facts ----
+    t4_path = home / "memory_store.db"
+    try:
+        con = sqlite3.connect(f"file:{t4_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        facts = cur.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        entities = cur.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+
+        by_category: Dict[str, int] = {}
+        for row in cur.execute("SELECT category, COUNT(*) c FROM facts GROUP BY category ORDER BY c DESC"):
+            by_category[row["category"]] = row["c"]
+
+        # Trust score distribution (bimodal in practice: ~0.45 mass + 1.0 core)
+        trust_bands = {"0-0.2": 0, "0.2-0.5": 0, "0.5-0.85": 0, "0.85-1.0": 0}
+        for row in cur.execute(
+            "SELECT CASE WHEN trust_score < 0.2 THEN '0-0.2' "
+            "WHEN trust_score < 0.5 THEN '0.2-0.5' "
+            "WHEN trust_score < 0.85 THEN '0.5-0.85' "
+            "ELSE '0.85-1.0' END band, COUNT(*) c FROM facts GROUP BY band"
+        ):
+            trust_bands[row["band"]] = row["c"]
+
+        # Growth over time (facts per day, last 30 days)
+        by_day: List[Dict[str, Any]] = []
+        for row in cur.execute(
+            "SELECT date(created_at) d, COUNT(*) c FROM facts "
+            "GROUP BY d ORDER BY d DESC LIMIT 30"
+        ):
+            by_day.append({"day": row["d"], "count": row["c"]})
+
+        # Epistemic status distribution
+        epistemic: Dict[str, int] = {}
+        for row in cur.execute(
+            "SELECT epistemic_status, COUNT(*) c FROM facts GROUP BY epistemic_status"
+        ):
+            epistemic[row["epistemic_status"] or "unknown"] = row["c"]
+
+        result["t4"] = {
+            "facts": facts,
+            "entities": entities,
+            "by_category": by_category,
+            "trust_bands": trust_bands,
+            "epistemic": epistemic,
+            "by_day": by_day,
+        }
+        con.close()
+    except Exception:
+        _log.exception("memory_store.db stats failed")
+        result["t4"] = {"error": "unavailable"}
+
+    # ---- T2: memory tree ----
+    t2_path = home / "memory_tree.db"
+    try:
+        con = sqlite3.connect(f"file:{t2_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        chunks = cur.execute("SELECT COUNT(*) FROM mem_tree_chunks").fetchone()[0]
+        trees = cur.execute("SELECT COUNT(*) FROM mem_tree_trees").fetchone()[0]
+        summaries = cur.execute("SELECT COUNT(*) FROM mem_tree_summaries").fetchone()[0]
+
+        by_lifecycle: Dict[str, int] = {}
+        for row in cur.execute(
+            "SELECT lifecycle_status, COUNT(*) c FROM mem_tree_chunks GROUP BY lifecycle_status"
+        ):
+            by_lifecycle[row["lifecycle_status"]] = row["c"]
+
+        # Score distribution (3-band pyramid)
+        score_bands = {"0-0.15": 0, "0.15-0.5": 0, "0.5-0.65": 0, "0.65-0.85": 0, "0.85-1.0": 0}
+        for row in cur.execute(
+            "SELECT CASE WHEN total < 0.15 THEN '0-0.15' "
+            "WHEN total < 0.5 THEN '0.15-0.5' "
+            "WHEN total < 0.65 THEN '0.5-0.65' "
+            "WHEN total < 0.85 THEN '0.65-0.85' "
+            "ELSE '0.85-1.0' END band, COUNT(*) c FROM mem_tree_scores GROUP BY band"
+        ):
+            score_bands[row["band"]] = row["c"]
+
+        # Growth over time (chunks per day, last 30 days)
+        t2_by_day: List[Dict[str, Any]] = []
+        for row in cur.execute(
+            "SELECT date(created_at) d, COUNT(*) c FROM mem_tree_chunks "
+            "GROUP BY d ORDER BY d DESC LIMIT 30"
+        ):
+            t2_by_day.append({"day": row["d"], "count": row["c"]})
+
+        # Source kind distribution (chat vs document)
+        by_source: Dict[str, int] = {}
+        for row in cur.execute(
+            "SELECT source_kind, COUNT(*) c FROM mem_tree_chunks GROUP BY source_kind"
+        ):
+            by_source[row["source_kind"]] = row["c"]
+
+        result["t2"] = {
+            "chunks": chunks,
+            "trees": trees,
+            "summaries": summaries,
+            "by_lifecycle": by_lifecycle,
+            "score_bands": score_bands,
+            "by_source": by_source,
+            "by_day": t2_by_day,
+        }
+        con.close()
+    except Exception:
+        _log.exception("memory_tree.db stats failed")
+        result["t2"] = {"error": "unavailable"}
+
+    # ---- T3: vector memory (LanceDB) ----
+    try:
+        import lancedb  # type: ignore
+
+        db = lancedb.connect(str(home / "vector_memory"))
+        table = db.open_table("memory_vectors")
+        result["t3"] = {"vector_rows": table.count_rows()}
+    except Exception:
+        result["t3"] = {"vector_rows": 0, "error": "unavailable"}
+
+    # ---- Activity telemetry (retrieval_count, helpful_count, query log) ----
+    # These columns are incremented by the MCP server: every memory.find call
+    # bumps retrieval_count, every memory.feedback bumps helpful_count + trust.
+    # The query log (~/.hermes/logs/mcp_queries.jsonl) is written by _log_query.
+    try:
+        con = sqlite3.connect(f"file:{t4_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        row = cur.execute(
+            "SELECT SUM(retrieval_count) AS total_retrievals, "
+            "SUM(helpful_count) AS total_helpful, "
+            "AVG(trust_score) AS avg_trust, "
+            "COUNT(CASE WHEN retrieval_count > 0 THEN 1 END) AS facts_recalled "
+            "FROM facts"
+        ).fetchone()
+
+        # Top retrieved facts (most-active knowledge)
+        top_retrieved = []
+        for r in cur.execute(
+            "SELECT fact_id, substr(content,1,120) preview, retrieval_count, "
+            "helpful_count, trust_score FROM facts "
+            "WHERE retrieval_count > 0 ORDER BY retrieval_count DESC LIMIT 10"
+        ):
+            top_retrieved.append({
+                "fact_id": r["fact_id"],
+                "preview": r["preview"],
+                "retrievals": r["retrieval_count"],
+                "helpful": r["helpful_count"],
+                "trust": round(r["trust_score"], 3),
+            })
+
+        result["activity"] = {
+            "total_retrievals": row["total_retrievals"],
+            "total_helpful": row["total_helpful"],
+            "avg_trust": round(row["avg_trust"], 4),
+            "facts_recalled": row["facts_recalled"],
+            "top_retrieved": top_retrieved,
+        }
+        con.close()
+    except Exception:
+        _log.exception("activity telemetry query failed")
+        result["activity"] = {"error": "unavailable"}
+
+    # ---- Query log analytics (mcp_queries.jsonl) ----
+    try:
+        import time as _time
+        import json as _json
+
+        ql_path = home / "logs" / "mcp_queries.jsonl"
+        queries_24h = 0
+        queries_by_tool: Dict[str, int] = {}
+        queries_by_hour: Dict[str, int] = {}
+        cutoff = _time.time() - 86400  # last 24h
+
+        if ql_path.exists():
+            # Read tail (last 5000 lines) to avoid loading huge files
+            import subprocess
+            try:
+                proc = subprocess.run(
+                    ["tail", "-n", "5000", str(ql_path)],
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = proc.stdout.strip().splitlines()
+            except Exception:
+                lines = []
+
+            for line in lines:
+                try:
+                    entry = _json.loads(line)
+                except Exception:
+                    continue
+                if entry.get("ts", 0) < cutoff:
+                    continue
+                queries_24h += 1
+                tool = entry.get("tool", "unknown")
+                queries_by_tool[tool] = queries_by_tool.get(tool, 0) + 1
+                hour = _time.strftime("%H", _time.localtime(entry.get("ts", 0)))
+                queries_by_hour[hour] = queries_by_hour.get(hour, 0) + 1
+
+        result["queries"] = {
+            "last_24h": queries_24h,
+            "by_tool": queries_by_tool,
+            "by_hour": queries_by_hour,
+        }
+    except Exception:
+        result["queries"] = {"error": "unavailable"}
+
+    return result
+
+
+# In-process cache for the gbrain graph (avoid hammering :3131 on every poll).
+_graph_cache: Dict[str, Any] = {"data": None, "expires": 0.0}
+
+
+@app.get("/api/memory/graph")
+async def get_memory_graph():
+    """Knowledge-graph data from gbrain for the 3D visualization.
+
+    Fetches pages + their links from gbrain's MCP HTTP endpoint (:3131).
+    Returns {nodes, links, stale} — cached for 60s to avoid polling load.
+    Degrades gracefully: on token-expiry/401, returns the last-known-good
+    graph with stale=true.
+    """
+    import json
+    import os
+    import time
+    import urllib.request
+    from pathlib import Path
+
+    # Return cache if fresh (< 60s old)
+    now = time.time()
+    if _graph_cache["data"] is not None and now < _graph_cache["expires"]:
+        cached = dict(_graph_cache["data"])
+        cached["cached"] = True
+        return cached
+
+    # Load gbrain token
+    home = get_hermes_home()
+    token_path = home / "mcp-tokens" / "gbrain.json"
+    if not token_path.exists():
+        return {"nodes": [], "links": [], "error": "no gbrain token", "stale": True}
+
+    try:
+        token_data = json.loads(token_path.read_text())
+    except Exception:
+        return {"nodes": [], "links": [], "error": "token unreadable", "stale": True}
+
+    token = token_data.get("access_token")
+    if not token:
+        return {"nodes": [], "links": [], "error": "no token", "stale": True}
+
+    def _gbrain_call(tool: str, params: dict) -> dict | None:
+        """Call gbrain MCP tool via HTTP."""
+        payload = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": params},
+        }).encode()
+        req = urllib.request.Request(
+            "http://127.0.0.1:3131/mcp",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode()
+                if body.startswith("event:"):
+                    for line in body.splitlines():
+                        if line.startswith("data: "):
+                            data = json.loads(line[6:])
+                            inner = data.get("result", {}).get("content", [])
+                            for item in inner:
+                                if item.get("type") == "text":
+                                    return json.loads(item["text"])
+                            return data.get("result")
+                return json.loads(body)
+        except Exception as e:
+            _log.warning("gbrain call %s failed: %s", tool, e)
+            return None
+
+    # Fetch all pages
+    pages_result = _gbrain_call("list_pages", {"limit": 500})
+    if pages_result is None:
+        # Degrade to cached data
+        if _graph_cache["data"]:
+            cached = dict(_graph_cache["data"])
+            cached["stale"] = True
+            cached["cached"] = True
+            return cached
+        return {"nodes": [], "links": [], "error": "gbrain unreachable", "stale": True}
+
+    # Parse pages — list_pages returns either a list or {pages: [...]}
+    pages_list = []
+    if isinstance(pages_result, list):
+        pages_list = pages_result
+    elif isinstance(pages_result, dict):
+        pages_list = pages_result.get("pages", pages_result.get("data", []))
+        if not isinstance(pages_list, list):
+            # Single page dict
+            pages_list = [pages_result]
+
+    nodes: List[Dict[str, Any]] = []
+    links: List[Dict[str, Any]] = []
+    seen_links: set = set()
+
+    for page in pages_list:
+        if not isinstance(page, dict):
+            continue
+        slug = page.get("slug") or page.get("id") or page.get("title", "")
+        if not slug:
+            continue
+        nodes.append({
+            "id": slug,
+            "title": page.get("title", slug),
+            "type": page.get("type", page.get("page_type", "unknown")),
+            "updated_at": page.get("updated_at") or page.get("created_at", ""),
+            "tags": page.get("tags", []),
+        })
+
+        # Fetch outbound links for this page
+        links_result = _gbrain_call("get_links", {"slug": slug})
+        if links_result is None:
+            continue
+        page_links = links_result if isinstance(links_result, list) else links_result.get("links", [])
+        for link in page_links:
+            if not isinstance(link, dict):
+                continue
+            target = link.get("to_slug") or link.get("target_slug") or link.get("target") or link.get("to", "")
+            link_type = link.get("link_type") or link.get("type") or "related"
+            context = link.get("context", "")
+            if target:
+                key = (slug, target, link_type)
+                if key not in seen_links:
+                    seen_links.add(key)
+                    links.append({
+                        "source": slug,
+                        "target": target,
+                        "type": link_type,
+                        "context": context,
+                    })
+
+    graph = {
+        "nodes": nodes,
+        "links": links,
+        "stale": False,
+        "cached": False,
+    }
+
+    # Update cache (60s TTL)
+    _graph_cache["data"] = graph
+    _graph_cache["expires"] = now + 60.0
+
+    return graph
+
+
+
+
 @app.put("/api/memory/provider")
 async def set_memory_provider(body: MemoryProviderSelect):
     provider = (body.provider or "").strip()

@@ -574,7 +574,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
-    tools_for_api = agent.tools
+    # If the router flagged this turn for tool suppression (greeting/simple
+    # category), skip sending tool schemas to save ~2K tokens of context.
+    if getattr(agent, "suppress_tools", False):
+        tools_for_api = []
+    else:
+        tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -1922,6 +1927,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # response via .response before any chunks are consumed.
         agent._capture_rate_limits(getattr(stream, "response", None))
         agent._capture_credits(getattr(stream, "response", None))
+        # Capture router metadata (backend, source, request ID) for
+        # feedback signals — lets the agent know which backend the
+        # router chose. Fail-open, same pattern as rate limit capture.
+        agent._capture_router_headers(getattr(stream, "response", None))
         # Snapshot diagnostic headers (cf-ray, x-openrouter-provider, etc.)
         # so they survive even when the stream dies before any chunk
         # arrives.  Best-effort; never raises.
@@ -2597,11 +2606,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     else:
         _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-    # for prefill on large contexts.  Disable the stale detector unless
-    # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        _stream_stale_timeout = float("inf")
-        logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
+    # for prefill on large contexts.  Previously the stale detector was
+    # fully disabled (float("inf")) for local providers — but this meant
+    # a genuinely hung local backend could stall forever with no recovery.
+    # Now: give local providers a generous stale timeout (600s) that
+    # accommodates large-context prefill but still catches true hangs.
+    # Cloud providers keep the scaled timeout below.
+    if agent.base_url and is_local_endpoint(agent.base_url):
+        _est_tokens = estimate_request_context_tokens(api_kwargs)
+        if _est_tokens > 100_000:
+            _stream_stale_timeout = 600.0  # 10 min for huge local contexts
+        elif _est_tokens > 50_000:
+            _stream_stale_timeout = 480.0  # 8 min for large contexts
+        else:
+            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
+        logger.debug(
+            "Local provider (%s) — stale stream timeout set to %.0fs (ctx ~%s tokens)",
+            agent.base_url, _stream_stale_timeout, f"{_est_tokens:,}",
+        )
     else:
         # Scale the stale timeout for large contexts: slow models (like Opus)
         # can legitimately think for minutes before producing the first token
@@ -2619,9 +2641,45 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
+    _stream_start_time = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+    # Hard wall-clock ceiling: regardless of stale-stream status or
+    # keepalive trickles, no single generation may exceed this limit.
+    # Catches the failure mode where a backend keeps the connection alive
+    # with SSE pings while taking 18+ minutes to complete. The gateway's
+    # inactivity watchdog measures idle time (reset by heartbeats), so
+    # without this hard ceiling, a trickling stream defeats every
+    # time-based safety net.
+    _WALL_CLOCK_CEILING = env_float("HERMES_STREAM_WALL_CLOCK_MAX", 1200.0)  # 20 min
     while t.is_alive():
         t.join(timeout=0.3)
+
+        # Hard wall-clock check: kill generations that exceed the ceiling
+        # even if chunks are arriving. This is the last line of defense
+        # against slow-but-alive backends that defeat the stale detector.
+        _wall_elapsed = time.time() - _stream_start_time
+        if _wall_elapsed > _WALL_CLOCK_CEILING:
+            _est_ctx = estimate_request_context_tokens(api_kwargs)
+            logger.error(
+                "Stream exceeded wall-clock ceiling (%.0fs) — killing. "
+                "model=%s context=~%s tokens. This backend is too slow.",
+                _WALL_CLOCK_CEILING,
+                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            )
+            agent._buffer_status(
+                f"⚠️ Generation exceeded {_WALL_CLOCK_CEILING:.0f}s wall-clock limit "
+                f"(model: {api_kwargs.get('model', 'unknown')}). "
+                f"Switching to faster backend..."
+            )
+            try:
+                _close_request_client_once("wall_clock_kill")
+            except Exception:
+                pass
+            try:
+                agent._replace_primary_openai_client(reason="wall_clock_kill")
+            except Exception:
+                pass
+            break
 
         # Periodic heartbeat: touch the agent's activity tracker so the
         # gateway's inactivity monitor knows we're alive while waiting

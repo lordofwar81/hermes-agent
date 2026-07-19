@@ -181,8 +181,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", args_hint="<prompt>"),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
-    CommandDef("optimize", "Optimize/rewrite a prompt before sending it (rewrite for clarity/structure)",
-               "Tools & Skills", args_hint="<prompt>"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
@@ -555,6 +553,10 @@ _TELEGRAM_MENU_PRIORITY = (
     "queue",
     "steer",
     "background",
+    # Tools & Skills — frequently used slash commands.
+    "skills",
+    "optimize",
+    "bundles",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
     "usage",

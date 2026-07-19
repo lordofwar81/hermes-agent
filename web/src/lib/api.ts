@@ -1051,6 +1051,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target }),
     }),
+  getMemoryStats: () => fetchJSON<MemoryStats>("/api/memory/stats"),
+  getMemoryGraph: () => fetchJSON<MemoryGraph>("/api/memory/graph"),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
@@ -1485,6 +1487,65 @@ export interface MemoryStatus {
   active: string;
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+}
+
+// ── Memory visualization dashboard types ────────────────────────────────────
+
+export interface MemoryStats {
+  ts: number;
+  t4?: {
+    facts: number;
+    entities: number;
+    by_category: Record<string, number>;
+    trust_bands: Record<string, number>;
+    epistemic: Record<string, number>;
+    by_day: { day: string; count: number }[];
+    error?: string;
+  };
+  t2?: {
+    chunks: number;
+    trees: number;
+    summaries: number;
+    by_lifecycle: Record<string, number>;
+    score_bands: Record<string, number>;
+    by_source: Record<string, number>;
+    by_day: { day: string; count: number }[];
+    error?: string;
+  };
+  t3?: { vector_rows: number; error?: string };
+  activity?: {
+    total_retrievals: number;
+    total_helpful: number;
+    avg_trust: number;
+    facts_recalled: number;
+    top_retrieved: { fact_id: number; preview: string; retrievals: number; helpful: number; trust: number }[];
+    error?: string;
+  };
+  queries?: {
+    last_24h: number;
+    by_tool: Record<string, number>;
+    by_hour: Record<string, number>;
+    error?: string;
+  };
+}
+
+export interface MemoryGraph {
+  nodes: {
+    id: string;
+    title: string;
+    type: string;
+    updated_at: string;
+    tags: string[];
+  }[];
+  links: {
+    source: string;
+    target: string;
+    type: string;
+    context: string;
+  }[];
+  stale: boolean;
+  cached?: boolean;
+  error?: string;
 }
 
 export interface HookEntry {

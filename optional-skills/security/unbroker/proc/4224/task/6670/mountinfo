@@ -1,0 +1,27 @@
+1286 1136 0:67 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/TNMV2G2NGD3QIQFSV7JNC2CPMO:/var/lib/docker/overlay2/l/RHWMOEGONMAESGNVZOTKSB7GKS:/var/lib/docker/overlay2/l/EE7J45UGDV3PQTKC3UPPY43ZKN:/var/lib/docker/overlay2/l/FFIGG74RAGGIEBS6IZDTA3FEL6,upperdir=/var/lib/docker/overlay2/d8d765ad4c05c61677750fd499b504ab8a07dc8dbf4023171528bb35d4ba4308/diff,workdir=/var/lib/docker/overlay2/d8d765ad4c05c61677750fd499b504ab8a07dc8dbf4023171528bb35d4ba4308/work
+1288 1286 0:248 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+1289 1286 0:249 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1290 1289 0:250 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+1291 1286 0:251 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+1292 1291 0:30 /system.slice/docker-44d03759e26a61dc034fa9783d678207089c78c92726bc068647059b1977846d.scope /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate,memory_recursiveprot
+1293 1289 0:216 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+1294 1289 0:252 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k,inode64
+1295 1286 252:0 /var/lib/docker/containers/44d03759e26a61dc034fa9783d678207089c78c92726bc068647059b1977846d/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/mapper/ubuntu--vg-ubuntu--lv rw
+1296 1286 252:0 /var/lib/docker/containers/44d03759e26a61dc034fa9783d678207089c78c92726bc068647059b1977846d/hostname /etc/hostname rw,relatime - ext4 /dev/mapper/ubuntu--vg-ubuntu--lv rw
+1297 1286 252:0 /var/lib/docker/containers/44d03759e26a61dc034fa9783d678207089c78c92726bc068647059b1977846d/hosts /etc/hosts rw,relatime - ext4 /dev/mapper/ubuntu--vg-ubuntu--lv rw
+1369 1286 252:0 /var/lib/docker/volumes/odysseus_ntfy-cache/_data /var/cache/ntfy rw,relatime master:1 - ext4 /dev/mapper/ubuntu--vg-ubuntu--lv rw
+1137 1288 0:248 /bus /proc/bus ro,nosuid,nodev,noexec,relatime - proc proc rw
+1138 1288 0:248 /fs /proc/fs ro,nosuid,nodev,noexec,relatime - proc proc rw
+1139 1288 0:248 /irq /proc/irq ro,nosuid,nodev,noexec,relatime - proc proc rw
+1140 1288 0:248 /sys /proc/sys ro,nosuid,nodev,noexec,relatime - proc proc rw
+1141 1288 0:248 /sysrq-trigger /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime - proc proc rw
+1142 1288 0:265 / /proc/acpi ro,relatime - tmpfs tmpfs ro,inode64
+1143 1288 0:266 / /proc/asound ro,relatime - tmpfs tmpfs ro,inode64
+1144 1288 0:249 /null /proc/interrupts rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1145 1288 0:249 /null /proc/kcore rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1146 1288 0:249 /null /proc/keys rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1147 1288 0:249 /null /proc/latency_stats rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1171 1288 0:267 / /proc/scsi ro,relatime - tmpfs tmpfs ro,inode64
+1172 1288 0:249 /null /proc/timer_list rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755,inode64
+1174 1291 0:268 / /sys/devices/virtual/powercap ro,relatime - tmpfs tmpfs ro,inode64
+1197 1291 0:269 / /sys/firmware ro,relatime - tmpfs tmpfs ro,inode64

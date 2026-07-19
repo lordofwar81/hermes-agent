@@ -2832,6 +2832,39 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _capture_router_headers(self, http_response: Any) -> None:
+        """Read X-Hermes-Router-* headers from the router's response.
+
+        Captures which backend the router chose, the routing source, and
+        the request ID. Stored for debugging and for feedback signals (e.g.
+        detecting when the router routes to a slow backend). Fail-open —
+        header parsing never breaks the agent loop.
+        """
+        if http_response is None:
+            return
+        headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        try:
+            self._last_router_backend = headers.get("X-Hermes-Router-Backend", "")
+            self._last_router_source = headers.get("X-Hermes-Router-Source", "")
+            self._last_router_request_id = headers.get(
+                "X-Hermes-Router-Request-Id", ""
+            )
+            self._last_router_host_group = headers.get(
+                "X-Hermes-Router-Host-Group", ""
+            )
+            if self._last_router_backend:
+                logger.debug(
+                    "Router chose backend=%s source=%s host_group=%s req=%s",
+                    self._last_router_backend,
+                    self._last_router_source,
+                    self._last_router_host_group,
+                    self._last_router_request_id,
+                )
+        except Exception:
+            pass  # Never let header parsing break the agent loop
+
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.
 

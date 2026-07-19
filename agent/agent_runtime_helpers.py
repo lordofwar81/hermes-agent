@@ -447,6 +447,13 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # turn). Merge plain-text assistant runs so the tail is a single
     # assistant message. Assistant messages carrying tool_calls are left
     # intact — merging them would corrupt tool-call/result pairing.
+    # Codex interim continuation messages carry codex_reasoning_items or
+    # codex_message_items (provider-state payloads that differ per turn).
+    # Merging them would clobber the distinct items and corrupt codex streaming.
+    # See test_duplicate_detection_distinguishes_different_codex_*.
+    def _is_codex_interim(m: Dict) -> bool:
+        return bool(m.get("codex_reasoning_items") or m.get("codex_message_items"))
+
     merged_assistant: List[Dict] = []
     for msg in merged:
         if (
@@ -454,9 +461,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and isinstance(msg, dict)
             and msg.get("role") == "assistant"
             and not (msg.get("tool_calls"))
+            and not _is_codex_interim(msg)
             and isinstance(merged_assistant[-1], dict)
             and merged_assistant[-1].get("role") == "assistant"
             and not (merged_assistant[-1].get("tool_calls"))
+            and not _is_codex_interim(merged_assistant[-1])
         ):
             prev = merged_assistant[-1]
             prev_content = prev.get("content", "")

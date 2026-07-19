@@ -318,6 +318,20 @@ class ChatCompletionsTransport(ProviderTransport):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
+        # Temperature — for local/unprofiled providers, apply a sensible default
+        # if the caller didn't specify one. Cloud providers handle their own
+        # defaults via their profile; local llama.cpp/vLLM servers benefit from
+        # an explicit temperature (optimal: 0.3 for coding/agentic models).
+        omit_temp = params.get("omit_temperature", False)
+        fixed_temp = params.get("fixed_temperature")
+        if omit_temp:
+            pass  # Some cloud models reject temperature entirely
+        elif fixed_temp is not None:
+            api_kwargs["temperature"] = fixed_temp
+        elif "temperature" not in api_kwargs:
+            # Default for local self-hosted endpoints (llama.cpp, vLLM-MLX)
+            api_kwargs["temperature"] = 0.3
+
         # max_tokens resolution — priority: ephemeral > user > provider default
         max_tokens_fn = params.get("max_tokens_param_fn")
         ephemeral = params.get("ephemeral_max_output_tokens")

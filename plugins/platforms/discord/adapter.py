@@ -1163,6 +1163,18 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""
         if self._bot_task and not self._bot_task.done():
+            # Graceful close BEFORE the hard cancel: triggers discord.py's own
+            # shutdown sequence so the gateway read loop + dispatch pump drain
+            # cleanly. Without this, cancelling client.start() mid-handshake can
+            # leave an in-flight READY dispatch firing AFTER client.close() has
+            # nulled self.loop to _MissingSentinel -> AttributeError on the
+            # orphaned dispatch task ("Task exception was never retrieved").
+            # close() is idempotent, so disconnect()'s later close() is a no-op.
+            if self._client:
+                try:
+                    await self._client.close()
+                except Exception:
+                    pass
             self._bot_task.cancel()
             try:
                 await self._bot_task

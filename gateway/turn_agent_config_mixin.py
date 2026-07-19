@@ -28,7 +28,7 @@ from typing import Optional
 
 
 class TurnAgentConfigMixin:
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, session_key: Optional[str] = None) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, session_key: Optional[str] = None, platform: Optional[str] = None) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Consults the custom per-turn router (agent.routing) to pick an optimal
@@ -63,6 +63,9 @@ class TurnAgentConfigMixin:
         # router isn't initialized or no chain matches — in that case we fall
         # through to the session primary (the values already in model/runtime).
         # Best-effort: any error degrades to primary-only, never blocks a turn.
+        # _route is pre-initialized so the suppress_tools guard below is safe
+        # even if route_turn() raises before assignment completes.
+        _route = None
         try:
             from agent.routing import route_turn
             _primary_cfg = {
@@ -71,7 +74,7 @@ class TurnAgentConfigMixin:
                 "api_key": runtime["api_key"],
                 "provider": runtime["provider"],
             }
-            _route = route_turn(user_message, _primary_cfg, session_key=session_key)
+            _route = route_turn(user_message, _primary_cfg, session_key=session_key, platform=platform)
             if _route is not None:
                 model = _route.model
                 runtime["base_url"] = _route.base_url
@@ -83,6 +86,7 @@ class TurnAgentConfigMixin:
         route = {
             "model": model,
             "runtime": runtime,
+            "suppress_tools": _route.suppress_tools if _route else False,
             "signature": (
                 model,
                 runtime["provider"],

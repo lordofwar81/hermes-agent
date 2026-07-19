@@ -198,6 +198,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # OCR -- PP-OCRv4 via ONNX Runtime. Mirrors the ocr extra in pyproject.
+    # RapidOCR instead of paddlepaddle to avoid the numpy<2.4 / pyyaml<6.0.3
+    # downgrade conflict (paddlepaddle==3.2.0). Same PP-OCR models, ONNX backend.
+    "tool.ocr": ("rapidocr-onnxruntime==1.4.4", "pymupdf==1.28.0"),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via

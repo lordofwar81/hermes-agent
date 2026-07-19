@@ -4705,6 +4705,83 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
+
+def _reap_cross_process_mcp_orphans() -> int:
+    """Reap MCP server processes orphaned by a previous gateway/dashboard incarnation.
+
+    Scans /proc for hermes_memory_mcp.py / memory_tree_mcp.py processes whose
+    parent is PID 1 (reparented after the original parent exited). These are
+    invisible to _kill_orphaned_mcp_children (which only tracks the current
+    process's in-memory _orphan_stdio_pids set) and would otherwise accumulate
+    across restarts.
+
+    Returns the count of reaped processes. Best-effort — failures are logged, not raised.
+    """
+    import os
+    import signal
+    import time
+
+    MCP_SCRIPT_NAMES = ("hermes_memory_mcp.py", "memory_tree_mcp.py")
+    reaped = 0
+
+    try:
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == os.getpid():
+                continue
+            try:
+                # Check parent PID
+                with open(f"/proc/{pid}/status") as f:
+                    ppid = None
+                    cmdline = ""
+                    for line in f:
+                        if line.startswith("PPid:"):
+                            ppid = int(line.split()[1])
+                        # cmdline is in a separate file
+                    if ppid != 1:
+                        continue  # not an orphan (still has a live parent)
+
+                # Check if this is an MCP script
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+
+                if not any(name in cmdline for name in MCP_SCRIPT_NAMES):
+                    continue  # not an MCP process
+
+                # This is an orphaned MCP process (parent=PID 1). Reap it.
+                logger.info("Reaping orphaned MCP process: pid=%d cmd=%s", pid, cmdline.strip())
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue  # already gone
+
+                # Wait up to 2s for graceful exit
+                for _ in range(20):
+                    try:
+                        os.kill(pid, 0)  # check if still alive
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.1)
+
+                # Escalate to SIGKILL if still alive
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    logger.warning("Force-killed orphaned MCP process: pid=%d", pid)
+                except ProcessLookupError:
+                    pass  # exited gracefully
+                reaped += 1
+            except (PermissionError, FileNotFoundError, OSError):
+                continue  # process gone or inaccessible
+    except Exception as e:
+        logger.warning("Cross-process MCP orphan sweep failed: %s", e)
+
+    if reaped:
+        logger.info("Reaped %d orphaned MCP process(es) from previous incarnation", reaped)
+    return reaped
+
+
 def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
     """Best-effort graceful shutdown of stdio MCP subprocesses to reap orphans.
 

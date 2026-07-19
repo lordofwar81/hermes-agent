@@ -17,9 +17,9 @@ reranker = importlib.import_module("plugins.memory.holographic.reranker")
 @pytest.fixture(autouse=True)
 def _reset_state():
     """Force the reranker into the disabled state before each test, then reset."""
-    saved = (reranker._model, reranker._disabled, reranker._load_attempted)
+    saved = (reranker._model, reranker._last_fail_ts, reranker._load_attempted)
     reranker._model = None
-    reranker._disabled = True
+    reranker._last_fail_ts = __import__('time').time()
     reranker._load_attempted = True
     yield
     reranker._model, reranker._disabled, reranker._load_attempted = saved
@@ -60,5 +60,5 @@ class TestIsAvailable:
 
     def test_returns_true_when_model_loaded(self):
         reranker._model = object()  # non-None sentinel
-        reranker._disabled = False
+        reranker._last_fail_ts = 0.0
         assert reranker.is_available() is True

@@ -18,19 +18,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import re
 import ssl
-import threading
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -4128,6 +4124,14 @@ def run_conversation(
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(
                     assistant_message.tool_calls
                 )
+
+                # NOTE: the cross-turn repetition guard was removed (audit D1, 2026-07-18).
+                # The existing ToolCallGuardrailController (checked below at the
+                # _tool_guardrail_halt_decision gate) already handles repeated-failure
+                # detection correctly: failure-aware, warns by default, halts when
+                # hard_stop_enabled is configured, emits structured guardrail output.
+                # The removed guard was a crude duplicate that tripped on successful
+                # re-reads (verify-after-edit), producing the recurring false positive.
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 

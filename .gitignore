@@ -6,3 +6,5 @@ venv/
 node_modules/
 *.bak-*
 *.log
+mutants/
+.mutmut-cache/

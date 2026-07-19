@@ -1,7 +1,11 @@
-"""Regression tests for the 2026-07-18 Hermes audit fixes.
+"""Regression tests for the 2026-07-18 Hermes audit fixes — strengthened after mutation analysis.
 
-These close the test-coverage gaps that allowed the audited defects to persist.
-Run: venv/bin/python -m pytest tests/test_audit_2026_07_18_regressions.py -v
+Mutation stage found real test gaps in:
+- BudgetTracker: test checked _file.startswith(HERMES_HOME) but not the filename
+- EmbedClient: test didn't verify model/api_key/url storage or the alive-gating of embed()
+
+This version kills those mutants. Run:
+  venv/bin/python -m pytest tests/test_audit_2026_07_18_regressions.py -v
 """
 import sys
 import os
@@ -32,34 +36,50 @@ def test_embed_client_alive_true_stays_cached():
     assert c.alive is True
 
 
-# ─── D1: inline repetition guard removed (existing controller handles it) ─────
+def test_embed_client_stores_constructor_args():
+    """EmbedClient must store url, model, api_key, timeout (kills mutmut __init__ survivors)."""
+    from plugins.memory.holographic.store import EmbedClient
+    c = EmbedClient(url="http://example:9999/v1/embeddings",
+                    model="test-model",
+                    api_key="test-key-123",
+                    timeout=42)
+    assert c.url == "http://example:9999/v1/embeddings"
+    assert c.model == "test-model"  # mutmut __init___mutmut_2 set model=None — this kills it
+    assert c.api_key == "test-key-123"
+    assert c.timeout == 42
+
+
+def test_embed_client_embed_returns_none_when_not_alive():
+    """embed() must return None when alive is False (kills the alive-inversion mutant)."""
+    from plugins.memory.holographic.store import EmbedClient
+    c = EmbedClient()
+    c._alive = False
+    c._alive_false_ts = time.time()  # within TTL
+    result = c.embed("test text")
+    assert result is None, "embed() must return None when not alive (mutmut embed_mutmut_1 inversion)"
+
+
+# ─── D1: inline repetition guard removed ──────────────────────────────────────
 
 def test_no_inline_repetition_guard_in_conversation_loop():
     """The crude inline repetition guard that tripped on successful re-reads
-    must be gone (audit D1). The existing ToolCallGuardrailController handles
-    loop detection correctly (failure-aware, respects hard_stop config)."""
+    must be gone (audit D1). The existing ToolCallGuardrailController handles it."""
     cl_path = os.path.join(os.path.dirname(__file__), "..", "agent", "conversation_loop.py")
     content = open(cl_path).read()
-    assert "_recent_tool_calls" not in content, \
-        "inline repetition guard (_recent_tool_calls) still present (D1)"
-    assert "_repetition_break_count" not in content, \
-        "dead _repetition_break_count still present (D1)"
-    assert "_failed_repeat_streak" not in content, \
-        "inline guard (_failed_repeat_streak) still present (D1)"
-    assert "_tool_guardrail_halt_decision" in content, \
-        "existing ToolCallGuardrailController check missing"
+    assert "_recent_tool_calls" not in content, "inline guard still present (D1)"
+    assert "_repetition_break_count" not in content, "dead state still present (D1)"
+    assert "_failed_repeat_streak" not in content, "inline guard still present (D1)"
+    assert "_tool_guardrail_halt_decision" in content, "existing controller check missing"
 
 
 def test_existing_guardrail_controller_is_failure_aware():
-    """The ToolCallGuardrailController must only count failed calls (the D1
-    invariant that prevents false positives on legitimate re-reads)."""
+    """The ToolCallGuardrailController must not halt on successful reads (D1 invariant)."""
     from agent.tool_guardrails import ToolCallGuardrailController
     ctrl = ToolCallGuardrailController()
     success_result = '{"content": "127.0.0.1 localhost"}'
     for _ in range(3):
         ctrl.after_call("read_file", '{"path":"/etc/hosts"}',
                         result=success_result, failed=False)
-    # After 3 successful calls, the controller should NOT have produced a halt decision.
     assert ctrl.halt_decision is None, "controller halted on 3 successful reads (D1 regression)"
 
 
@@ -104,11 +124,45 @@ def test_reranker_reset_cache_clears_failure():
 # ─── D2: BudgetTracker respects HERMES_HOME ───────────────────────────────────
 
 def test_budget_tracker_respects_hermes_home(tmp_path, monkeypatch):
-    """BudgetTracker should write under HERMES_HOME, not hardcoded Path.home() (D2)."""
+    """BudgetTracker must write under HERMES_HOME with the correct filename (D2)."""
     fake_home = tmp_path / "fake-hermes"
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
     from agent.routing import BudgetTracker
     bt = BudgetTracker()
+    # Must be under HERMES_HOME (kills the Path.home() mutant)
     assert str(bt._file).startswith(str(fake_home)), \
-        f"BudgetTracker file {bt._file} not under HERMES_HOME"
+        f"file {bt._file} not under HERMES_HOME"
+    # Must have the correct filename (kills the string-mutation survivor)
+    assert bt._file.name == "venice_budget.json", \
+        f"filename {bt._file.name} wrong (mutmut filename-mutation survivor)"
+
+
+def test_budget_tracker_stores_daily_limit():
+    """BudgetTracker must store the daily_limit (kills the default-value mutant)."""
+    from agent.routing import BudgetTracker
+    bt = BudgetTracker(daily_limit=10.0)
+    assert bt._daily_limit == 10.0
+    # default should be the documented 7.40
+    bt_default = BudgetTracker()
+    assert bt_default._daily_limit == 7.40, \
+        f"default daily_limit {bt_default._daily_limit} wrong (mutmut default-value survivor)"
+
+
+# ─── Init-state assertions (kill remaining __init__ mutation survivors) ────────
+
+def test_embed_client_init_state():
+    """EmbedClient.__init__ must set correct initial values (kills init mutants)."""
+    from plugins.memory.holographic.store import EmbedClient
+    c = EmbedClient()
+    assert c._alive is None, "_alive must start None (not yet probed)"
+    assert c._alive_false_ts == 0.0, "_alive_false_ts must start 0.0"
+    assert c._alive_ttl_seconds == 60.0, "TTL must be 60.0"
+
+
+def test_budget_tracker_init_state():
+    """BudgetTracker.__init__ must set correct cache init values (kills init mutants)."""
+    from agent.routing import BudgetTracker
+    bt = BudgetTracker()
+    assert bt._cache is None, "_cache must start None"
+    assert bt._cache_time == 0, "_cache_time must start 0"

@@ -199,13 +199,29 @@ class EmbedClient:
         self.api_key = api_key
         self.timeout = timeout
         self._alive: bool | None = None  # None = not yet probed
+        self._alive_false_ts: float = 0.0  # when _alive was last set False (for TTL)
+        import time as _time
+        self._time = _time
+        self._alive_ttl_seconds: float = 60.0  # re-probe after this long if last probe was False
 
     @property
     def alive(self) -> bool:
-        """Check if embed server is reachable (cached after first call)."""
-        if self._alive is not None:
-            return self._alive
+        """Check if embed server is reachable.
+
+        Cached True stays True (server up). A cached False expires after
+        ``_alive_ttl_seconds`` so a transient failure doesn't permanently
+        disable neural embeds for the process lifetime (audit H-2).
+        """
+        if self._alive is True:
+            return True
+        # False is cached but expires — re-probe after the TTL window.
+        if self._alive is False:
+            if (self._time.time() - self._alive_false_ts) < self._alive_ttl_seconds:
+                return False
+            # TTL expired — fall through and re-probe.
         self._alive = self._probe()
+        if self._alive is False:
+            self._alive_false_ts = self._time.time()
         return self._alive
 
     def _probe(self) -> bool:
@@ -245,9 +261,17 @@ class EmbedClient:
                 result = json.loads(resp.read())
                 vec = np.array(result["data"][0]["embedding"], dtype=np.float32)
                 return vec
+        except urllib.error.HTTPError as he:
+            # HTTP 4xx (esp 401) is a config/auth bug, NOT a down server.
+            # Don't flip _alive False — the server IS reachable, the request is wrong.
+            # Flipping False here would silently disable embeds for the TTL window
+            # on every auth failure (audit H-2 root cause).
+            _log.warning("Embed request got HTTP %s (auth/config issue, not marking server down)", he.code)
+            return None
         except Exception:
-            _log.debug("Embed request failed, marking server as down")
+            _log.debug("Embed request failed (connection/timeout), marking server down for TTL window")
             self._alive = False
+            self._alive_false_ts = self._time.time()
             return None
 
     def embed_batch(self, texts: list[str]) -> list["np.ndarray | None"]:

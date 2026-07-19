@@ -4129,71 +4129,13 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
-                # -- Cross-turn tool-call repetition guard (audit D1 fix) --
-                # Track consecutive FAILED identical tool calls across turns. Only
-                # a streak of 3 identical calls where EACH FAILED trips the break.
-                # A successful call resets the streak, so legitimate re-reads
-                # (verify-after-edit, re-checking config) do not trigger the
-                # "I detected I was repeating..." false positive.
-                #
-                # The prior implementation counted every identical call regardless
-                # of result, which killed the loop on valid re-reads. This version
-                # inspects the last tool-result message to determine failure.
-                if not hasattr(agent, "_failed_repeat_streak"):
-                    agent._failed_repeat_streak = []  # list of (tool_name, arg_hash)
-
-                import hashlib as _hashlib
-                from agent.display import _detect_tool_failure
-
-                # For each tool call in THIS turn, decide whether it extends a
-                # failed-repeat streak. We check the result of the most recent
-                # prior call with the same (name, args) — if that prior call
-                # failed AND this turn repeats it, count toward the streak.
-                _should_break = False
-                _break_tool_name = None
-                for tc in assistant_message.tool_calls:
-                    arg_hash = _hashlib.md5(tc.function.arguments.encode()).hexdigest()[:8]
-                    sig = (tc.function.name, arg_hash)
-
-                    # Did the immediately-prior identical call fail?
-                    # Look at the last tool result message in the conversation.
-                    _prior_failed = False
-                    if agent._failed_repeat_streak and agent._failed_repeat_streak[-1] == sig:
-                        # Find the result of the last tool call in messages
-                        for m in reversed(messages):
-                            if (m.get("role") == "tool"
-                                    and isinstance(m.get("content"), str)):
-                                _prior_failed, _ = _detect_tool_failure(
-                                    tc.function.name, m["content"]
-                                )
-                                break
-
-                    if _prior_failed:
-                        agent._failed_repeat_streak.append(sig)
-                        if len(agent._failed_repeat_streak) >= 3:
-                            _should_break = True
-                            _break_tool_name = tc.function.name
-                            break
-                    else:
-                        # Success (or first occurrence) — reset the streak.
-                        agent._failed_repeat_streak = [sig]
-
-                if _should_break:
-                    agent._vprint(
-                        f"\n{agent.log_prefix}\u26d4 Repetition guard: {_break_tool_name} "
-                        f"failed 3x consecutively with identical args. Breaking loop."
-                    )
-                    agent._failed_repeat_streak = []
-                    if getattr(agent, "_last_content_with_tools", ""):
-                        final_response = agent._last_content_with_tools
-                    else:
-                        final_response = (
-                            "I was unable to complete this task \u2014 a tool call "
-                            "failed repeatedly. Please check the inputs or try a "
-                            "different approach."
-                        )
-                    messages.append({"role": "assistant", "content": final_response})
-                    break
+                # NOTE: the cross-turn repetition guard was removed (audit D1, 2026-07-18).
+                # The existing ToolCallGuardrailController (checked below at the
+                # _tool_guardrail_halt_decision gate) already handles repeated-failure
+                # detection correctly: failure-aware, warns by default, halts when
+                # hard_stop_enabled is configured, emits structured guardrail output.
+                # The removed guard was a crude duplicate that tripped on successful
+                # re-reads (verify-after-edit), producing the recurring false positive.
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 

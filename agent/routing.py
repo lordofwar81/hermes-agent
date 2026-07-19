@@ -35,13 +35,13 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from typing import Dict, List, Optional
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -623,7 +623,6 @@ class BudgetTracker:
         # Use America/Los_Angeles for correct DST handling (PST/PDT). The old
         # fixed UTC-8 offset was wrong during summer (off by an hour, straddling
         # the budget day boundary). Name kept for backward compat.
-        from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("America/Los_Angeles"))
 
     @classmethod
@@ -638,7 +637,6 @@ class BudgetTracker:
 
         Returns a YYYY-MM-DD string: the calendar date of the cycle start.
         """
-        from zoneinfo import ZoneInfo
         if now_pst is None:
             now_pst = cls._now_pst()
         if now_pst.hour < BUDGET_RESET_HOUR_PST:

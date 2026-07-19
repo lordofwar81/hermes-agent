@@ -4129,42 +4129,68 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
-                # -- Cross-turn tool-call repetition guard --
-                # Track (tool_name, arguments_hash) across turns. If the same
-                # call repeats 3+ consecutive times, the model is stuck in a
-                # loop (e.g., grep-ing the same file repeatedly). Break out
-                # and deliver whatever partial content we have.
-                if not hasattr(agent, "_recent_tool_calls"):
-                    from collections import deque
-                    agent._recent_tool_calls = deque(maxlen=5)
-                    agent._repetition_break_count = 0
+                # -- Cross-turn tool-call repetition guard (audit D1 fix) --
+                # Track consecutive FAILED identical tool calls across turns. Only
+                # a streak of 3 identical calls where EACH FAILED trips the break.
+                # A successful call resets the streak, so legitimate re-reads
+                # (verify-after-edit, re-checking config) do not trigger the
+                # "I detected I was repeating..." false positive.
+                #
+                # The prior implementation counted every identical call regardless
+                # of result, which killed the loop on valid re-reads. This version
+                # inspects the last tool-result message to determine failure.
+                if not hasattr(agent, "_failed_repeat_streak"):
+                    agent._failed_repeat_streak = []  # list of (tool_name, arg_hash)
 
                 import hashlib as _hashlib
+                from agent.display import _detect_tool_failure
+
+                # For each tool call in THIS turn, decide whether it extends a
+                # failed-repeat streak. We check the result of the most recent
+                # prior call with the same (name, args) — if that prior call
+                # failed AND this turn repeats it, count toward the streak.
+                _should_break = False
+                _break_tool_name = None
                 for tc in assistant_message.tool_calls:
                     arg_hash = _hashlib.md5(tc.function.arguments.encode()).hexdigest()[:8]
-                    agent._recent_tool_calls.append((tc.function.name, arg_hash))
+                    sig = (tc.function.name, arg_hash)
 
-                # Check: are the last 3 entries all identical?
-                _recent = list(agent._recent_tool_calls)
-                _rep_loop = (
-                    len(_recent) >= 3
-                    and len(set(_recent[-3:])) == 1
-                )
-                if _rep_loop:
-                    agent._repetition_break_count += 1
+                    # Did the immediately-prior identical call fail?
+                    # Look at the last tool result message in the conversation.
+                    _prior_failed = False
+                    if agent._failed_repeat_streak and agent._failed_repeat_streak[-1] == sig:
+                        # Find the result of the last tool call in messages
+                        for m in reversed(messages):
+                            if (m.get("role") == "tool"
+                                    and isinstance(m.get("content"), str)):
+                                _prior_failed, _ = _detect_tool_failure(
+                                    tc.function.name, m["content"]
+                                )
+                                break
+
+                    if _prior_failed:
+                        agent._failed_repeat_streak.append(sig)
+                        if len(agent._failed_repeat_streak) >= 3:
+                            _should_break = True
+                            _break_tool_name = tc.function.name
+                            break
+                    else:
+                        # Success (or first occurrence) — reset the streak.
+                        agent._failed_repeat_streak = [sig]
+
+                if _should_break:
                     agent._vprint(
-                        f"\n{agent.log_prefix}\u26d4 Repetition guard: same tool call "
-                        f"repeated 3x consecutively ({_recent[-1][0]}). Breaking loop."
+                        f"\n{agent.log_prefix}\u26d4 Repetition guard: {_break_tool_name} "
+                        f"failed 3x consecutively with identical args. Breaking loop."
                     )
-                    agent._recent_tool_calls.clear()
-                    # Deliver whatever partial content we accumulated
+                    agent._failed_repeat_streak = []
                     if getattr(agent, "_last_content_with_tools", ""):
                         final_response = agent._last_content_with_tools
                     else:
                         final_response = (
-                            "I was unable to complete this task \u2014 I detected I was "
-                            "repeating the same action without making progress. "
-                            "Please try rephrasing or providing more details."
+                            "I was unable to complete this task \u2014 a tool call "
+                            "failed repeatedly. Please check the inputs or try a "
+                            "different approach."
                         )
                     messages.append({"role": "assistant", "content": final_response})
                     break

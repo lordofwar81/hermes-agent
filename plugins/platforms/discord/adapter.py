@@ -5177,15 +5177,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     tree.add_command(auto_cmd)
                     already_registered.add(discord_name)
-                except Exception:
-                    # Silently skip commands that fail registration (e.g.
-                    # name conflict with a subcommand group).
-                    pass
+                except Exception as exc:
+                    logger.warning("Discord tree.add_command(%r) failed: %s", discord_name, exc)
 
             logger.debug(
                 "Discord auto-registered %d commands from COMMAND_REGISTRY",
-                len(already_registered),
-            )
+                    len(already_registered),
+                )
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
 

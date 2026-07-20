@@ -380,7 +380,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # skill remains fully loadable via /skill <name>.
                     # Uses resolve_command() so aliases and case variants are
                     # covered without maintaining a separate cache.
-                    if resolve_command(cmd_name) is not None:
+                    # Exception: when the skill name matches the COMMAND_REGISTRY
+                    # entry exactly, this is intentional (skill-backed builtin).
+                    # Allow it through so the gateway can dispatch to the skill.
+                    _resolved = resolve_command(cmd_name)
+                    if _resolved is not None and cmd_name != name:
                         logger.warning(
                             "Skill %r generates slash command '/%s' which "
                             "collides with a core Hermes command; skipping "

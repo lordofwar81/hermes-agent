@@ -1107,6 +1107,8 @@ export const api = {
 
   // ── Admin: Memory provider ──────────────────────────────────────────
   getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
+  getMemoryStats: () => fetchJSON<MemoryStats>("/api/memory/stats"),
+  getMemoryGalaxy: () => fetchJSON<MemoryGalaxy>("/api/memory/galaxy"),
   getMemoryProviderConfig: (provider: string) =>
     fetchJSON<MemoryProviderConfig>(
       `/api/memory/providers/${encodeURIComponent(provider)}/config`,
@@ -2541,4 +2543,61 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+export interface MemoryStats {
+  ts: number;
+  t4?: {
+    facts: number;
+    entities: number;
+    by_category: Record<string, number>;
+    trust_bands: Record<string, number>;
+    epistemic: Record<string, number>;
+    by_day: { day: string; count: number }[];
+    error?: string;
+  };
+  t2?: {
+    chunks: number;
+    trees: number;
+    summaries: number;
+    by_lifecycle: Record<string, number>;
+    score_bands: Record<string, number>;
+    by_source: Record<string, number>;
+    by_day: { day: string; count: number }[];
+    error?: string;
+  };
+  t3?: { vector_rows: number; error?: string };
+  activity?: {
+    top_retrieved: { fact_id: string; preview: string; retrievals: number; helpful: number }[];
+    avg_trust?: number;
+    facts_recalled: number;
+    total_retrievals?: number;
+    total_helpful?: number;
+  };
+  queries?: {
+    by_tool: Record<string, number>;
+    by_hour: Record<string, number>;
+    last_24h?: number;
+  };
+}
+
+export interface MemoryGalaxyPoint {
+  fact_id: number;
+  x: number;
+  y: number;
+  z: number;
+  category: string;
+  trust_score: number;
+  retrieval_count: number;
+  epistemic_status: string;
+  preview: string;
+}
+
+export interface MemoryGalaxy {
+  points: MemoryGalaxyPoint[];
+  categories: Record<string, number>;
+  ts?: number;
+  cached?: boolean;
+  stale?: boolean;
+  error?: string;
 }

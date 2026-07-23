@@ -13022,154 +13022,125 @@ async def get_memory_stats():
     return result
 
 
-# In-process cache for the gbrain graph (avoid hammering :3131 on every poll).
-_graph_cache: Dict[str, Any] = {"data": None, "expires": 0.0}
+# In-process cache for the memory galaxy (PCA coords change slowly; facts rarely added).
+_galaxy_cache: Dict[str, Any] = {"data": None, "expires": 0.0}
+_GALAXY_CACHE_TTL = 300.0  # 5 minutes
 
 
-@app.get("/api/memory/graph")
-async def get_memory_graph():
-    """Knowledge-graph data from gbrain for the 3D visualization.
+@app.get("/api/memory/galaxy")
+async def get_memory_galaxy():
+    """3D coordinates for the memory-brain galaxy visualization.
 
-    Fetches pages + their links from gbrain's MCP HTTP endpoint (:3131).
-    Returns {nodes, links, stale} — cached for 60s to avoid polling load.
-    Degrades gracefully: on token-expiry/401, returns the last-known-good
-    graph with stale=true.
+    Each holographic fact (T4) becomes a point in 3D space. Coordinates are
+    derived from PCA (top-3 components) of the facts' 4096-dim neural
+    embeddings (``facts.neural_embed``), computed server-side via torch. The
+    result is cached for 5 minutes — facts change slowly.
+
+    Returns per-point metadata for client-side encoding:
+      * position  — PCA(x, y, z), normalized to a ~15-unit sphere
+      * color     — by ``category``
+      * size      — by ``retrieval_count`` (client scales)
+      * opacity   — by ``trust_score`` (client applies)
+      * preview   — first 80 chars of content (hover tooltip)
+
+    Auth-gated by the global middleware like other GETs.
     """
-    import json
-    import os
-    import time
-    import urllib.request
-    from pathlib import Path
+    import sqlite3
+    import time as _time
 
-    # Return cache if fresh (< 60s old)
-    now = time.time()
-    if _graph_cache["data"] is not None and now < _graph_cache["expires"]:
-        cached = dict(_graph_cache["data"])
+    now = _time.time()
+    if _galaxy_cache["data"] is not None and now < _galaxy_cache["expires"]:
+        cached = dict(_galaxy_cache["data"])
         cached["cached"] = True
         return cached
 
-    # Load gbrain token
     home = get_hermes_home()
-    token_path = home / "mcp-tokens" / "gbrain.json"
-    if not token_path.exists():
-        return {"nodes": [], "links": [], "error": "no gbrain token", "stale": True}
+    db_path = home / "memory_store.db"
 
     try:
-        token_data = json.loads(token_path.read_text())
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT fact_id, neural_embed, content, category, trust_score, "
+            "retrieval_count, epistemic_status FROM facts "
+            "WHERE neural_embed IS NOT NULL"
+        ).fetchall()
+        con.close()
     except Exception:
-        return {"nodes": [], "links": [], "error": "token unreadable", "stale": True}
-
-    token = token_data.get("access_token")
-    if not token:
-        return {"nodes": [], "links": [], "error": "no token", "stale": True}
-
-    def _gbrain_call(tool: str, params: dict) -> dict | None:
-        """Call gbrain MCP tool via HTTP."""
-        payload = json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": tool, "arguments": params},
-        }).encode()
-        req = urllib.request.Request(
-            "http://127.0.0.1:3131/mcp",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json, text/event-stream",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                body = resp.read().decode()
-                if body.startswith("event:"):
-                    for line in body.splitlines():
-                        if line.startswith("data: "):
-                            data = json.loads(line[6:])
-                            inner = data.get("result", {}).get("content", [])
-                            for item in inner:
-                                if item.get("type") == "text":
-                                    return json.loads(item["text"])
-                            return data.get("result")
-                return json.loads(body)
-        except Exception as e:
-            _log.warning("gbrain call %s failed: %s", tool, e)
-            return None
-
-    # Fetch all pages
-    pages_result = _gbrain_call("list_pages", {"limit": 500})
-    if pages_result is None:
-        # Degrade to cached data
-        if _graph_cache["data"]:
-            cached = dict(_graph_cache["data"])
-            cached["stale"] = True
+        _log.exception("memory_store.db galaxy query failed")
+        if _galaxy_cache["data"]:
+            cached = dict(_galaxy_cache["data"])
             cached["cached"] = True
+            cached["stale"] = True
             return cached
-        return {"nodes": [], "links": [], "error": "gbrain unreachable", "stale": True}
+        return {"points": [], "categories": {}, "error": "unavailable", "stale": True}
 
-    # Parse pages — list_pages returns either a list or {pages: [...]}
-    pages_list = []
-    if isinstance(pages_result, list):
-        pages_list = pages_result
-    elif isinstance(pages_result, dict):
-        pages_list = pages_result.get("pages", pages_result.get("data", []))
-        if not isinstance(pages_list, list):
-            # Single page dict
-            pages_list = [pages_result]
+    if not rows:
+        result = {"points": [], "categories": {}, "ts": now}
+        _galaxy_cache["data"] = result
+        _galaxy_cache["expires"] = now + _GALAXY_CACHE_TTL
+        return result
 
-    nodes: List[Dict[str, Any]] = []
-    links: List[Dict[str, Any]] = []
-    seen_links: set = set()
+    try:
+        import numpy as np
+        import torch
+    except Exception:
+        _log.exception("numpy/torch unavailable for galaxy PCA")
+        return {"points": [], "categories": {}, "error": "pca unavailable", "stale": True}
 
-    for page in pages_list:
-        if not isinstance(page, dict):
-            continue
-        slug = page.get("slug") or page.get("id") or page.get("title", "")
-        if not slug:
-            continue
-        nodes.append({
-            "id": slug,
-            "title": page.get("title", slug),
-            "type": page.get("type", page.get("page_type", "unknown")),
-            "updated_at": page.get("updated_at") or page.get("created_at", ""),
-            "tags": page.get("tags", []),
+    # Build the embedding matrix and decode metadata.
+    ids = [r[0] for r in rows]
+    try:
+        X = np.array([np.frombuffer(r[1], dtype=np.float32) for r in rows])
+    except Exception:
+        _log.exception("failed to decode neural_embed blobs")
+        return {"points": [], "categories": {}, "error": "embed decode failed", "stale": True}
+
+    contents = [r[2] or "" for r in rows]
+    categories = [r[3] or "uncategorized" for r in rows]
+    trusts = [float(r[4]) if r[4] is not None else 0.5 for r in rows]
+    retrievals = [int(r[5]) if r[5] is not None else 0 for r in rows]
+    epistemics = [r[6] or "unknown" for r in rows]
+
+    # PCA to 3 components via torch (center first). Vectors are L2-normalized
+    # (norm == 1.0), so centering is required for meaningful principal axes.
+    Xc = X - X.mean(axis=0)
+    t = torch.from_numpy(Xc.astype(np.float32))
+    U, S, V = torch.pca_lowrank(t, q=3)
+    coords = (U[:, :3] * S[:3]).numpy()
+
+    # Normalize to a ~15-unit-radius sphere for a consistent scene scale.
+    max_abs = float(np.abs(coords).max())
+    if max_abs > 0:
+        coords = coords * (15.0 / max_abs)
+
+    # Assemble per-point records (preview capped at 80 chars for payload size).
+    points = []
+    cat_counts: Dict[str, int] = {}
+    for i in range(len(ids)):
+        cat = categories[i]
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        preview = contents[i][:80].replace("\n", " ").strip()
+        points.append({
+            "fact_id": ids[i],
+            "x": round(float(coords[i, 0]), 4),
+            "y": round(float(coords[i, 1]), 4),
+            "z": round(float(coords[i, 2]), 4),
+            "category": cat,
+            "trust_score": trusts[i],
+            "retrieval_count": retrievals[i],
+            "epistemic_status": epistemics[i],
+            "preview": preview,
         })
 
-        # Fetch outbound links for this page
-        links_result = _gbrain_call("get_links", {"slug": slug})
-        if links_result is None:
-            continue
-        page_links = links_result if isinstance(links_result, list) else links_result.get("links", [])
-        for link in page_links:
-            if not isinstance(link, dict):
-                continue
-            target = link.get("to_slug") or link.get("target_slug") or link.get("target") or link.get("to", "")
-            link_type = link.get("link_type") or link.get("type") or "related"
-            context = link.get("context", "")
-            if target:
-                key = (slug, target, link_type)
-                if key not in seen_links:
-                    seen_links.add(key)
-                    links.append({
-                        "source": slug,
-                        "target": target,
-                        "type": link_type,
-                        "context": context,
-                    })
-
-    graph = {
-        "nodes": nodes,
-        "links": links,
-        "stale": False,
+    result = {
+        "points": points,
+        "categories": cat_counts,
+        "ts": now,
         "cached": False,
     }
-
-    # Update cache (60s TTL)
-    _graph_cache["data"] = graph
-    _graph_cache["expires"] = now + 60.0
-
-    return graph
-
-
+    _galaxy_cache["data"] = {k: v for k, v in result.items() if k != "cached"}
+    _galaxy_cache["expires"] = now + _GALAXY_CACHE_TTL
+    return result
 
 
 @app.put("/api/memory/provider")

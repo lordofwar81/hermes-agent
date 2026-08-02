@@ -468,7 +468,71 @@ class MemoryStore:
 
             self._rebuild_bank(category)
 
+            # [Item 2 2026-08-02] Generate hypothetical questions for the
+            # question index (Phase 2a recall booster). Non-fatal — fact is
+            # already written; questions can be backfilled if this fails.
+            try:
+                self._generate_questions_for_fact(fact_id, content)
+            except Exception:
+                pass  # LLM down, timeout, etc. — don't block the write
+
             return fact_id
+
+    def _generate_questions_for_fact(self, fact_id: int, content: str) -> None:
+        """Generate 2-3 hypothetical questions for a fact and store embeddings.
+
+        Called by add_fact after the fact is written. Uses the local LLM to
+        generate questions, then embeds each via the embed endpoint. Failures
+        are silently skipped (non-fatal — the fact is already stored).
+        """
+        import json as _json
+        import urllib.request as _url
+
+        api_key = os.environ.get("LLAMA_API_KEY", "")
+        base_url = os.environ.get("STRIX_LLAMA_URL", "http://127.0.0.1:8199/v1")
+        model = "qwen3.6-35b-a3b"
+
+        prompt = (
+            "Given this stored fact from a personal AI memory system, generate "
+            "2-3 short questions that this fact would answer. Output ONLY a JSON "
+            "array of question strings.\n\nFact: " + content[:500]
+        )
+        body = _json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 300,
+            "temperature": 0.2,
+        }).encode()
+
+        req = _url.Request(
+            base_url.rstrip("/") + "/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + api_key},
+            method="POST",
+        )
+        with _url.urlopen(req, timeout=30) as resp:
+            text = _json.loads(resp.read())["choices"][0]["message"]["content"].strip()
+
+        # Parse JSON array
+        s, e = text.find("["), text.rfind("]")
+        if s < 0:
+            return
+        questions = _json.loads(text[s:e+1])
+
+        # Embed and store each question
+        for q in questions[:3]:
+            embed = self._embed.embed(q)
+            embed_blob = None
+            if embed is not None:
+                import numpy as np
+                embed_blob = np.asarray(embed, dtype=np.float32).tobytes()
+            self._conn.execute(
+                "INSERT INTO fact_questions (fact_id, question, neural_embed) "
+                "VALUES (?, ?, ?)",
+                (fact_id, q, embed_blob)
+            )
+        self._conn.commit()
 
     def _fan_out_to_vector_store(
         self, fact_id: int, content: str, category: str, tags: str

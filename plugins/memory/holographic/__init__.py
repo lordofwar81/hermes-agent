@@ -181,7 +181,7 @@ class HolographicMemoryProvider(MemoryProvider):
             db_path = db_path.replace("${HERMES_HOME}", _hermes_home)
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 8192))
-        hrr_weight = float(self._config.get("hrr_weight", 0.2))
+        hrr_weight = float(self._config.get("hrr_weight", 0.0))  # [2026-08-01] HRR disabled in search — eval-proven dead weight
         neural_weight = float(self._config.get("neural_weight", 0.3))
         temporal_decay = int(self._config.get("temporal_decay_half_life", 0))
 

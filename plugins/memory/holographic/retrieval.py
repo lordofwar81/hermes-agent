@@ -185,9 +185,9 @@ class FactRetriever:
         self,
         store: MemoryStore,
         temporal_decay_half_life: int = 0,  # days, 0 = disabled
-        fts_weight: float = 0.3,
-        jaccard_weight: float = 0.2,
-        hrr_weight: float = 0.2,
+        fts_weight: float = 0.35,
+        jaccard_weight: float = 0.35,
+        hrr_weight: float = 0.0,   # [DISABLED 2026-08-01] HRR dead weight in search() — eval-proven (100q sweep: every hrr=0 config beat baseline). HRR outputs ~0.5 for all candidates on prose queries (bag-of-words phase bundle is non-discriminative). Kept for probe/related/reason compositional queries.
         neural_weight: float = 0.3,
         hrr_dim: int = 8192,
         llm_verifier: LLMVerifier | None = None,
@@ -260,7 +260,14 @@ class FactRetriever:
         query_neural_norm = 0.0  # precomputed norm; invariant across candidates
         if self.neural_weight > 0:
             try:
-                query_neural = self.store._embed.embed(query)
+                # [Phase 2b] qwen3-embed instruction prefix steers the query
+                # embedding toward the retrieval task. Documents stay raw.
+                _instruct_query = (
+                    "Instruct: Given a search query about the user's personal "
+                    "infrastructure, preferences, projects, and history, retrieve "
+                    "the most relevant stored fact.\nQuery: " + query
+                )
+                query_neural = self.store._embed.embed(_instruct_query)
                 if query_neural is not None:
                     import numpy as np
                     query_neural = np.asarray(query_neural, dtype=np.float32)
@@ -315,8 +322,13 @@ class FactRetriever:
                         + self.hrr_weight * hrr_sim
                         + self.neural_weight * neural_sim)
 
-            # Trust weighting
-            score = relevance * fact["trust_score"]
+            # [Phase 1a 2026-08-01] Trust is a FILTER, not a multiplier.
+            # Multiplying score by trust was actively harmful: irrelevant
+            # high-trust facts (trust=1.0 conversation dumps) outranked
+            # relevant lower-trust facts (trust=0.7). Trust filtering already
+            # happens in _fts_candidates via min_trust param. Pure relevance
+            # ranking is more precise (verified: Kimi K3 analysis + eval).
+            score = relevance
 
             # Optional temporal decay
             if self.half_life > 0:
@@ -324,6 +336,69 @@ class FactRetriever:
 
             fact["score"] = score
             scored.append(fact)
+
+        # [Phase 2a] Question-index recall boost: search hypothetical questions
+        # that were generated for each fact. Catches facts that answer the
+        # query but don't share keywords. RRF-fuse question matches with the
+        # FTS+neural scored list.
+        if query_neural is not None and len(scored) > 0:
+            try:
+                q_rows = self.store._conn.execute(
+                    "SELECT fq.fact_id, fq.neural_embed, f.content, f.category, "
+                    "f.trust_score, f.tags, f.created_at, f.updated_at "
+                    "FROM fact_questions fq JOIN facts f ON fq.fact_id = f.fact_id "
+                    "WHERE f.epistemic_status != 'retracted' AND fq.neural_embed IS NOT NULL"
+                ).fetchall()
+                if q_rows:
+                    import numpy as np
+                    # Best question cosine per fact_id
+                    best_q = {}  # fact_id -> (cosine, row)
+                    for row in q_rows:
+                        try:
+                            qe = np.frombuffer(row["neural_embed"], dtype=np.float32)
+                            cos = float(np.dot(query_neural, qe) / (query_neural_norm * float(np.linalg.norm(qe))))
+                            fid = row["fact_id"]
+                            if fid not in best_q or cos > best_q[fid][0]:
+                                best_q[fid] = (cos, row)
+                        except Exception:
+                            pass
+                    # RRF merge: existing scored list gets rank scores,
+                    # question matches get rank scores, fuse.
+                    _RRF_K = 60
+                    existing_ids = {f["fact_id"] for f in scored}
+                    # Add question-only matches not already in candidates
+                    q_ranked = sorted(best_q.items(), key=lambda x: -x[1][0])
+                    for rank, (fid, (cos, row)) in enumerate(q_ranked):
+                        if fid in existing_ids:
+                            # Boost existing fact's score via RRF
+                            for f in scored:
+                                if f["fact_id"] == fid:
+                                    f["score"] += 1.0 / (_RRF_K + rank + 1)
+                                    break
+                        else:
+                            # New candidate from question index — add with
+                            # RRF score scaled to merge with FTS scores
+                            new_fact = dict(row)
+                            new_fact["score"] = cos * 0.5  # neural cosine as base
+                            scored.append(new_fact)
+            except Exception:
+                pass  # question index missing or error — non-fatal
+
+        # [Phase 2c] Entity-aware boost: extract technical entities from query,
+        # boost facts containing those exact strings. Surgical — only real
+        # entities (IPs, ports, hostnames, model names, identifiers) get boosted.
+        query_entities = self._extract_query_entities(query)
+        if query_entities:
+            for fact in scored:
+                content_lower = (fact.get("content") or "").lower()
+                tags_lower = (fact.get("tags") or "").lower()
+                combined = content_lower + " " + tags_lower
+                boost = 0.0
+                for ent in query_entities:
+                    if ent in combined:
+                        boost += 0.1  # per-entity match boost
+                if boost > 0:
+                    fact["score"] += boost
 
         # Sort by score descending, return top limit
         scored.sort(key=lambda x: x["score"], reverse=True)
@@ -338,6 +413,61 @@ class FactRetriever:
 
         self._boost_retrieved_facts(results)
         return results
+
+    def _extract_query_entities(self, query: str) -> list[str]:
+        """Extract distinctive technical entities from a query for boosting.
+
+        Returns lowercased entity strings that, if present in a fact's content,
+        indicate strong relevance. Patterns: IPs, ports, hostnames, model names,
+        CamelCase identifiers, dotted version strings, env var names.
+        """
+        import re
+        entities = []
+
+        # IP addresses (192.168.x.x)
+        for m in re.finditer(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", query):
+            entities.append(m.group().lower())
+
+        # Port numbers (context: "port 8199", ":8199", "8199")
+        for m in re.finditer(r"(?:port\s*|:)(\d{2,5})\b", query, re.IGNORECASE):
+            entities.append(m.group(1))
+
+        # Hostnames/service aliases (strix, hermes, odysseus, gbrain, unifi, etc.)
+        for m in re.finditer(r"\b([a-z]{3,15})\b", query.lower()):
+            word = m.group(1)
+            # Skip common English words
+            if word not in ("what", "how", "the", "does", "for", "and", "with",
+                            "that", "this", "from", "port", "model", "server",
+                            "running", "system", "about", "into", "called",
+                            "where", "which", "have", "user", "find", "show",
+                            "service", "config", "setup", "test", "check",
+                            "login", "password", "credential", "network",
+                            "memory", "architecture", "inference", "endpoint",
+                            "local", "host",
+                            # [Item 4] high-frequency entities that over-boost
+                            "hermes", "audit", "embed", "embedding",
+                            "llm", "run", "error", "failure", "fix",
+                            "data", "file", "code", "list", "schedule",
+                            "halo", "adapter", "sync", "tracker",
+                            "credentials", "telegram", "telegram"):
+                entities.append(word)
+
+        # Model names (qwen3, gemma, llama, glm, etc.)
+        for m in re.finditer(r"\b([a-z]+[0-9](?:[a-z0-9.+-]*))\b", query.lower()):
+            entities.append(m.group())
+
+        # CamelCase identifiers
+        for m in re.finditer(r"\b([A-Z][a-z]+[A-Z][a-zA-Z]+)\b", query):
+            entities.append(m.group().lower())
+
+        # Dedupe
+        seen = set()
+        unique = []
+        for e in entities:
+            if e not in seen and len(e) >= 3:
+                seen.add(e)
+                unique.append(e)
+        return unique[:8]  # cap to avoid over-boosting
 
     def probe(
         self,

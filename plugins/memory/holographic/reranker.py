@@ -6,7 +6,7 @@ not term overlap, so a long multi-term fact that merely mentions the query no
 longer dominates top-k over a short fact that actually answers it.
 
 Lazy-loaded + cached at module level (one model instance across all prefetch
-calls). CPU-only torch (no CUDA dep on this box). Model: ms-marco-MiniLM-L-6-v2
+calls). CPU-only torch (no CUDA dep on this box). Model: bge-reranker-v2-m3 (upgraded from MiniLM for technical data)
 (~80MB, already in HF cache). Inference: ~30ms for 20 candidates.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _load():
         try:
             import torch  # noqa: F401 — transformers needs it importable
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
-            model_id = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+            model_id = "BAAI/bge-reranker-v2-m3"  # [Phase 1c] Replaced MiniLM
             _tokenizer = AutoTokenizer.from_pretrained(model_id)
             _model = AutoModelForSequenceClassification.from_pretrained(model_id)
             _model.eval()

@@ -968,7 +968,17 @@ class MemoryStore:
         if not self._embed.alive:
             return
 
-        vec = self._embed.embed(content)
+        # [Fix 2026-08-02] Strip [Source · Project] session-title prefixes
+        # before embedding. qwen3-embed-8b collapses short templated texts
+        # to identical embeddings (cos=1.000 for different titles). Stripping
+        # restores discrimination.
+        import re
+        embed_content = re.sub(r"^\[[^\]]+\]\s*", "", content)
+        # Also add instruction prefix for document-side alignment with
+        # query-side instruction prefix (Phase 2b).
+        embed_content = embed_content[:800]  # truncate to embed model limit
+
+        vec = self._embed.embed(embed_content)
         if vec is not None:
             try:
                 self._conn.execute(

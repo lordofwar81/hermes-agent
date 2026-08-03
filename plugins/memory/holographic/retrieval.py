@@ -1037,7 +1037,13 @@ class FactRetriever:
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
         params: list = []
-        where_clauses = ["facts_fts MATCH ?"]
+        where_clauses = [
+            "facts_fts MATCH ?",
+            # [Rec 5] Exclude contradicted/retracted facts from retrieval.
+            # Contradicted facts have been superseded by a newer fact.
+            # Retracted facts are below trust threshold (soft-deleted).
+            "facts.epistemic_status NOT IN ('contradicted', 'retracted')"
+        ]
         # FTS5 defaults to AND-between-tokens, which kills recall on
         # natural-language queries ("what happened with the deployment
         # rollback"). Sanitize: drop stopwords, OR-join content tokens, so

@@ -3522,7 +3522,7 @@ def run_conversation(
                                 billing_base_url=agent.base_url,
                                 billing_mode="subscription_included"
                                 if cost_result.status == "included" else None,
-                                model=agent.model,
+                                model=getattr(agent, "_last_router_backend", "") or agent.model,
                                 api_call_count=1,
                             )
                         except Exception as e:

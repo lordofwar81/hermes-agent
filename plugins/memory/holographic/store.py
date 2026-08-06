@@ -363,6 +363,14 @@ class MemoryStore:
         # state.db / kanban.db — see hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
+        # Aggressive WAL checkpoint: trigger every 200 frames (default 1000)
+        # and cap WAL at 50MB. Prevents a stuck reader from pinning a large
+        # WAL — fewer frames = faster recovery when the reader releases.
+        try:
+            self._conn.execute("PRAGMA wal_autocheckpoint=200")
+            self._conn.execute("PRAGMA journal_size_limit=52428800")
+        except sqlite3.OperationalError:
+            pass  # pragma may fail on non-WAL fallback; non-fatal
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
@@ -641,13 +649,21 @@ class MemoryStore:
             results = [self._row_to_dict(r) for r in rows]
 
             if results:
-                ids = [r["fact_id"] for r in results]
-                placeholders = ",".join("?" * len(ids))
-                self._conn.execute(
-                    f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
-                    ids,
-                )
-                self._conn.commit()
+                # Non-blocking retrieval_count increment: this is an analytics
+                # counter, not critical data. If the write lock is held (e.g. a
+                # long-running consolidation job), skip the update rather than
+                # failing the read. Prevents read-on-write lock contention
+                # from blocking searches.
+                try:
+                    ids = [r["fact_id"] for r in results]
+                    placeholders = ",".join("?" * len(ids))
+                    cur = self._conn.execute(
+                        f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                        ids,
+                    )
+                    self._conn.commit()
+                except sqlite3.OperationalError:
+                    pass  # lock contention — skip counter update, return results
 
             return results
 

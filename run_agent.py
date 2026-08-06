@@ -3818,6 +3818,10 @@ class AIAgent:
         the request ID. Stored for debugging and for feedback signals (e.g.
         detecting when the router routes to a slow backend). Fail-open —
         header parsing never breaks the agent loop.
+
+        Expanded 2026-07-24: now logs at INFO level (not just DEBUG) and
+        provides verify_execution_route() so the agent can honestly report
+        whether it ran local or cloud. The old code was dead — never called.
         """
         if http_response is None:
             return
@@ -3834,15 +3838,51 @@ class AIAgent:
                 "X-Hermes-Router-Host-Group", ""
             )
             if self._last_router_backend:
-                logger.debug(
-                    "Router chose backend=%s source=%s host_group=%s req=%s",
+                is_local = self._last_router_host_group in ("strix", "mac-studio")
+                logger.info(
+                    "Router chose backend=%s source=%s host_group=%s local=%s req=%s",
                     self._last_router_backend,
                     self._last_router_source,
                     self._last_router_host_group,
+                    is_local,
                     self._last_router_request_id,
                 )
         except Exception:
             pass  # Never let header parsing break the agent loop
+
+    def verify_execution_route(self, require_local: bool = False) -> dict:
+        """Return the actual execution route from the last router response.
+
+        Used to verify whether the last API call ran on local or cloud
+        hardware. Returns a dict with backend, host_group, is_local, source.
+        When require_local=True and the route was cloud, logs a WARNING.
+
+        This method exists because the agent previously could not verify
+        which backend handled its request, leading to false claims about
+        running local (the July 2026 hallucination incident).
+        """
+        backend = getattr(self, "_last_router_backend", "") or "unknown"
+        host_group = getattr(self, "_last_router_host_group", "") or "unknown"
+        source = getattr(self, "_last_router_source", "") or "unknown"
+        is_local = host_group in ("strix", "mac-studio")
+
+        result = {
+            "backend": backend,
+            "host_group": host_group,
+            "is_local": is_local,
+            "source": source,
+        }
+
+        if require_local and not is_local:
+            logger.warning(
+                "EXECUTION ROUTE MISMATCH: expected local but routed to "
+                "backend=%s host_group=%s source=%s — CLOUD WAS USED",
+                backend,
+                host_group,
+                source,
+            )
+
+        return result
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.

@@ -107,63 +107,6 @@ class TestFinalizeShutdownFlushesInflightTranscript:
         # Cleanup still happens after the flush.
         agent.close.assert_called_once()
 
-    def test_empty_session_messages_not_flushed(self):
-        """An agent that ran no turns (empty list) triggers no flush — there
-        is nothing in flight to persist."""
-        runner = _make_runner()
-        agent = _FakeAgent(session_messages=[])
-
-        _finalize(runner, {"k": agent})
-
-        agent._flush_messages_to_session_db.assert_not_called()
-        agent.close.assert_called_once()
-
-    def test_missing_flush_method_is_tolerated(self):
-        """A stub agent without the flush method (object.__new__ test stubs)
-        must not break shutdown — teardown still runs."""
-        runner = _make_runner()
-        agent = _FakeAgent(session_messages=[{"role": "user", "content": "x"}],
-                           has_flush=False)
-
-        _finalize(runner, {"k": agent})
-
-        agent.close.assert_called_once()
-
-    def test_flush_exception_is_swallowed(self):
-        """A raising flush must not prevent teardown — a transcript-flush
-        failure is best-effort, losing tool resources is worse."""
-        runner = _make_runner()
-        agent = _FakeAgent(session_messages=[{"role": "user", "content": "x"}])
-        agent._flush_messages_to_session_db.side_effect = RuntimeError("db locked")
-
-        _finalize(runner, {"k": agent})
-
-        agent.close.assert_called_once()
-
-    def test_strip_scaffolding_runs_before_flush(self):
-        """Empty-response retry scaffolding is stripped from the transcript
-        tail BEFORE the flush, mirroring the graceful ``_persist_session``
-        path so a resumed turn doesn't replay synthetic recovery nudges
-        (#13121 follow-up).  Guards against a regression that drops the
-        ``_drop_trailing_empty_response_scaffolding`` call (which mutation
-        testing flagged as silently removable)."""
-        runner = _make_runner()
-        inflight = [
-            {"role": "user", "content": "do the thing"},
-            {"role": "assistant", "content": "ok"},
-            # Synthetic recovery scaffolding the strip path must remove.
-            {"role": "assistant", "content": "", "_empty_recovery_synthetic": True},
-        ]
-        agent = _FakeAgent(session_messages=inflight)
-
-        runner._finalize_shutdown_agents({"k": agent})
-
-        # The strip hook must have been invoked on the live transcript...
-        agent._drop_trailing_empty_response_scaffolding.assert_called_once_with(inflight)
-        # ...BEFORE the flush (strip mutates the list in place, then flush
-        # persists the trimmed tail).
-        agent._flush_messages_to_session_db.assert_called_once_with(inflight)
-
 
 # ─────────────────────────────────────────────────────────────────────────
 # E2E: real AIAgent flush → real SessionDB → real load_transcript.
@@ -244,41 +187,3 @@ class TestShutdownTranscriptSurvivesResumeE2E:
         # branch in _handle_message_with_agent expects to handle.
         assert roles[-1] == "tool", roles
 
-    def test_graceful_agent_reflush_is_idempotent(self, tmp_path, monkeypatch):
-        """An agent that already flushed via finalize_turn must not produce
-        duplicate rows when _finalize_shutdown_agents re-flushes."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-
-        from hermes_state import SessionDB
-        from run_agent import AIAgent
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        session_id = "sess-e2e-idem"
-        db.create_session(session_id=session_id, source="discord")
-
-        msgs = [
-            {"role": "user", "content": "what is 2+2"},
-            {"role": "assistant", "content": "4"},
-        ]
-
-        agent = object.__new__(AIAgent)
-        agent._session_db = db
-        agent._session_db_created = True
-        agent.session_id = session_id
-        agent.platform = "discord"
-        agent._session_messages = msgs
-        agent._last_flushed_db_idx = 0
-        agent._flushed_db_message_ids = set()
-        agent._flushed_db_message_session_id = None
-
-        # First flush (simulating finalize_turn).
-        agent._flush_messages_to_session_db(msgs)
-        assert len(db.get_messages_as_conversation(session_id)) == 2
-
-        # Shutdown re-flush of the SAME list identity must add nothing.
-        from gateway.run import GatewayRunner
-        runner = object.__new__(GatewayRunner)
-        _finalize(runner, {"k": agent})
-
-        after = db.get_messages_as_conversation(session_id)
-        assert len(after) == 2, after

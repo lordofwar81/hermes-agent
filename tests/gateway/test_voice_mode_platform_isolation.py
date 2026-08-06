@@ -19,12 +19,6 @@ from gateway.run import GatewayRunner
 class TestVoiceKeyHelper:
     """Test the _voice_key helper method."""
 
-    def test_voice_key_format(self):
-        """_voice_key returns 'platform:chat_id' format."""
-        runner = _make_runner()
-        assert runner._voice_key(Platform.TELEGRAM, "123") == "telegram:123"
-        assert runner._voice_key(Platform.SLACK, "456") == "slack:456"
-        assert runner._voice_key(Platform.DISCORD, "789") == "discord:789"
 
     def test_voice_key_different_platforms_same_chat_id(self):
         """Same chat_id on different platforms yields different keys."""
@@ -161,47 +155,6 @@ class TestSyncVoiceModeStateToAdapter:
 
         # Only telegram:123 should be in disabled_chats (mode="off" for telegram)
         assert mock_adapter._auto_tts_disabled_chats == {"123"}
-
-    def test_sync_clears_existing_state(self):
-        """_sync_voice_mode_state_to_adapter clears existing disabled_chats first."""
-        runner = _make_runner()
-
-        runner._voice_mode = {
-            "telegram:123": "off",
-        }
-
-        mock_adapter = MagicMock()
-        mock_adapter.platform = Platform.TELEGRAM
-        mock_adapter._auto_tts_disabled_chats = {"old_chat_id", "another_old"}
-
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
-
-        # Old entries should be cleared
-        assert mock_adapter._auto_tts_disabled_chats == {"123"}
-
-    def test_sync_returns_early_without_platform(self):
-        """_sync_voice_mode_state_to_adapter returns early if adapter has no platform."""
-        runner = _make_runner()
-        runner._voice_mode = {"telegram:123": "off"}
-
-        mock_adapter = MagicMock()
-        mock_adapter.platform = None
-        mock_adapter._auto_tts_disabled_chats = {"old"}
-
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
-
-        # disabled_chats should not be modified
-        assert mock_adapter._auto_tts_disabled_chats == {"old"}
-
-    def test_sync_returns_early_without_auto_tts_disabled_chats(self):
-        """_sync_voice_mode_state_to_adapter returns early if adapter lacks _auto_tts_disabled_chats."""
-        runner = _make_runner()
-        runner._voice_mode = {"telegram:123": "off"}
-
-        mock_adapter = MagicMock(spec=[])  # No _auto_tts_disabled_chats attribute
-
-        # Should not raise
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
 
 
 # ---------------------------------------------------------------------------

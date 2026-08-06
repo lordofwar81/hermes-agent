@@ -277,6 +277,15 @@ class FactRetriever:
 
         # Stage 3: Rerank with Jaccard + HRR + Neural + trust + optional decay
         query_tokens = self._tokenize(query)
+        # The query vector is loop-invariant — encode it at most once, on
+        # the first candidate that actually carries an HRR vector. Lazy on
+        # purpose: migrated stores can have FTS candidates whose hrr_vector
+        # was never backfilled (MemoryStore._init_db adds the column
+        # without backfilling), and those must not pay for an encode
+        # nothing will use. encode_text is deterministic (SHA-256 counter
+        # blocks), so the hoisted vector is bit-identical to what the
+        # per-candidate calls produced.
+        query_vec = None
         scored = []
 
         # Hoist query-invariant computations out of the per-candidate loop.
@@ -296,8 +305,10 @@ class FactRetriever:
             fts_score = fact.get("fts_rank", 0.0)
 
             # HRR similarity
-            if query_vec is not None and fact.get("hrr_vector"):
-                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
+            if self.hrr_weight > 0 and fact.get("hrr_vector"):
+                fact_vec = hrr.bytes_to_phases(fact["hrr_vector"], dim=self.hrr_dim)
+                if query_vec is None:
+                    query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0  # shift to [0,1]
             else:
                 hrr_sim = 0.5  # neutral
@@ -502,7 +513,7 @@ class FactRetriever:
                 (bank_name,),
             ).fetchone()
             if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
+                bank_vec = hrr.bytes_to_phases(bank_row["vector"], dim=self.hrr_dim)
                 extracted = hrr.unbind(bank_vec, probe_key)
                 # Use extracted signal to score individual facts
                 return self._score_facts_by_vector(
@@ -531,12 +542,13 @@ class FactRetriever:
             # Final fallback: keyword search
             return self.search(entity, category=category, limit=limit)
 
-        # role_content is a fixed role vector; encode once, not per-fact.
+        # role_content is loop-invariant — encode it once (deterministic
+        # SHA-256-based atom) instead of once per fact row.
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             # Unbind probe key from fact to see if entity is structurally present
             residual = hrr.unbind(fact_vec, probe_key)
             # Compare residual against content signal
@@ -603,10 +615,14 @@ class FactRetriever:
 
         # Score each fact by how much the entity's atom appears in its vector
         # This catches both role-bound entity matches AND content word matches
+        # Both role atoms are loop-invariant — encode them once here
+        # (deterministic SHA-256-based atoms) instead of twice per fact row.
+        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             # Check structural similarity: unbind entity from fact
             residual = hrr.unbind(fact_vec, entity_vec)
@@ -693,7 +709,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
 
             entity_scores = []
             for probe_key in entity_residuals:
@@ -819,9 +835,10 @@ class FactRetriever:
                 if entity_overlap < 0.3:
                     continue  # Not enough entity overlap to be contradictory
 
-                # Content similarity via HRR vectors (decoded once above)
-                content_sim = hrr.similarity(fact_vectors[f1["fact_id"]],
-                                             fact_vectors[f2["fact_id"]])
+                # Content similarity via HRR vectors
+                v1 = hrr.bytes_to_phases(f1["hrr_vector"], dim=self.hrr_dim)
+                v2 = hrr.bytes_to_phases(f2["hrr_vector"], dim=self.hrr_dim)
+                content_sim = hrr.similarity(v1, v2)
 
                 # High entity overlap + low content similarity = potential contradiction
                 # contradiction_score: higher = more contradictory
@@ -943,7 +960,7 @@ class FactRetriever:
         scored = []
         for row in rows:
             fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"), dim=self.hrr_dim)
             sim = hrr.similarity(target_vec, fact_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)

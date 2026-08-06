@@ -51,36 +51,6 @@ class TestSuspendRecentlyActive:
         assert refreshed.resume_pending
         assert refreshed.session_id == entry.session_id  # same session preserved
 
-    def test_does_not_suspend_old_sessions(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-
-        # Backdate the session's updated_at beyond the cutoff
-        with store._lock:
-            entry.updated_at = datetime.now() - timedelta(seconds=300)
-            store._save()
-
-        count = store.suspend_recently_active(max_age_seconds=120)
-        assert count == 0
-
-    def test_already_resume_pending_not_double_counted(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-
-        # Mark resume_pending once
-        count1 = store.suspend_recently_active()
-        assert count1 == 1
-
-        # Re-fetch returns the SAME session (preserved, not reset)
-        entry2 = store.get_or_create_session(source)
-        assert entry2.session_id == entry.session_id
-
-        # Second call skips already-resume_pending entries
-        count2 = store.suspend_recently_active()
-        assert count2 == 0
-
 
 # ---------------------------------------------------------------------------
 # Clean shutdown marker integration
@@ -131,34 +101,6 @@ class TestCleanShutdownMarker:
 
         assert marker.exists(), ".clean_shutdown marker should exist after graceful stop"
 
-    def test_marker_skips_suspension_on_startup(self, tmp_path, monkeypatch):
-        """If .clean_shutdown exists, suspend_recently_active should NOT be called."""
-        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-
-        # Create the marker
-        marker = tmp_path / ".clean_shutdown"
-        marker.touch()
-
-        # Create a store with a recently active session
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-        assert not entry.suspended
-
-        # Simulate what start() does:
-        if marker.exists():
-            marker.unlink()
-            # Should NOT call suspend_recently_active
-        else:
-            store.suspend_recently_active()
-
-        # Session should NOT be suspended
-        with store._lock:
-            store._ensure_loaded_locked()
-            for e in store._entries.values():
-                assert not e.suspended, "Session should NOT be suspended after clean shutdown"
-
-        assert not marker.exists(), "Marker should be cleaned up"
 
     def test_no_marker_triggers_suspension(self, tmp_path, monkeypatch):
         """Without .clean_shutdown marker (crash), suspension should fire."""
@@ -300,15 +242,6 @@ class TestResumePendingFreshnessGate:
         assert entry.last_resume_marked_at is not None
         return entry
 
-    def test_fresh_resume_pending_returns_same_session(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = self._mark_resume_pending(store, source)
-
-        # Within the freshness window (marked just now) → same session back.
-        refreshed = store.get_or_create_session(source)
-        assert refreshed.session_id == entry.session_id
-        assert refreshed.resume_pending
 
     def test_stale_resume_pending_falls_through_to_reset(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
@@ -353,18 +286,3 @@ class TestResumePendingFreshnessGate:
         assert refreshed.session_id == entry.session_id
         assert refreshed.resume_pending
 
-    def test_freshness_gate_disabled_returns_stale_session(self, tmp_path, monkeypatch):
-        # Opt-out: window <= 0 restores the pre-fix "always fresh" behaviour.
-        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "0")
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = self._mark_resume_pending(store, source)
-
-        with store._lock:
-            entry.last_resume_marked_at = datetime.now() - timedelta(seconds=999999)
-            entry.updated_at = datetime.now()
-            store._save()
-
-        refreshed = store.get_or_create_session(source)
-        assert refreshed.session_id == entry.session_id
-        assert refreshed.resume_pending

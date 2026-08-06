@@ -4573,7 +4573,12 @@ class TurnRunner:
         # slower than Linux. Off by default; soul identity is preserved so
         # the persona survives even with minimal context.
         _platforms_gw_cfg = (ctx.user_config.get("gateway") or {}).get("platforms") or {}
-        _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
+        # Handle both dict (upstream: {telegram: {...}}) and list
+        # (fork: [telegram, discord, ...]) config formats.
+        if isinstance(_platforms_gw_cfg, dict):
+            _plat_gw_cfg = _platforms_gw_cfg.get(platform_key) or {}
+        else:
+            _plat_gw_cfg = {}
         _skip_context = _plat_gw_cfg.get("skip_context_files")
         skip_context_files = bool(_skip_context) if _skip_context is not None else False
 

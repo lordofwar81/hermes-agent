@@ -239,43 +239,76 @@ class EmbedClient:
             return False
 
     def embed(self, text: str) -> "np.ndarray | None":
-        """Get embedding for a single text. Returns None on any failure."""
+        """Get embedding for a single text. Returns None on any failure.
+
+        Implements retry-on-400 halving: if the server rejects the input
+        as too long (context overflow), retry with half the text. This is
+        tokenizer-agnostic and handles CJK/byte-level BPE inputs with high
+        token-to-char ratios. Maximum 3 halvings (covers up to ~16K tokens).
+        """
         if not self.alive:
             return None
 
-        try:
-            import json
-            import numpy as np
+        import json
+        import numpy as np
 
-            payload = json.dumps({
-                "input": text,
-                "model": self.model,
-            }).encode()
+        current_text = text
+        max_halvings = 3
+        halvings = 0
 
-            req = urllib.request.Request(
-                self.url,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                result = json.loads(resp.read())
-                vec = np.array(result["data"][0]["embedding"], dtype=np.float32)
-                return vec
-        except urllib.error.HTTPError as he:
-            # HTTP 4xx (esp 401) is a config/auth bug, NOT a down server.
-            # Don't flip _alive False — the server IS reachable, the request is wrong.
-            # Flipping False here would silently disable embeds for the TTL window
-            # on every auth failure (audit H-2 root cause).
-            _log.warning("Embed request got HTTP %s (auth/config issue, not marking server down)", he.code)
-            return None
-        except Exception:
-            _log.debug("Embed request failed (connection/timeout), marking server down for TTL window")
-            self._alive = False
-            self._alive_false_ts = self._time.time()
-            return None
+        while True:
+            try:
+                payload = json.dumps({
+                    "input": current_text,
+                    "model": self.model,
+                }).encode()
+
+                req = urllib.request.Request(
+                    self.url,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    result = json.loads(resp.read())
+                    vec = np.array(result["data"][0]["embedding"], dtype=np.float32)
+                    return vec
+
+            except urllib.error.HTTPError as he:
+                if he.code == 400 and halvings < max_halvings:
+                    halvings += 1
+                    old_len = len(current_text)
+                    current_text = current_text[:len(current_text) // 2]
+                    _log.info(
+                        "Embed got HTTP 400 (context overflow), retrying with %d/%d chars (halving %d/%d)",
+                        len(current_text), old_len, halvings, max_halvings,
+                    )
+                    continue
+                # Non-400, or exhausted halvings — diagnose and return None
+                if he.code == 400:
+                    _log.warning("Embed request got HTTP 400 (context overflow — input too long even after %d halvings)", max_halvings)
+                elif he.code in (401, 403):
+                    _log.warning("Embed request got HTTP %s (auth failure — check API key)", he.code)
+                elif he.code == 404:
+                    _log.warning("Embed request got HTTP 404 (wrong endpoint URL — check server config)")
+                elif he.code == 429:
+                    _log.warning("Embed request got HTTP 429 (rate limited — server overloaded)")
+                elif 500 <= he.code < 600:
+                    _log.warning("Embed request got HTTP %s (server error — embed server may be crashing)", he.code)
+                else:
+                    _log.warning("Embed request got HTTP %s (unexpected client error)", he.code)
+                return None
+
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                _log.debug("Embed request failed (connection/timeout: %s), marking server down for TTL window", exc)
+                self._alive = False
+                self._alive_false_ts = self._time.time()
+                return None
+            except Exception as exc:
+                _log.warning("Embed request hit unexpected error (NOT marking server down): %s: %s", type(exc).__name__, exc)
+                return None
 
     def embed_batch(self, texts: list[str]) -> list["np.ndarray | None"]:
         """Embed multiple texts. Returns None for any that fail."""

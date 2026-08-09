@@ -7668,31 +7668,73 @@ class AIAgent:
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
-            if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
-
-            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            _active_env = get_active_env(effective_task_id)
-            _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=_exec_cwd)
-
-            if len(segments) == 1:
-                kind = segments[0][0]
-                if kind == "parallel":
-                    return self._execute_tool_calls_concurrent(
+            try:
+                if len(tool_calls) <= 1:
+                    return self._execute_tool_calls_sequential(
                         assistant_message, messages, effective_task_id, api_call_count
                     )
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
 
-            from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(
-                self, assistant_message, messages, effective_task_id, api_call_count,
-                segments=segments,
-            )
+                from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                _active_env = get_active_env(effective_task_id)
+                _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
+                segments = _plan_tool_batch_segments(tool_calls, execution_cwd=_exec_cwd)
+
+                if len(segments) == 1:
+                    kind = segments[0][0]
+                    if kind == "parallel":
+                        return self._execute_tool_calls_concurrent(
+                            assistant_message, messages, effective_task_id, api_call_count
+                        )
+                    return self._execute_tool_calls_sequential(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+
+                from agent.tool_executor import execute_tool_calls_segmented
+                return execute_tool_calls_segmented(
+                    self, assistant_message, messages, effective_task_id, api_call_count,
+                    segments=segments,
+                )
+            except Exception as _tool_crash:
+                # ── Crash containment (Kimi K3 availability review, 2026-08-08) ──
+                # A tool crash (segfault in a subprocess, OOM, unhandled exception
+                # from a tool implementation or middleware) MUST NOT kill the
+                # gateway process.  The outer conversation-loop try/except (line
+                # ~5827 in conversation_loop.py) would catch this too, but it
+                # classifies the failure as a local processing error and aborts
+                # the entire turn with an apology.  Containing it HERE lets us
+                # synthesize an error result for every unanswered tool_call_id
+                # so role alternation stays valid and the model can see the
+                # failure, inform the user, and retry — instead of losing the
+                # whole turn and all 11 messaging platforms going dark.
+                import logging as _logging
+                _logging.getLogger("hermes.agent").warning(
+                    "Tool execution crashed in turn (api_call #%s); "
+                    "containing and synthesizing error results: %s",
+                    api_call_count,
+                    _tool_crash,
+                    exc_info=True,
+                )
+                self._emit_status(
+                    f"\u26a0\ufe0f Tool execution error contained: {_tool_crash}"
+                )
+                _answered_ids = {
+                    m["tool_call_id"]
+                    for m in messages
+                    if isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id")
+                }
+                for _tc in tool_calls:
+                    _tc_id = getattr(_tc, "id", "") or ""
+                    if _tc_id and _tc_id not in _answered_ids:
+                        _tc_name = self._get_tool_call_name_static(_tc)
+                        messages.append({
+                            "role": "tool",
+                            "name": _tc_name,
+                            "tool_call_id": _tc_id,
+                            "content": (
+                                f"Error executing tool {_tc_name}: "
+                                f"Tool execution crashed: {_tool_crash}"
+                            ),
+                        })
         finally:
             self._executing_tools = False
 

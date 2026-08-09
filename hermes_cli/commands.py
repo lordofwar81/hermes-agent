@@ -278,8 +278,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
                "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
                subcommands=("accept", "dismiss", "catalog", "clear")),
-    CommandDef("batch-docs", "Batch-analyze documents (PDF, DOCX, HTML, images) — extract, summarize, report",
-               "Tools & Skills", args_hint="<goal or file paths>"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),

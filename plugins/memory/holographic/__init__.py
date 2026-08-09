@@ -257,7 +257,11 @@ class HolographicMemoryProvider(MemoryProvider):
                 except Exception as ve:
                     logger.debug("Vector prefetch failed: %s", ve)
 
-            tree_results = self._memory_tree_search(query, limit=pool)
+            # DISABLED 2026-08-08: memory tree search arm is broken (200-char
+            # truncated content_preview snippets, raw LIKE with no FTS, no
+            # retrieval tracking, saturated importance scores). See audit.
+            # tree_results = self._memory_tree_search(query, limit=pool)
+            tree_results = []
             session_results = self._session_search(query, limit=pool)
 
             fused = self._rrf_fuse(hrr_results, vec_results, tree_results,
@@ -286,15 +290,18 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
 
     def _memory_tree_search(self, query: str, *, limit: int = 5) -> list[dict]:
-        """Lightweight Memory Tree content search (episodic chunks).
+        """DISABLED 2026-08-08 — memory tree search arm removed from recall path.
 
-        Direct SQLite LIKE query — same shape as MemoryTree.search_chunks but
-        without importing the full memory_tree package (keeps the provider
-        decoupled). Returns dicts with 'content' and 'score' for RRF fusion.
-        Sub-millisecond; safe for per-turn prefetch.
+        Audit findings (2026-08-08): the tree search arm is broken — it queries
+        content_preview (200-char truncated snippets), uses raw LIKE with no FTS,
+        has no retrieval tracking, and importance scores are saturated. It was
+        adding noise to RRF fusion without contributing signal.
+
+        The call site in prefetch() has been commented out. This function is kept
+        as a no-op returning [] so the signature remains intact for anyone who
+        wants to re-enable it later after fixing the underlying issues.
         """
-        import sqlite3
-        from hermes_constants import get_hermes_home
+        return []
         db_path = get_hermes_home() / "memory_tree.db"
         if not db_path.exists():
             return []

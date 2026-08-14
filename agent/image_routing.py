@@ -725,6 +725,43 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     return f"data:{mime};base64,{b64}"
 
 
+def _remote_url_to_data_url(
+    url: str, *, timeout: float = 30.0, max_bytes: int = 20 * 1024 * 1024
+) -> Optional[str]:
+    """Download a remote http(s) image and inline it as a base64 ``data:`` URL.
+
+    Local OpenAI-compatible backends (llama.cpp, vllm-mlx) cannot fetch URLs
+    server-side: they base64-decode ``image_url.url`` directly, so a verbatim
+    ``https://...`` value fails with "Invalid base64 value". Inlining the
+    fetched bytes makes the image usable by every backend. Returns None on any
+    failure so the caller can fall back to the verbatim URL (cloud providers
+    that fetch server-side still work that way).
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "hermes-agent/image-routing"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(max_bytes + 1)
+    except Exception as exc:
+        logger.warning("image_routing: failed to fetch remote image %s: %s", url, exc)
+        return None
+    if len(raw) > max_bytes:
+        logger.warning("image_routing: remote image >%d bytes, leaving verbatim: %s", max_bytes, url)
+        return None
+    mime = _sniff_mime_from_bytes(raw) or (mimetypes.guess_type(url)[0] or "image/png")
+    if mime not in _UNIVERSALLY_SUPPORTED_MIMES:
+        converted = _transcode_to_png(raw)
+        if converted is not None:
+            raw = converted
+            mime = "image/png"
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
 def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
@@ -739,8 +776,10 @@ def build_native_content_parts(
        ...]
 
     Local paths are read from disk and embedded as base64 ``data:`` URLs.
-    Remote URLs (``http(s)://``) are passed through verbatim — the provider
-    fetches them server-side. The model still sees the pixels either way.
+    Remote URLs (``http(s)://``) are downloaded and inlined as base64 ``data:``
+    URLs so local backends that cannot fetch server-side (llama.cpp, vllm-mlx)
+    still receive the pixels; if the download fails the URL is passed through
+    verbatim (cloud providers fetch it server-side).
 
     For each successfully attached image, a hint is appended to the text
     part:
@@ -787,9 +826,18 @@ def build_native_content_parts(
         url = (url or "").strip()
         if not url:
             continue
+        # Local backends (llama.cpp, vllm-mlx) cannot fetch URLs server-side and
+        # would try to base64-decode the URL string ("Invalid base64 value");
+        # inline http(s) images as data URIs. Fall back to verbatim on failure
+        # (cloud providers fetch server-side).
+        effective = url
+        if url.startswith("http://") or url.startswith("https://"):
+            data_url = _remote_url_to_data_url(url)
+            if data_url is not None:
+                effective = data_url
         image_parts.append({
             "type": "image_url",
-            "image_url": {"url": url},
+            "image_url": {"url": effective},
         })
         attached_urls.append(url)
 

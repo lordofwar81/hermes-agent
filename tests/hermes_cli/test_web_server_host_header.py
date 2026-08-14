@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-_repo = str(Path(__file__).resolve().parents[1])
+_repo = str(Path(__file__).resolve().parents[2])  # [fixed 2026-08-14] parents[1] = tests/ poisoned sys.path
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 

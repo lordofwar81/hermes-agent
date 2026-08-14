@@ -2250,14 +2250,6 @@ def run_conversation(
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
                         if agent._try_activate_fallback():
-                            # Record the failure so the routing circuit breaker can
-                            # trip this provider after repeated failures. Mirrors
-                            # the record_routing_success() call on the success path.
-                            try:
-                                from agent.routing import record_routing_failure
-                                record_routing_failure(agent.provider)
-                            except Exception:
-                                pass
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
                             retry_count = 0
@@ -2700,12 +2692,6 @@ def run_conversation(
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
                     if agent._try_activate_fallback():
-                        # Record the failure for the routing circuit breaker.
-                        try:
-                            from agent.routing import record_routing_failure
-                            record_routing_failure(agent.provider)
-                        except Exception:
-                            pass
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0
@@ -5816,11 +5802,6 @@ def run_conversation(
             # leave the breaker untouched — letting the router keep sending
             # turns to a dead endpoint. Idempotent and safe if routing is
             # not initialized (guarded inside).
-            try:
-                from agent.routing import record_routing_failure
-                record_routing_failure(getattr(agent, "provider", "unknown"))
-            except Exception:
-                pass
             agent._persist_session(messages, conversation_history)
             break
 
@@ -7155,12 +7136,6 @@ def run_conversation(
 
                 # Record circuit-breaker success when a fallback provider
                 # produces valid content, so its failure count resets.
-                if getattr(agent, "_fallback_activated", False):
-                    try:
-                        from agent.routing import record_routing_success
-                        record_routing_success(agent.provider)
-                    except ImportError:
-                        pass
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,

@@ -347,26 +347,6 @@ class TestFallbackCircuitBreaker:
     before activating a fallback provider. A circuit-broken provider
     (3 consecutive failures, 180s cooldown) must be skipped."""
 
-    def test_skips_circuit_broken_provider(self):
-        """If the first fallback provider is circuit-broken, skip to next."""
-        fbs = [
-            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
-            {"provider": "zai", "model": "glm-4.7"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        with (
-            patch("agent.routing.is_provider_blocked",
-                  side_effect=lambda p: p == "openrouter"),
-            patch("agent.auxiliary_client.resolve_provider_client",
-                  return_value=(_mock_client(), "glm-4.7")) as mock_resolve,
-            patch("hermes_cli.model_normalize.normalize_model_for_provider",
-                  side_effect=lambda m, p: m),
-        ):
-            ok = agent._try_activate_fallback()
-
-        assert ok is True
-        assert agent.provider == "zai"
-        assert agent._fallback_index == 2
 
     def test_uses_non_blocked_provider(self):
         """If the fallback provider is not blocked, use it normally."""
@@ -375,8 +355,6 @@ class TestFallbackCircuitBreaker:
         ]
         agent = _make_agent(fallback_model=fbs)
         with (
-            patch("agent.routing.is_provider_blocked",
-                  return_value=False),
             patch("agent.auxiliary_client.resolve_provider_client",
                   return_value=(_mock_client(), "z-ai/glm-4.7")),
             patch("hermes_cli.model_normalize.normalize_model_for_provider",
@@ -387,29 +365,8 @@ class TestFallbackCircuitBreaker:
         assert ok is True
         assert agent.provider == "openrouter"
 
-    def test_all_providers_blocked_returns_false(self):
-        """When every fallback provider is circuit-broken, chain is exhausted."""
-        fbs = [
-            {"provider": "openrouter", "model": "z-ai/glm-4.7"},
-            {"provider": "zai", "model": "glm-4.7"},
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        with (
-            patch("agent.routing.is_provider_blocked",
-                  return_value=True),
-            patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve,
-        ):
-            ok = agent._try_activate_fallback()
 
-        assert ok is False
-        mock_resolve.assert_not_called()
 
-    def test_is_provider_blocked_function_exists(self):
-        """The is_provider_blocked module-level function is importable."""
-        from agent.routing import is_provider_blocked
-        assert callable(is_provider_blocked)
-        # Verify it returns False when router not initialized (graceful degradation)
-        assert is_provider_blocked("any") is False
     def test_allows_xai_api_fallback_from_xai_oauth_same_host_model(self):
         """xai-oauth and xai share api.x.ai but use different credentials.
 

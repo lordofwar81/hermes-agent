@@ -1560,3 +1560,6 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+# [2026-08-14] Quarantine the orphaned-tests holding pen for real.
+collect_ignore = ["_orphaned"]

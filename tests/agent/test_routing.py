@@ -125,140 +125,7 @@ class TestTaskClassifier:
 # ── CircuitBreaker Tests ────────────────────────────────────────────────
 
 
-class TestCircuitBreaker:
-    def test_initial_state(self):
-        from agent.routing import CircuitBreaker
-        cb = CircuitBreaker()
-        assert cb.is_available("zai")
-        assert cb.blocked_providers() == []
 
-    def test_trips_after_threshold(self):
-        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
-        cb = CircuitBreaker()
-        for _ in range(FAILURE_THRESHOLD):
-            cb.record_failure("zai")
-        assert not cb.is_available("zai")
-        assert "zai" in cb.blocked_providers()
-
-    def test_success_resets(self):
-        from agent.routing import CircuitBreaker
-        cb = CircuitBreaker()
-        cb.record_failure("zai")
-        cb.record_success("zai")
-        assert cb.is_available("zai")
-
-    def test_recovery_after_timeout(self):
-        from agent.routing import CircuitBreaker, RECOVERY_TIMEOUT_SECONDS
-        cb = CircuitBreaker()
-        cb.record_failure("zai")
-        cb.record_failure("zai")
-        cb.record_failure("zai")
-        assert not cb.is_available("zai")
-        # Manually expire the breaker
-        cb._tripped_until["zai"] = time.time() - 1
-        assert cb.is_available("zai")
-
-
-# ── CircuitBreaker Persistence Tests ────────────────────────────────────
-
-
-class TestCircuitBreakerPersistence:
-    """Verify breaker state survives a reload — the core fix."""
-
-    def test_tripped_state_survives_reload(self, tmp_path):
-        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
-        state_file = tmp_path / "breaker.json"
-        cb1 = CircuitBreaker(state_file=state_file)
-        for _ in range(FAILURE_THRESHOLD):
-            cb1.record_failure("zai")
-        assert not cb1.is_available("zai")
-
-        # New instance, same file — should load the tripped state.
-        cb2 = CircuitBreaker(state_file=state_file)
-        assert not cb2.is_available("zai")
-        assert "zai" in cb2.blocked_providers()
-
-    def test_success_clears_persisted_state(self, tmp_path):
-        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
-        state_file = tmp_path / "breaker.json"
-        cb1 = CircuitBreaker(state_file=state_file)
-        for _ in range(FAILURE_THRESHOLD):
-            cb1.record_failure("strix")
-        cb1.record_success("strix")
-
-        cb2 = CircuitBreaker(state_file=state_file)
-        assert cb2.is_available("strix")
-
-    def test_expired_trip_dropped_on_load(self, tmp_path):
-        """A trip whose cooldown elapsed while down should not re-block."""
-        from agent.routing import CircuitBreaker, FAILURE_THRESHOLD
-        state_file = tmp_path / "breaker.json"
-        cb1 = CircuitBreaker(state_file=state_file)
-        for _ in range(FAILURE_THRESHOLD):
-            cb1.record_failure("venice")
-        # Backdate the trip deadline so it's already expired.
-        cb1._tripped_until["venice"] = time.time() - 1
-        cb1._save()
-
-        cb2 = CircuitBreaker(state_file=state_file)
-        assert cb2.is_available("venice")
-
-    def test_corrupt_state_file_does_not_crash(self, tmp_path):
-        """A malformed state file should be logged+ignored, not fatal."""
-        from agent.routing import CircuitBreaker
-        state_file = tmp_path / "breaker.json"
-        state_file.write_text("NOT VALID JSON {{{")
-        cb = CircuitBreaker(state_file=state_file)
-        assert cb.is_available("zai")  # clean state, no crash
-
-
-# ── BudgetTracker Tests ──────────────────────────────────────────────────
-
-
-class TestBudgetTracker:
-    def test_initially_available(self):
-        from agent.routing import BudgetTracker
-        import tempfile, os
-        bt = BudgetTracker(daily_limit=7.40)
-        fd, tmp = tempfile.mkstemp(suffix='.json')
-        os.close(fd)
-        bt._file = type(bt._file)(tmp)
-        bt._cache = None
-        assert bt.is_available()
-        assert bt.spent_ratio() < 1.0
-        os.unlink(tmp)
-
-    def test_exhausted(self):
-        from agent.routing import BudgetTracker
-        import tempfile, os
-        bt = BudgetTracker(daily_limit=1.00)
-        # Isolate from production budget file
-        fd, tmp = tempfile.mkstemp(suffix='.json')
-        os.close(fd)
-        bt._file = type(bt._file)(tmp)
-        bt._cache = None
-        bt.record(0.80)
-        assert bt.is_available()
-        bt.record(0.30)
-        assert not bt.is_available()
-        os.unlink(tmp)
-
-    def test_persistence(self, tmp_path):
-        from agent.routing import BudgetTracker
-        budget_file = tmp_path / "budget.json"
-        bt = BudgetTracker(daily_limit=5.00)
-        bt._file = budget_file
-        bt.record(2.50)
-        assert bt.spent_ratio() == pytest.approx(0.5)
-
-        # Reload
-        bt2 = BudgetTracker(daily_limit=5.00)
-        bt2._file = budget_file
-        bt2._cache = None  # force reload
-        assert bt2.spent_ratio() == pytest.approx(0.5)
-
-
-# ── ProviderRegistry Tests ────────────────────────────────────────────────
 
 
 class TestProviderRegistry:
@@ -334,69 +201,21 @@ class TestRouter:
         assert result.category.value == "greeting"
         assert result.suppress_tools is True
 
-    def test_circuit_breaker_fallback(self, router):
-        primary = {"model": "glm-5-turbo", "base_url": "https://z.ai/v1",
-                   "api_key": "zai-key", "provider": "zai"}
-        # Break ZAI
-        for _ in range(3):
-            router.record_failure("zai")
-        result = router.route("fix this bug", primary)
-        # Should not route to zai
-        assert result.model != "glm-5.1" or result.provider != "zai"
 
-    def test_primary_fallback_when_chain_exhausted(self, router):
-        primary = {"model": "glm-4.7", "base_url": "https://z.ai/v1",
-                   "api_key": "zai-key", "provider": "zai"}
-        # Break all providers
-        for p in ["zai", "strix", "mac_studio", "venice"]:
-            for _ in range(3):
-                router.record_failure(p)
-        result = router.route("fix this bug", primary)
-        assert result.model == "glm-4.7"  # primary fallback
-
-    def test_status_report(self, router):
-        status = router.status()
-        assert "providers" in status
-        assert "chains" in status
-        assert "blocked" in status
-        assert "budget" in status
-        assert len(status["providers"]) == 5
-
-
-# ── Gateway Integration ──────────────────────────────────────────────────
 
 
 class TestGatewayInterface:
-    def test_init_and_route(self):
-        from agent.routing import init_router, route_turn, routing_status
+    def test_route_turn_is_retired_noop(self):
+        """[2026-08-14] Legacy routing excised — route_turn is an unconditional
+        no-op; the :4090 microservice owns all decisions."""
+        from agent.routing import init_router, route_turn
         init_router(SAMPLE_CONFIG)
         result = route_turn(
             "implement a sorting algorithm",
             {"model": "glm-5-turbo", "base_url": "https://z.ai/v1",
              "api_key": "zai-key", "provider": "zai"},
         )
-        assert result is not None
-        assert result.model == "glm-5.1"
-        assert result.category.value == "code"
-
-        status = routing_status()
-        assert status is not None
-        assert len(status["providers"]) == 5
-
-    def test_uninitialized_returns_none(self):
-        from agent.routing import route_turn
-        # Save and clear global
-        import agent.routing as m
-        old = m._instance
-        m._instance = None
-        try:
-            result = route_turn("test", {"model": "m", "base_url": "", "api_key": "", "provider": ""})
-            assert result is None
-        finally:
-            m._instance = old
-
-
-# ── Routing Observability Tests ─────────────────────────────────────────
+        assert result is None
 
 
 class TestRoutingObservability:
@@ -419,22 +238,6 @@ class TestRoutingObservability:
         assert entry["model"] == "glm-5.1"
         assert "fix this bug" in entry["message_preview"]
 
-    def test_decision_recorded_on_primary_fallback(self, tmp_path):
-        from agent.routing import Router
-        history_file = tmp_path / "routing_history.jsonl"
-        router = Router(SAMPLE_CONFIG)
-        router._history_file = history_file
-        primary = {"model": "glm-4.7", "base_url": "https://z.ai/v1",
-                   "api_key": "zai-key", "provider": "zai"}
-        # Break all providers → chain exhausts → primary fallback
-        for p in ["zai", "strix", "mac_studio", "venice"]:
-            for _ in range(3):
-                router.record_failure(p)
-        router.route("fix this bug", primary)
-        assert history_file.exists()
-        entry = json.loads(history_file.read_text().strip())
-        assert entry["provider"] == "zai"  # primary
-        assert entry["fallback_count"] >= 1
 
     def test_no_history_file_no_crash(self, tmp_path):
         """A read-only or unwritable path must never break routing."""

@@ -477,179 +477,6 @@ class TaskClassifier:
 
 # ─── Circuit Breaker ─────────────────────────────────────────────────────
 
-class CircuitBreaker:
-    """Per-provider circuit breaker with automatic recovery.
-
-    State is persisted to ``~/.hermes/circuit_breaker.json`` so that a gateway
-    restart no longer wipes failure counts — a provider that was failing before
-    the restart stays blocked until it either recovers or the cooldown elapses.
-    Mirrors the BudgetTracker persistence pattern (see below).
-    """
-
-    def __init__(self, state_file: Optional[Path] = None):
-        self._failures: Dict[str, int] = {}
-        self._tripped_until: Dict[str, float] = {}
-        if state_file is not None:
-            self._state_file = state_file
-        else:
-            # Resolve via get_hermes_home() so HERMES_HOME overrides (tests,
-            # alternate profiles) are respected. Using Path.home()/".hermes"
-            # directly is a known bug pattern (see tests/conftest.py:372-373).
-            from hermes_constants import get_hermes_home
-            self._state_file = get_hermes_home() / "circuit_breaker.json"
-        self._load()
-
-    def _load(self) -> None:
-        """Restore failure counts and active trip windows from disk.
-
-        Expired trips are dropped on load (a restart shouldn't re-block a
-        provider whose cooldown already elapsed while the gateway was down).
-        Unexpired trips keep their absolute deadline.
-        """
-        if not self._state_file.exists():
-            return
-        try:
-            with open(self._state_file) as f:
-                data = json.load(f)
-            now = time.time()
-            for provider, count in data.get("failures", {}).items():
-                self._failures[provider] = int(count)
-            for provider, deadline in data.get("tripped_until", {}).items():
-                if float(deadline) > now:
-                    self._tripped_until[provider] = float(deadline)
-                else:
-                    # Cooldown elapsed while down — clear the failure count too.
-                    self._failures.pop(provider, None)
-        except Exception as exc:
-            logger.warning("Failed to load circuit breaker state: %s", exc)
-
-    def _save(self) -> None:
-        """Persist current state. Best-effort; never blocks routing."""
-        try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._state_file, "w") as f:
-                json.dump({
-                    "failures": self._failures,
-                    "tripped_until": self._tripped_until,
-                }, f)
-        except Exception as exc:
-            logger.warning("Failed to persist circuit breaker state: %s", exc)
-
-    def record_failure(self, provider: str) -> None:
-        self._failures[provider] = self._failures.get(provider, 0) + 1
-        if self._failures[provider] >= FAILURE_THRESHOLD:
-            self._tripped_until[provider] = time.time() + RECOVERY_TIMEOUT_SECONDS
-            logger.warning(
-                "Circuit breaker TRIPPED: %s blocked for %ds",
-                provider, RECOVERY_TIMEOUT_SECONDS,
-            )
-        self._save()
-
-    def record_success(self, provider: str) -> None:
-        self._failures[provider] = 0
-        self._tripped_until.pop(provider, None)
-        self._save()
-
-    def is_available(self, provider: str) -> bool:
-        if provider not in self._tripped_until:
-            return True
-        if time.time() > self._tripped_until[provider]:
-            del self._tripped_until[provider]
-            self._failures[provider] = 0
-            logger.info("Circuit breaker RECOVERED: %s", provider)
-            self._save()
-            return True
-        return False
-
-    def blocked_providers(self) -> List[str]:
-        now = time.time()
-        return [p for p, t in self._tripped_until.items() if t >= now]
-
-
-# ─── Venice Budget Tracker ───────────────────────────────────────────────
-
-class BudgetTracker:
-    """Daily budget tracker for Venice API spend."""
-
-    def __init__(self, daily_limit: float = 7.40):
-        self._daily_limit = daily_limit
-        from hermes_constants import get_hermes_home  # audit D2: respect HERMES_HOME overrides
-        self._file = get_hermes_home() / "venice_budget.json"  # was Path.home()/.hermes (bypassed HERMES_HOME)
-        self._cache: Optional[dict] = None
-        self._cache_time: float = 0
-
-    def _load(self) -> dict:
-        now = time.time()
-        if self._cache and (now - self._cache_time) < 10:
-            return self._cache
-
-        now_pst = self._now_pst()
-        date_str = self._budget_cycle_label(now_pst)
-        data = {"last_reset": date_str, "spent": 0.0}
-
-        if self._file.exists():
-            try:
-                with open(self._file) as f:
-                    data = json.load(f)
-                if data.get("last_reset") != date_str:
-                    data = {"last_reset": date_str, "spent": 0.0}
-            except Exception:
-                data = {"last_reset": date_str, "spent": 0.0}
-
-        self._cache = data
-        self._cache_time = now
-        return data
-
-    def is_available(self) -> bool:
-        data = self._load()
-        return data["spent"] < self._daily_limit
-
-    def spent_ratio(self) -> float:
-        data = self._load()
-        return data["spent"] / self._daily_limit if self._daily_limit > 0 else 1.0
-
-    def record(self, amount: float) -> None:
-        data = self._load()
-        data["spent"] = min(data["spent"] + amount, self._daily_limit * 2)
-        try:
-            with open(self._file, "w") as f:
-                json.dump(data, f)
-        except Exception as exc:
-            logger.warning("Failed to write budget file: %s", exc)
-        self._cache = None  # invalidate cache
-
-    @staticmethod
-    def _now_pst() -> datetime:
-        # Use America/Los_Angeles for correct DST handling (PST/PDT). The old
-        # fixed UTC-8 offset was wrong during summer (off by an hour, straddling
-        # the budget day boundary). Name kept for backward compat.
-        return datetime.now(ZoneInfo("America/Los_Angeles"))
-
-    @classmethod
-    def _budget_cycle_label(cls, now_pst: Optional[datetime] = None) -> str:
-        """Label the current Venice budget cycle.
-
-        Venice's account quota resets at 5pm Pacific (BUDGET_RESET_HOUR_PST),
-        not local midnight. So the cycle "2026-06-25" runs from
-        2026-06-25 17:00 PT through 2026-06-26 17:00 PT. A spend recorded at
-        4pm on the 26th still belongs to the 25th's cycle; one at 5:01pm on
-        the 25th belongs to the 26th's.
-
-        Returns a YYYY-MM-DD string: the calendar date of the cycle start.
-        """
-        if now_pst is None:
-            now_pst = cls._now_pst()
-        if now_pst.hour < BUDGET_RESET_HOUR_PST:
-            # Before 5pm: still in the cycle that started yesterday at 5pm.
-            cycle_start = now_pst - timedelta(days=1)
-        else:
-            # 5pm or later: in the cycle that started today at 5pm.
-            cycle_start = now_pst
-        return cycle_start.strftime("%Y-%m-%d")
-
-
-# ─── Provider Registry ───────────────────────────────────────────────────
-
 class ProviderRegistry:
     """Loads providers from config.yaml. No hardcoded credentials."""
 
@@ -780,11 +607,7 @@ class Router:
 
     def __init__(self, config: dict):
         self._registry = ProviderRegistry(config)
-        self._breaker = CircuitBreaker()
         self._health = HealthChecker()
-        self._budget = BudgetTracker(
-            daily_limit=config.get("routing", {}).get("venice_daily_budget", 7.40),
-        )
         from hermes_constants import get_hermes_home
         self._history_file = get_hermes_home() / "routing_history.jsonl"
         # Per-session record of recent substantive turns, for the
@@ -909,8 +732,6 @@ class Router:
             )
             category = SESSION_UPGRADE_CATEGORY
 
-        blocked = self._breaker.blocked_providers()
-
         # Get the ordered provider chain for this category
         chain = self._registry.chain(category)
         if not chain:
@@ -923,23 +744,8 @@ class Router:
         # Walk the chain, skip blocked/unhealthy/budget-exceeded
         fallback_count = 0
         for slot in chain:
-            # Circuit breaker
-            if slot.provider in blocked:
-                fallback_count += 1
-                continue
-
             # Local health check
             if slot.is_local and not self._health.check(slot):
-                fallback_count += 1
-                continue
-
-            # Venice budget gate
-            if slot.provider == "venice" and not self._budget.is_available():
-                ratio = self._budget.spent_ratio()
-                logger.info(
-                    "Venice budget %.0f%% used (%.2f) — skipping %s",
-                    ratio * 100, self._budget._load()["spent"], slot.model,
-                )
                 fallback_count += 1
                 continue
 
@@ -1008,32 +814,9 @@ class Router:
             fallback_count=fallback_count,
         )
 
-    def is_provider_blocked(self, provider: str) -> bool:
-        """True if the provider is currently circuit-broken."""
-        return not self._breaker.is_available(provider)
 
-    def record_failure(self, provider: str) -> None:
-        self._breaker.record_failure(provider)
 
-    def record_success(self, provider: str) -> None:
-        self._breaker.record_success(provider)
 
-    def record_venice_spend(self, amount: float) -> None:
-        self._budget.record(amount)
-
-    def status(self) -> dict:
-        budget_data = self._budget._load()
-        return {
-            "providers": {p.id: {"model": p.model, "provider": p.provider, "local": p.is_local}
-                          for p in self._registry.all_providers()},
-            "chains": {cat.value: chain for cat, chain in self._registry._category_chains.items()},
-            "blocked": self._breaker.blocked_providers(),
-            "budget": {
-                "limit": self._budget._daily_limit,
-                "spent": budget_data.get("spent", 0),
-                "available": self._budget.is_available(),
-            },
-        }
 
 
 # ─── Singleton & Gateway Interface ─────────────────────────────────────
@@ -1048,12 +831,6 @@ def init_router(config: dict) -> Router:
     _instance = Router(config)
     logger.info("Router initialized with %d providers", len(_instance._registry.all_providers()))
     return _instance
-
-
-def get_router() -> Optional[Router]:
-    """Get the global router instance. None if not initialized."""
-    return _instance
-
 
 def route_turn(
     message: str,
@@ -1072,47 +849,10 @@ def route_turn(
     that disagrees silently). The microservice router is the single source
     of truth for routing decisions.
     """
-    if _instance is None:
-        return None
-    # Detect router microservice: if the primary provider points at the
-    # router, skip classification entirely. The microservice handles it.
-    _base_url = (primary_config or {}).get("base_url", "")
-    if _base_url and ("127.0.0.1:4090" in _base_url or "localhost:4090" in _base_url):
-        return None  # let the microservice router decide
-    return _instance.route(
-        message, primary_config, suppress_tools_override,
-        session_key=session_key, platform=platform,
-    )
-
-
-def record_routing_failure(provider: str) -> None:
-    if _instance:
-        _instance.record_failure(provider)
-
-
-def record_routing_success(provider: str) -> None:
-    if _instance:
-        _instance.record_success(provider)
-
-
-def is_provider_blocked(provider: str) -> bool:
-    """Check if a provider is circuit-broken (3 consecutive failures, 180s cooldown).
-
-    Returns False (not blocked) when the router isn't initialized, so
-    the fallback chain degrades gracefully if routing isn't active.
-    """
-    if _instance is None:
-        return False
-    return _instance.is_provider_blocked(provider)
-
-
-def record_venice_spend(amount: float) -> None:
-    """Record Venice spend to the budget tracker."""
-    if _instance:
-        _instance.record_venice_spend(amount)
-
-
-def routing_status() -> Optional[dict]:
-    if _instance:
-        return _instance.status()
+    # [EXCISED 2026-08-14] Legacy routing retired — the hermes-router
+    # microservice (:4090) owns all decisions. Module kept ONLY for
+    # TaskClassifier (reflection/planning_gate/step_back import it). The old
+    # conditional base_url check could re-arm legacy classification via /model
+    # session overrides; this is now an unconditional no-op.
     return None
+

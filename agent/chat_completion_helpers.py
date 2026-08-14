@@ -1804,19 +1804,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback(reason)
 
-    # Circuit-breaker check: skip providers that the router has marked as
-    # blocked (consecutive failures exceeded threshold). This prevents the
-    # fallback loop from re-trying a known-bad provider. See test_provider_fallback.
-    try:
-        from agent.routing import is_provider_blocked
-        if is_provider_blocked(fb_provider):
-            logger.warning(
-                "Fallback skip: %s is circuit-broken, trying next entry",
-                fb_provider,
-            )
-            return agent._try_activate_fallback(reason)
-    except Exception:
-        pass  # is_provider_blocked not available (router not init) — don't block fallbacks
+    # [EXCISED 2026-08-14] legacy circuit-breaker consume removed — the
+    # router microservice owns breaking. The legacy check also blamed the
+    # healthy fallback for the failed provider's error.
 
     # Skip entries that resolve to the same backend that just failed —
     # falling back to it loops the failure. Identity semantics (which axes

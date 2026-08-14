@@ -143,13 +143,9 @@ def make_restart_runner(
     runner._get_cached_session_source = GatewayRunner._get_cached_session_source.__get__(
         runner, GatewayRunner
     )
-    # _launch_detached_restart_command is a stateless module function
-    # (gateway.gateway_lifecycle), re-attached as a staticmethod on
-    # GatewayRunner. Binding it via __get__ would yield a plain function that,
-    # once assigned as an instance attribute, captures `runner` as a positional
-    # arg on call — so assign the module function directly.
-    from gateway.gateway_lifecycle import _launch_detached_restart_command as _ldrc
-    runner._launch_detached_restart_command = _ldrc
+    # [2026-08-14] gateway.gateway_lifecycle was an orphaned mixin copy,
+    # deleted. The live implementation is GatewayRunner's own method
+    # (run.py), bound directly below.
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner
     )

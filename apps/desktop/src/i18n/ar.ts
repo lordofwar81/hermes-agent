@@ -113,6 +113,7 @@ export const ar = defineLocale({
     updateHermes: 'تحديث Hermes',
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
+    updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
     seeWhatsNew: 'عرض الجديد',
     errors: {
       elevenLabsNeedsKey: 'يتطلب ElevenLabs STT المفتاح ELEVENLABS_API_KEY.',
@@ -172,7 +173,8 @@ export const ar = defineLocale({
     unmuteHaptics: 'تفعيل الاهتزازات',
     openSettings: 'فتح الإعدادات',
     openStarmap: 'فتح خريطة الذاكرة',
-    openKeybinds: 'اختصارات لوحة المفاتيح',
+    enterHud: 'وضع HUD',
+    exitHud: 'إنهاء وضع HUD',
     layoutEditor: 'محرر التخطيط',
     layoutEditorTitle: 'محرر التخطيط — انقر مع ⌘ لإعادة ضبط التخطيط'
   },
@@ -601,6 +603,7 @@ export const ar = defineLocale({
       cantReach: 'تعذر الوصول لخدمة التحديث',
       tapCheck: 'اضغط للتحقق من التحديثات.',
       updateReady: count => `${count} تحديث متاح`,
+      updateReadyUnknown: 'تحديث جديد جاهز.',
       lastChecked: age => `آخر تحقق ${age}`,
       justNowSuffix: 'الآن',
       automaticUpdates: 'التحديثات التلقائية',
@@ -1369,6 +1372,13 @@ export const ar = defineLocale({
   },
   cron: {
     close: 'إغلاق',
+    modelImpact: {
+      title: 'تحتاج المهام المجدولة إلى المراجعة',
+      message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
+      detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
+      review: 'مراجعة المهام المجدولة',
+      saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.'
+    },
     search: 'بحث',
     loading: 'جار التحميل...',
     states: {
@@ -1559,6 +1569,7 @@ export const ar = defineLocale({
     noWorkspace: 'بدون مساحة عمل',
     projectEmpty: 'لا توجد جلسات بعد',
     noSessions: 'لا توجد جلسات بعد',
+    noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية هذه',
     projects: {
       sectionLabel: 'المشاريع',
       home: 'الرئيسية',
@@ -1636,6 +1647,7 @@ export const ar = defineLocale({
       rename: 'إعادة تسمية',
       archive: 'أرشفة',
       newWindow: 'فتح في نافذة جديدة',
+      openInTerminal: 'فتح في الطرفية',
       copyIdFailed: 'فشل نسخ المعرف',
 
       sessionActions: 'إجراءات الجلسة',
@@ -1643,6 +1655,7 @@ export const ar = defineLocale({
       needsInput: 'تحتاج إدخالا',
       waitingForAnswer: 'بانتظار إجابة',
       backgroundRunning: 'تعمل في الخلفية',
+      draftSession: 'مسودة — لم تُرسل بعد',
       finishedUnread: 'اكتملت وفيها جديد',
       hideTabBar: 'إخفاء شريط التبويبات',
       openInNewTab: 'فتح في تبويب جديد',
@@ -1727,6 +1740,7 @@ export const ar = defineLocale({
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
     queueEdit: 'تحرير الرسالة المجدولة',
     queueSendNext: 'إرسالها تاليا',
+    queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',

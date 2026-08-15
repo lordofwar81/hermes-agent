@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import {
@@ -14,7 +15,7 @@ import {
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
-import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
@@ -24,6 +25,7 @@ import {
   findPrevious as findPreviousMatch,
   openFindBar
 } from '@/store/find-in-page'
+import { toggleHud } from '@/store/hud'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -60,6 +62,7 @@ import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
@@ -227,6 +230,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
+    'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
@@ -354,7 +358,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+      if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
         return
       }
 
@@ -410,12 +414,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     window.addEventListener('keyup', onKeyUp, { capture: true })
     window.addEventListener('blur', onBlur)
     window.addEventListener('contextmenu', onContextMenu, { capture: true })
+    // Paste twin of type-to-focus: ⌘V on non-editable chrome routes the
+    // clipboard (text AND images) into the active composer. Bubble phase so
+    // editables' own paste handlers run first and mark the event handled.
+    window.addEventListener('paste', handleWindowPaste)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
       window.removeEventListener('keyup', onKeyUp, { capture: true })
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
+      window.removeEventListener('paste', handleWindowPaste)
     }
   }, [])
 }

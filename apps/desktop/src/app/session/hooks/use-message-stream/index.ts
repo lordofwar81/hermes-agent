@@ -13,6 +13,7 @@ import {
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
+  sealOpenToolParts,
   upsertToolPart
 } from '@/lib/chat-messages'
 import {
@@ -632,16 +633,29 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Previously this
-              // was gated on `responsePreviewed` alone, so a NON-previewed
-              // tool-call turn whose final matched its sealed interim appended a
-              // second bubble (the "renders twice: partial first copy + clean
-              // final" bug, #63679). `finalContinuesInterim` closes that gap
-              // for ordinary tool-call turns while `responsePreviewed` still
-              // covers the verify-on-stop continuation-budget case even when the
-              // final text was rewritten and no longer shares a prefix.
+              // the DB has one row, so the live UI must agree. Two distinct
+              // settle paths with different boundary requirements:
+              //
+              // • responsePreviewed covers the verify-on-stop continuation-
+              //   budget case, where the final may be a rewrite sharing no
+              //   prefix with the interim. Because there is no continuity
+              //   guarantee, it must stay gated on the session's
+              //   `interimBoundaryPending` flag: after a new `message.start`
+              //   resets the flag, a previewed final is a DISTINCT reply and
+              //   must append its own bubble, never overwrite the interim
+              //   (otherwise interim('old') → message.start →
+              //   complete({response_previewed: true, text: 'new'}) would
+              //   silently destroy 'old').
+              //
+              // • finalContinuesInterim (prefix-either-way continuity, same
+              //   text or one a prefix of the other) is safe to settle
+              //   flag-free: continuity can only hold for the SAME message,
+              //   so a `message.start` reset landing between this turn's
+              //   `message.interim` and `message.complete` must not force an
+              //   append of a duplicate bubble (#74560). This also closes the
+              //   non-previewed tool-call gap from #63679.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -653,15 +667,30 @@ export function useMessageStream({
           }
         }
 
+        // Turn-settle reconciliation: a `tool.complete` event lost to a
+        // degraded websocket leaves its tool row spinning forever. The turn is
+        // provably done here — nothing can still be running — so seal any
+        // tool-call parts that never saw their completion event.
+        nextMessages = sealOpenToolParts(nextMessages)
+
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+        // Having streamed the reply normally means this window owns the whole
+        // turn and re-reading stored history would be wasted work. That only
+        // holds for a turn it STARTED: an adopted one (resumed onto a session
+        // already running elsewhere) arrives reply-first, with no prompt row,
+        // so it has to hydrate or the user's own message never shows up.
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError &&
+          !hasInlineError &&
+          !unresolvedUserTail &&
+          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 
         return {
           ...state,
           messages: nextMessages,
+          adoptedRunningTurn: false,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,

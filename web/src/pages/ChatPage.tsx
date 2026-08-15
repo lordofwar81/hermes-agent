@@ -43,6 +43,7 @@ import {
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
+  PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
@@ -58,6 +59,10 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import {
+  isViewportPinnedToBottom,
+  shouldFollowPtyOutput,
+} from "@/lib/pty-scroll";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -166,6 +171,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const stickToBottomRef = useRef(true);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
@@ -902,6 +908,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    let onScrollDisposable: { dispose(): void } | null = null;
     let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
     let resumeMaxTimer: ReturnType<typeof setTimeout> | null = null;
     const clearEraseSuppressionTimer = () => {
@@ -951,7 +958,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         connectingTimerRef.current = null;
       }
     };
-    const scheduleReconnect = (code: number) => {
+    // The pre-socket half of the connect. A ticket request that rejects or
+    // never settles leaves no socket behind, so neither `onclose` nor the
+    // NS-591 CONNECTING timer (armed after `new WebSocket` below) can recover
+    // it. `ticketSuperseded` invalidates a late ticket result so a timed-out
+    // attempt cannot open a socket behind the replacement this schedules.
+    let ticketSuperseded = false;
+    let ticketTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTicketTimer = () => {
+      if (ticketTimer) {
+        clearTimeout(ticketTimer);
+        ticketTimer = null;
+      }
+    };
+    // `code` is null when the attempt died before any socket existed — the
+    // banner then omits the "(code N)" suffix rather than inventing one.
+    const scheduleReconnect = (code: number | null) => {
       if (reconnectTimerRef.current) {
         return;
       }
@@ -966,6 +988,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setReconnectNonce((n) => n + 1);
       }, delayMs);
     };
+    // Give up on the ticket phase and hand off to the ordinary backoff.
+    const failTicketAttempt = () => {
+      ticketSuperseded = true;
+      clearTicketTimer();
+      connectInFlightRef.current = false;
+      scheduleReconnect(null);
+    };
     void (async () => {
       if (unmounting) return;
       const params: Record<string, string> = { channel };
@@ -979,7 +1008,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
-      const url = await api.buildWsUrl("/api/pty", params);
+
+      ticketTimer = setTimeout(() => {
+        ticketTimer = null;
+        if (unmounting || ticketSuperseded) {
+          return;
+        }
+        failTicketAttempt();
+      }, PTY_TICKET_TIMEOUT_MS);
+
+      let url: string;
+      try {
+        url = await api.buildWsUrl("/api/pty", params);
+      } catch (err) {
+        if (unmounting || ticketSuperseded) return;
+        console.warn(`[chat] PTY ticket request failed: ${err}`);
+        failTicketAttempt();
+        return;
+      }
+      if (unmounting || ticketSuperseded) return;
+      clearTicketTimer();
+
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -1018,6 +1067,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      // Resumed sessions replay scrollback over the socket. Start pinned to
+      // the bottom so the latest output is in view; released once the user
+      // scrolls up (#59591).
+      if (resumeParam) stickToBottomRef.current = true;
       // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
       // skill" panel) is typed into the composer as a /learn command once the
       // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
@@ -1064,7 +1117,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
       // would hide the wait notice while the terminal is still blank.
       const rendered = resumeParam ? sanitizer.next(text) : text;
-      term.write(rendered);
+      // Resume replay lands over many write chunks; pin the viewport to the
+      // bottom as each chunk COMMITS (xterm write callback) instead of
+      // guessing with a fixed delay, and release the pin the moment the user
+      // scrolls up to read the backlog (#59591).
+      const followScroll = shouldFollowPtyOutput(
+        resumeParam,
+        stickToBottomRef.current,
+      )
+        ? () => termRef.current?.scrollToBottom()
+        : undefined;
+      term.write(rendered, followScroll);
       noteResumePtyChunk(rendered);
     };
 
@@ -1221,6 +1284,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ws.send(`\x1b[RESIZE:${cols};${rows}]`);
         }
       });
+
+      // Release the stick-to-bottom pin the moment the user scrolls up, so
+      // we only auto-follow during the resume replay — not their manual
+      // review of the backlog (#59591).
+      onScrollDisposable = term.onScroll(() => {
+        stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
+      });
     })();
 
     term.focus();
@@ -1234,6 +1304,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setResumeHydrating(false);
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      onScrollDisposable?.dispose();
       mobileInputCleanup?.();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
@@ -1250,6 +1321,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
       clearReconnectTimer();
       clearConnectingTimer();
+      clearTicketTimer();
+      ticketSuperseded = true;
       connectInFlightRef.current = false;
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer

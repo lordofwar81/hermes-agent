@@ -35,6 +35,12 @@ declare global {
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      // Resume this session in the user's own terminal emulator (`hermes --tui
+      // --resume <id>`) — the external terminal, not the in-app pane.
+      openSessionInTerminal: (
+        sessionId: string,
+        opts?: { cwd?: string; profile?: string }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Open a new full-chrome app window — a peer instance of the primary that
       // renders the complete app against the shared backend, so the user can run
       // multiple GUI windows at once.
@@ -61,6 +67,22 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+      }
+      // HUD mode: the chrome-free floating chat. A FULL app renderer with its
+      // own gateway (like an instance window), sized and skinned as a floating
+      // bar — so it mounts the real composer rather than a lookalike. Main
+      // owns the window; `onChanged` keeps every window's toggle truthful.
+      hud?: {
+        open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
+        close: () => Promise<{ ok: boolean }>
+        setIgnoreMouse: (ignore: boolean) => void
+        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
+        setVibrancy: (on: boolean) => Promise<{ ok: boolean }>
+        setSession: (sessionId: null | string) => void
+        onGoto: (callback: (sessionId: string) => void) => () => void
+        onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
+        onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
@@ -119,6 +141,18 @@ declare global {
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
+      /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
+      readWindowBelow?: () => Promise<{
+        frontmost: { app: string; title: string } | null
+        note?: string
+        platform: string
+        window: {
+          app: string
+          bounds: { height: number; width: number; x: number; y: number }
+          id: number
+          title: string
+        } | null
+      } | null>
       readFileDataUrl: (filePath: string) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>
@@ -170,6 +204,13 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      /** Persist a renderer error-boundary catch to desktop.log (fire-and-forget). */
+      reportRendererError?: (report: {
+        label: string
+        boundary: string
+        message: string
+        componentStack: string
+      }) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -180,6 +221,11 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
+      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
+      // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
+      // so one agent-plugin package can ship a desktop UI half. Optional:
+      // older Electron shells predate it — the scanner then skips this root.
+      agentPluginsRoot?: () => Promise<string>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -233,6 +279,14 @@ declare global {
           commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
           push: (repoPath: string) => Promise<{ ok: boolean }>
           shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
+          // The PR on each of the given branches — plus any known only by
+          // number — for badging a list of sessions in one request instead of
+          // one `pr view` per checkout.
+          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
+          // A pasted PR review/issue comment URL resolved to its structured
+          // context (author, body, file + line anchor, diff hunk). Null when
+          // gh can't answer — the paste stays a plain URL.
+          fetchPrComment: (repoPath: string, url: string) => Promise<HermesPrComment | null>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -391,7 +445,10 @@ export interface DesktopUpdateStatus {
   reason?: string
   message?: string
   error?: string
-  behind?: number
+  /** Exact commits behind. null = update available, but the count is
+   *  unknowable (shallow clone without a merge-base) — never render it as a
+   *  literal number. */
+  behind?: number | null
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
@@ -467,6 +524,7 @@ export interface DesktopUpdateProgress {
 
 export interface HermesConnection {
   baseUrl: string
+  darwinMajor?: number
   isFullscreen: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
@@ -485,6 +543,10 @@ export interface HermesConnection {
   // Set for pool (non-primary) backends so the renderer knows which profile a
   // connection belongs to.
   profile?: string
+  // True only when `profile` is a request scope on the shared primary backend.
+  // A pooled backend also carries `profile`, so presence alone cannot identify
+  // the shared-primary routing case.
+  sharedPrimary?: boolean
   windowButtonPosition: { x: number; y: number } | null
 }
 
@@ -500,6 +562,7 @@ export interface HermesActiveWork {
 }
 
 export interface HermesWindowState {
+  darwinMajor?: number
   isFullscreen: boolean
   isMinimized?: boolean
   isVisible?: boolean
@@ -528,6 +591,14 @@ export interface DesktopConnectionConfig {
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  // Whether OS-keychain-backed encryption (Electron safeStorage) is currently
+  // available on this machine. When false, a persisted remote token can only be
+  // stored as plain text on disk (with an explicit opt-in).
+  secureTokenStorage: boolean
+  // Whether the currently-persisted remote token is stored with encoding
+  // 'plain' (i.e. plain text on disk in connection.json), which happens when
+  // the user opted in on a machine without secure storage.
+  remoteTokenPlainText: boolean
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
   // connected instance was discovered under, so Settings → Gateway can reopen
@@ -548,6 +619,10 @@ export interface DesktopConnectionConfigInput {
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
+  // When true and secure (OS-keychain) storage is unavailable, persist the
+  // remote token as plain text on disk instead of failing. Requires an explicit
+  // user opt-in from the renderer.
+  allowPlainTextToken?: boolean
   remoteUrl?: string
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
@@ -908,6 +983,38 @@ export interface HermesReviewPr {
   number: number
 }
 
+// One repo's PRs as reported by `gh pr list`, each tied to the branch it was
+// opened from — how a session row finds its own PR.
+export interface HermesBranchPullRequest {
+  branch: string
+  draft: boolean
+  number: number
+  /** `open` | `closed` | `merged`, lowercased from gh. */
+  state: string
+  title: string
+  url: string
+}
+
+export interface HermesRepoPullRequests {
+  ghReady: boolean
+  prs: HermesBranchPullRequest[]
+}
+
+// A PR review/issue comment resolved from a pasted GitHub URL — the composer's
+// review-comment attachment context. `path`/`line`/`diffHunk` are empty for
+// conversation-tab (issue) comments; `line` is null when the comment is
+// outdated and only `original_line` remained.
+export interface HermesPrComment {
+  author: string
+  body: string
+  diffHunk: string
+  kind: 'issue' | 'review'
+  line: null | number
+  path: string
+  prNumber: number
+  startLine: null | number
+  url: string
+}
 // gh availability/auth + the current branch's PR — drives the review pane's PR
 // button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
 export interface HermesReviewShipInfo {

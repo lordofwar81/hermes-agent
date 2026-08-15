@@ -40,7 +40,7 @@ _DOH_PROVIDERS: list[dict] = [
 
 # Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
 # endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
+_SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -71,6 +71,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         self._transport_kwargs = transport_kwargs
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        self._primary_lock = asyncio.Lock()
+        self._primary_closed = False
         # Built on demand and discarded on failure — see _reset_fallback.
         self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
         self._fallback_lock = asyncio.Lock()
@@ -84,6 +86,18 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
                 self._fallbacks[ip] = transport
             return transport
+
+    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+        # Retryable primary failures can leave half-closed sockets in the pool;
+        # replace and close the failed generation before trying fallback.
+        async with self._primary_lock:
+            if self._primary_closed or transport is not self._primary:
+                return
+            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+        try:
+            await transport.aclose()
+        except Exception as exc:
+            logger.debug("[Telegram] Error closing primary transport: %s", exc)
 
     async def _reset_fallback(self, ip: str) -> None:
         """Discard a failed fallback pool so its dead sockets are released.
@@ -124,9 +138,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     async with self._sticky_lock:
                         if self._sticky_ip != ip:
                             self._sticky_ip = ip
-                            # Normal self-healing: primary path was unreachable, a fallback
-                            # succeeded. Not operator-actionable — the transport recovered.
-                            logger.info(
+                            logger.warning(
                                 "[Telegram] Primary api.telegram.org path unreachable; using sticky fallback IP %s",
                                 ip,
                             )
@@ -139,14 +151,13 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     async with self._sticky_lock:
                         if self._sticky_ip == ip:
                             self._sticky_ip = None
-                            # Routine retry: sticky IP failed, reset and let the next
-                            # attempt re-resolve. The transport handles this transparently.
-                            logger.debug(
+                            logger.warning(
                                 "[Telegram] Sticky fallback IP %s failed; resetting to primary DNS path",
                                 ip,
                             )
                 if ip is None:
-                    logger.info(
+                    await self._reset_primary(transport)
+                    logger.warning(
                         "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",
                         exc,
                         ", ".join(self._fallback_ips),
@@ -161,7 +172,10 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         raise last_error
 
     async def aclose(self) -> None:
-        await self._primary.aclose()
+        async with self._primary_lock:
+            self._primary_closed = True
+            primary = self._primary
+        await primary.aclose()
         async with self._fallback_lock:
             transports = list(self._fallbacks.values())
             self._fallbacks.clear()
@@ -245,14 +259,24 @@ async def discover_fallback_ips() -> list[str]:
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
-        system_dns_task = asyncio.to_thread(_resolve_system_dns)
-        results = await asyncio.gather(system_dns_task, *doh_tasks, return_exceptions=True)
+        system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
+        results = await asyncio.gather(*doh_tasks, return_exceptions=True)
 
-    # results[0] = system DNS IPs (set), results[1:] = DoH IP lists
-    system_ips: set[str] = results[0] if isinstance(results[0], set) else set()
+    # The system-resolver leg runs socket.getaddrinfo in a worker thread with
+    # no timeout of its own — a wedged OS resolver (broken VPN/DNS) can sit for
+    # minutes. Its result only feeds the no-usable-answers log line below, so
+    # it must never gate discovery: bound it and move on (#63309). The DoH legs
+    # are already bounded by the client timeout above.
+    system_ips: set[str] = set()
+    try:
+        system_result = await asyncio.wait_for(system_dns_task, timeout=_DOH_TIMEOUT)
+        if isinstance(system_result, set):
+            system_ips = system_result
+    except Exception:
+        logger.debug("System-DNS resolution for %s did not complete in time", _TELEGRAM_API_HOST)
 
     doh_ips: list[str] = []
-    for r in results[1:]:
+    for r in results:
         if isinstance(r, list):
             doh_ips.extend(r)
 
@@ -296,10 +320,4 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    """Return True for transient network errors where retrying on another IP is safe.
-
-    ReadTimeout is excluded: the connection was already established (the TCP
-    handshake succeeded), so switching to a different IP will not help.  Only
-    connection-level failures (no route, refused, DNS) are retryable.
-    """
     return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))

@@ -245,6 +245,14 @@ def _try_merge_concatenated_objects(raw: str) -> str | None:
             merged.update(parsed)
     return json.dumps(merged, separators=(",", ":"), ensure_ascii=True)
 
+# When a repair is about to destroy the only copy of a tool call's original
+# argument bytes (rewriting them to "{}"), the WARNING log is the last
+# surviving copy of content that can hold real user data (#80498). Bound the
+# logged string at this size instead of a short preview so it stays
+# recoverable from agent.log without letting a pathological payload flood
+# the log.
+_FULL_ARGS_LOG_BOUND = 100_000
+
 
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
@@ -352,11 +360,15 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         return merged
 
     # Last resort: replace with empty object so the API request doesn't
-    # crash the entire session.
+    # crash the entire session. Log the FULL original string (bounded) —
+    # for callers that discard the original (e.g. the pre-send transcript
+    # sanitizer), this WARNING is the last surviving copy of bytes that can
+    # contain real user content (#80498: a truncated write_file call's
+    # streamed file content).
     logger.warning(
         "Unrepairable tool_call arguments for %s — "
         "replaced with empty object (was: %s)",
-        tool_name, raw_stripped[:80],
+        tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
     return "{}"
 

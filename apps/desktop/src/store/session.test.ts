@@ -13,6 +13,7 @@ import {
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
   applyConfiguredDefaultProjectDir,
+  commitWorkspaceCwdForSelectedSession,
   getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
@@ -21,6 +22,7 @@ import {
   sessionBelongsToProfile,
   sessionPinId,
   setCurrentCwd,
+  setCurrentCwdTransient,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -79,9 +81,12 @@ describe('computed $attentionSessionIds', () => {
     expect($attentionSessionIds.get()).toEqual([])
   })
 
-  it('ignores sessions without a storedSessionId', () => {
+  // A chat that hasn't been persisted yet has no stored id, and until it gets
+  // one the surfaces key on its runtime id — so publishing under that is what
+  // lets a clarify prompt on the very first turn reach the row.
+  it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
-    expect($attentionSessionIds.get()).toEqual([])
+    expect($attentionSessionIds.get()).toEqual(['rt1'])
   })
 })
 
@@ -262,6 +267,81 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['tip-5'])
     expect(merged[0]?.last_active).toBe(9_000)
   })
+
+  it('sorts survivors by last_active so they interleave with incoming instead of forming a stale block', () => {
+    // Repro of #47203: two survivors (B and C) have different last_active
+    // timestamps. B settled more recently than C. Without sorting, survivors
+    // are prepended in their old order from `previous`, which may be stale.
+    // With sorting, B (more recent) should appear before C.
+    const previous = [
+      session({ id: 'c', last_active: 100 }),
+      session({ id: 'b', last_active: 200 }),
+      session({ id: 'a', last_active: 300 })
+    ]
+
+    // Server returns A (fresh page, order=recent), omits B and C (min_messages=1)
+    const incoming = [session({ id: 'a', last_active: 300, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['b', 'c'])
+
+    // B (last_active 200) should come before C (last_active 100)
+    expect(merged.map(s => s.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('places a very recent survivor in correct position among incoming sessions', () => {
+    // A survivor with last_active between two incoming sessions should be
+    // interleaved, not prepended as a block.
+    const previous = [session({ id: 'survivor', last_active: 150 }), session({ id: 'old', last_active: 50 })]
+
+    const incoming = [session({ id: 'newest', last_active: 200 }), session({ id: 'older', last_active: 100 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    // survivor (150) should be between newest (200) and older (100)
+    expect(merged.map(s => s.id)).toEqual(['newest', 'survivor', 'older'])
+  })
+
+  it('keeps a survivor whose optimistic last_active outranks the whole page on top', () => {
+    // touchSessionActivity stamps last_active on user-send before the server
+    // sees the message; that bump must place the survivor by its FRESH time.
+    const previous = [session({ id: 'typing', last_active: 900 }), session({ id: 'settled', last_active: 100 })]
+
+    const incoming = [session({ id: 'settled', last_active: 100, message_count: 3 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['typing'])
+
+    expect(merged.map(s => s.id)).toEqual(['typing', 'settled'])
+  })
+
+  it('falls back to started_at for survivors that have no last_active yet', () => {
+    // A brand-new session (no persisted message) carries last_active 0; the
+    // backend's effective-recency key falls back to started_at, so we must
+    // too, or a fresh draft sinks to the very bottom of the sidebar.
+    const previous = [
+      session({ id: 'draft', last_active: 0, started_at: 500 }),
+      session({ id: 'other', last_active: 400 })
+    ]
+
+    const incoming = [session({ id: 'other', last_active: 400, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['draft'])
+
+    expect(merged.map(s => s.id)).toEqual(['draft', 'other'])
+  })
+
+  it('interleaves against the title-preserving merged rows, not the raw incoming page', () => {
+    // The optimistic last_active carried onto an incoming row must count for
+    // its position in the interleave: previous knows 'bumped' was touched at
+    // 300 even though the server page still reports 100.
+    const previous = [session({ id: 'survivor', last_active: 200 }), session({ id: 'bumped', last_active: 300 })]
+
+    const incoming = [session({ id: 'bumped', last_active: 100, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    expect(merged.map(s => s.id)).toEqual(['bumped', 'survivor'])
+    expect(merged[0]?.last_active).toBe(300)
+  })
 })
 
 describe('touchSessionActivity', () => {
@@ -370,6 +450,34 @@ describe('workspaceCwdForNewSession', () => {
     // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('remembers only the workspace the user picked, not the one they looked at', () => {
+    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
+    // in the remembered workspace, and every session resume used to write that
+    // key — so opening a project chat silently made it the destination for the
+    // next "New session". Following a conversation must leave the memory alone.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setCurrentCwdTransient('/backend/some-other-project')
+
+    expect($currentCwd.get()).toBe('/backend/some-other-project')
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+  })
+
+  it('settling a resumed session does not move where the next new chat starts', () => {
+    // The reporter's exact sequence: work in a project, open a chat from it,
+    // then ask for a new session. Resume settling publishes the conversation's
+    // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
+    // that folder as the user's chosen workspace.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setSelectedStoredSessionId('sess-in-project')
+    commitWorkspaceCwdForSelectedSession('/backend/last-project')
+
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
   })
 })
 

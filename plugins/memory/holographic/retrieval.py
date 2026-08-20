@@ -281,6 +281,15 @@ class FactRetriever:
             except Exception:
                 query_neural = None
 
+        # Stage 2b [evaluated & reverted 2026-08-20]: A neural candidate-union
+        # variant (top-30 fact-vector + question-index candidates merged into
+        # the FTS candidate set, scored uniformly) was built and measured —
+        # composite stage improved (standard MRR .975) but the full path with
+        # the cross-encoder did not beat the simpler architecture
+        # (.950/.295 vs .975/.343), which is the metric that ships. Kept:
+        # the contradicted-fact exclusion in the question-index SQL below
+        # (that variant exposed the leak). Removed: the union block.
+
         # Stage 3: Rerank with Jaccard + HRR + Neural + trust + optional decay
         query_tokens = self._tokenize(query)
         # The query vector is loop-invariant — encode it at most once, on
@@ -363,13 +372,17 @@ class FactRetriever:
         # that were generated for each fact. Catches facts that answer the
         # query but don't share keywords. RRF-fuse question matches with the
         # FTS+neural scored list.
+        # [2026-08-20] SQL now excludes 'contradicted' as well — superseded
+        # facts were resurfacing via their generated questions.
         if query_neural is not None and len(scored) > 0:
             try:
                 q_rows = self.store._conn.execute(
                     "SELECT fq.fact_id, fq.neural_embed, f.content, f.category, "
                     "f.trust_score, f.tags, f.created_at, f.updated_at "
                     "FROM fact_questions fq JOIN facts f ON fq.fact_id = f.fact_id "
-                    "WHERE f.epistemic_status != 'retracted' AND fq.neural_embed IS NOT NULL"
+                    "WHERE f.epistemic_status NOT IN ('retracted', 'contradicted') "
+                    "AND f.trust_score >= ? AND fq.neural_embed IS NOT NULL",
+                    (min_trust,),
                 ).fetchall()
                 if q_rows:
                     import numpy as np

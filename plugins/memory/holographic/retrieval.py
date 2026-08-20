@@ -185,10 +185,16 @@ class FactRetriever:
         self,
         store: MemoryStore,
         temporal_decay_half_life: int = 0,  # days, 0 = disabled
-        fts_weight: float = 0.35,
-        jaccard_weight: float = 0.35,
+        # [Rebalanced 2026-08-20] .35/.35/.30 → .20/.20/.60. The old weights
+        # were tuned while the neural arm was silently dead (cls pooling made
+        # all query embeddings near-identical — see llama-11434 unit fix).
+        # With a working neural arm, sweep on 40 labeled queries (20 natural +
+        # 20 vocabulary-mismatch adversarial) puts neural-heavy configs ahead
+        # on BOTH sets: standard MRR .904→.950, adversarial .182→.274.
+        fts_weight: float = 0.2,
+        jaccard_weight: float = 0.2,
         hrr_weight: float = 0.0,   # [DISABLED 2026-08-01] HRR dead weight in search() — eval-proven (100q sweep: every hrr=0 config beat baseline). HRR outputs ~0.5 for all candidates on prose queries (bag-of-words phase bundle is non-discriminative). Kept for probe/related/reason compositional queries.
-        neural_weight: float = 0.3,
+        neural_weight: float = 0.6,
         hrr_dim: int = 8192,
         llm_verifier: LLMVerifier | None = None,
     ):
@@ -292,8 +298,13 @@ class FactRetriever:
         # encode_text(query) is independent of the fact being scored; without
         # hoisting it was recomputed once per candidate (the dominant cost in
         # the HRR branch — see profile: encode_text ≫ bytes_to_phases).
+        # Migrated stores can have FTS candidates whose hrr_vector was never
+        # backfilled; when no candidate carries one, the eager encode below
+        # is wasted work — so encode lazily on first vector-bearing candidate.
         query_vec = None
-        if self.hrr_weight > 0:
+        if self.hrr_weight > 0 and candidates and any(
+            f.get("hrr_vector") for f in candidates
+        ):
             query_vec = hrr.encode_text(query, self.hrr_dim)
         # Pre-tokenize candidates once; tags are reused for both jaccard union.
         tokenized = [(f, self._tokenize(f["content"]), self._tokenize(f.get("tags", ""))) for f in candidates]
@@ -617,8 +628,6 @@ class FactRetriever:
         # This catches both role-bound entity matches AND content word matches
         # Both role atoms are loop-invariant — encode them once here
         # (deterministic SHA-256-based atoms) instead of twice per fact row.
-        role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
             fact = dict(row)

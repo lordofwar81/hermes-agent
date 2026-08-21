@@ -239,6 +239,7 @@ class FactRetriever:
         category: str | None = None,
         min_trust: float = 0.3,
         limit: int = 10,
+        max_sensitivity: int = 2,
     ) -> list[dict]:
         """Hybrid search: FTS5 candidates → Jaccard rerank → trust weighting.
 
@@ -248,15 +249,21 @@ class FactRetriever:
         3. Trust weighting: final_score = relevance * trust_score
         4. Temporal decay (optional): decay = 0.5^(age_days / half_life)
 
+        max_sensitivity caps the sensitivity tier returned (0=public,
+        1=personal, 2=sensitive). Default 2 = allow all — the single-user
+        owner sees everything; external/partial contexts pass a lower cap.
+
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
         # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
-        candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+        candidates = self._fts_candidates(query, category, min_trust, limit * 3,
+                                          max_sensitivity)
 
         # Fallback: if FTS5 returns nothing but neural embeds are available,
         # scan all facts with neural_embed and score by cosine similarity.
         if not candidates and self.neural_weight > 0:
-            return self._neural_search(query, category, min_trust, limit)
+            return self._neural_search(query, category, min_trust, limit,
+                                       max_sensitivity)
 
         if not candidates:
             return []
@@ -381,8 +388,9 @@ class FactRetriever:
                     "f.trust_score, f.tags, f.created_at, f.updated_at "
                     "FROM fact_questions fq JOIN facts f ON fq.fact_id = f.fact_id "
                     "WHERE f.epistemic_status NOT IN ('retracted', 'contradicted') "
-                    "AND f.trust_score >= ? AND fq.neural_embed IS NOT NULL",
-                    (min_trust,),
+                    "AND f.trust_score >= ? AND f.sensitivity <= ? "
+                    "AND fq.neural_embed IS NOT NULL",
+                    (min_trust, max_sensitivity),
                 ).fetchall()
                 if q_rows:
                     import numpy as np
@@ -998,6 +1006,7 @@ class FactRetriever:
         category: str | None,
         min_trust: float,
         limit: int,
+        max_sensitivity: int = 2,
     ) -> list[dict]:
         """Pure neural cosine similarity search — fallback when FTS5 has no candidates.
 
@@ -1019,6 +1028,8 @@ class FactRetriever:
         conn = self.store._conn
         where = "WHERE neural_embed IS NOT NULL AND trust_score >= ?"
         params: list = [min_trust]
+        where += " AND sensitivity <= ?"
+        params.append(max_sensitivity)
         if category:
             where += " AND category = ?"
             params.append(category)
@@ -1065,6 +1076,7 @@ class FactRetriever:
         category: str | None,
         min_trust: float,
         limit: int,
+        max_sensitivity: int = 2,
     ) -> list[dict]:
         """Get raw FTS5 candidates from the store.
 
@@ -1095,6 +1107,9 @@ class FactRetriever:
 
         where_clauses.append("f.trust_score >= ?")
         params.append(min_trust)
+
+        where_clauses.append("f.sensitivity <= ?")
+        params.append(max_sensitivity)
 
         where_sql = " AND ".join(where_clauses)
 

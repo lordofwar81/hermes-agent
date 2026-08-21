@@ -17,6 +17,14 @@ try:
 except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
+# [2026-08-21] Sensitivity tiers (0=public, 1=personal, 2=sensitive).
+# Write-time category heuristic; health facts are sensitive by default,
+# user preferences personal. Override per-fact via purge/CLI tools.
+SENSITIVITY_BY_CATEGORY = {
+    "health": 2,
+    "user_pref": 1,
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +38,11 @@ CREATE TABLE IF NOT EXISTS facts (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     hrr_vector      BLOB,
-    neural_embed    BLOB
+    neural_embed    BLOB,
+    -- [2026-08-21] sensitivity tier: 0=public, 1=personal, 2=sensitive
+    -- (health/financial). Set at write-time from category heuristic;
+    -- retrieval can cap via max_sensitivity; purge zeroes derived rows.
+    sensitivity     INTEGER NOT NULL DEFAULT 0 CHECK(sensitivity IN (0,1,2))
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -383,6 +395,15 @@ class MemoryStore:
         with self._lock:
             if not self._entry["ready"]:
                 self._init_db()
+                # [2026-08-21] sensitivity tier migration for pre-existing DBs
+                # (CREATE TABLE only covers fresh ones). Idempotent.
+                try:
+                    self._conn.execute(
+                        "ALTER TABLE facts ADD COLUMN sensitivity "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column already present
                 self._entry["ready"] = True
 
     # ------------------------------------------------------------------
@@ -467,12 +488,13 @@ class MemoryStore:
                 raise ValueError("content must not be empty")
 
             try:
+                sensitivity = SENSITIVITY_BY_CATEGORY.get(category, 0)
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (content, category, tags, trust_score, sensitivity)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (content, category, tags, self.default_trust, sensitivity),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]

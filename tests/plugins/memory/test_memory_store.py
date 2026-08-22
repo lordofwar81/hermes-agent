@@ -14,6 +14,7 @@ from plugins.memory.holographic.store import (
     _clamp_trust,
     _ENTITY_STOPWORDS,
 )
+from plugins.memory.holographic import holographic as hrr
 
 
 # ─── Fixtures ──────────────────────────────────────────────────────────
@@ -293,7 +294,9 @@ class TestHRRVectors:
         row = store._conn.execute(
             "SELECT hrr_vector FROM facts WHERE fact_id = ?", (fid,)
         ).fetchone()
-        vec = np.frombuffer(row[0], dtype=np.float64)
+        # Store serializes as float32 with HRR1 prefix (since perf migration);
+        # decode with bytes_to_phases which handles both formats.
+        vec = hrr.bytes_to_phases(row[0], dim=256)
         assert vec.shape == (256,)  # hrr_dim=256 from fixture
 
     def test_rebuild_all_vectors(self, store):

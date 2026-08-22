@@ -123,7 +123,13 @@ def hoisted_retriever(tmp_path):
             category="fact" if i % 2 else "preference",
             tags=f"entity_{i % 5} deploy",
         )
-    retriever = FactRetriever(store=store)
+    # hrr_weight must be > 0 to exercise the hoisted-encode paths under test
+    # (the 2026-08-01 eval zeroed the DEFAULT hrr_weight in search(); these
+    # tests pin the hoist behavior of the HRR branch itself).
+    # neural_weight=0.0 isolates the HRR path — on this host the embed server
+    # is live, so the default 0.3 would pull real neural scores into search()
+    # that the hand-rolled reference loop below does not model.
+    retriever = FactRetriever(store=store, hrr_weight=0.2, neural_weight=0.0)
     yield retriever
     store.close()
 
@@ -168,9 +174,14 @@ def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
     """
     r = hoisted_retriever
     query = "deploy target setting"
-    new_results = r.search(query)
 
-    # --- pre-fix reference ---
+    # --- pre-fix reference (computed FIRST — search() mutates the DB:
+    # _increment_retrieval_counts bumps retrieval_count and
+    # _boost_retrieved_facts bumps trust_score, so re-reading rows
+    # after search() would compare boosted state against fresh state).
+    # Mirrors CURRENT production scoring: trust-as-filter (Phase 1a,
+    # no trust multiply), entity-aware boost (Phase 2c). Question-index
+    # RRF (Phase 2a) is inert here because neural_weight=0. ---
     candidates = r._fts_candidates(query, None, 0.3, 10 * 3)
     query_tokens = r._tokenize(query)
     scored = []
@@ -189,12 +200,25 @@ def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
         relevance = (r.fts_weight * fts_score
                      + r.jaccard_weight * jaccard
                      + r.hrr_weight * hrr_sim)
-        fact["score"] = relevance * fact["trust_score"]
+        fact["score"] = relevance  # trust filters upstream, not multiplies
         scored.append(fact)
+    # Phase 2c entity boost — replicate exactly
+    query_entities = r._extract_query_entities(query)
+    if query_entities:
+        for fact in scored:
+            content_lower = (fact.get("content") or "").lower()
+            tags_lower = (fact.get("tags") or "").lower()
+            combined = content_lower + " " + tags_lower
+            boost = sum(0.1 for ent in query_entities if ent in combined)
+            if boost > 0:
+                fact["score"] += boost
     scored.sort(key=lambda x: x["score"], reverse=True)
     old_results = scored[:10]
     for fact in old_results:
         fact.pop("hrr_vector", None)
+        fact.pop("neural_embed", None)  # search() strips both raw vectors
+
+    new_results = r.search(query)
 
     assert new_results == old_results
 

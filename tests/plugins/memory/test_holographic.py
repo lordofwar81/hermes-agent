@@ -233,17 +233,23 @@ class TestEncodeFact:
 
 class TestSerialization:
     def test_round_trip(self):
-        """phases_to_bytes → bytes_to_phases preserves exact values."""
+        """phases_to_bytes → bytes_to_phases within float32 precision.
+
+        Storage is float32 since the perf migration (halves SQLite blob
+        size); the original bit-exact float64 contract no longer holds —
+        round trip is lossy at ~1e-7 absolute.
+        """
         vec = encode_atom("test", dim=1024)
         data = phases_to_bytes(vec)
         recovered = bytes_to_phases(data)
-        np.testing.assert_array_equal(vec, recovered)
+        np.testing.assert_allclose(vec, recovered, rtol=1e-6, atol=1e-6)
+        assert recovered.dtype == np.float64  # promoted for HRR math
 
     def test_size(self):
-        """1024-dim float64 = 8KB."""
+        """1024-dim float32 payload + 4-byte HRR1 prefix = 4100 bytes."""
         vec = encode_atom("test", dim=1024)
         data = phases_to_bytes(vec)
-        assert len(data) == 1024 * 8  # 8192 bytes
+        assert len(data) == 4 + 1024 * 4  # 4100 bytes
 
     def test_frombuffer_readonly_handled(self):
         """bytes_to_phases must return a mutable copy."""

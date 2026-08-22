@@ -1313,6 +1313,19 @@ class TestMultiAgentRouting:
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
 
+        # Hermetic: _advertised_skills() reads the live global tool registry,
+        # whose contents depend on which modules earlier tests imported
+        # (model_providers tests import model_tools/providers, registering
+        # toolsets — none named "research"). In a fresh process the registry
+        # is empty and the adapter falls back to its static advertised set,
+        # which is the semantics this test pins. Freeze that state so the
+        # card is deterministic regardless of collection order.
+        from tools.registry import registry as tool_registry
+
+        monkeypatch.setattr(
+            tool_registry, "get_registered_toolset_names", lambda: []
+        )
+
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {
                 "research": {

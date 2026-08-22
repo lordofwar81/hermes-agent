@@ -3546,9 +3546,37 @@ def _overlay_config_paths(config_path: Path) -> List[Path]:
     file itself, so a profile-switched HERMES_HOME gets its own overlay dir.
     """
     try:
-        return sorted((config_path.parent / "config.d").glob("*.yaml"))
+        d = config_path.parent / "config.d"
+        return sorted([*d.glob("*.yaml"), *d.glob("*.yml")])
     except OSError:
         return []
+
+
+def _overlay_owned_keys() -> Set[str]:
+    """Dotted paths pinned by current config.d overlay files.
+
+    save_config strips these before writing config.yaml, mirroring the
+    managed-scope guard: a bulk save must not bake overlay values into the
+    user file (they would become a second, stale source of truth). To change
+    a pinned key, edit the overlay file.
+    """
+    owned: Set[Tuple[str, ...]] = set()
+    for overlay_path in _overlay_config_paths(get_config_path()):
+        try:
+            with open(overlay_path, encoding="utf-8") as f:
+                cfg = fast_safe_load(f) or {}
+        except Exception:
+            continue
+        if not isinstance(cfg, dict):
+            continue
+        stack = [((str(k),), v) for k, v in cfg.items()]
+        while stack:
+            path, val = stack.pop()
+            if isinstance(val, dict):
+                stack.extend(((*path, str(k)), v) for k, v in val.items())
+            else:
+                owned.add(".".join(path))
+    return owned
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
@@ -3865,6 +3893,18 @@ def save_config(
                 print(
                     f"Note: {len(_stripped)} managed setting(s) were not saved "
                     f"(managed by your administrator): {', '.join(sorted(_stripped))}",
+                    file=sys.stderr,
+                )
+        # Fork overlay guard: config.d pins win at load time, so persisting
+        # them into config.yaml would only create a stale shadow. Strip and
+        # say so; edit the overlay file to change a pinned key.
+        overlay_keys = _overlay_owned_keys()
+        if overlay_keys:
+            config, _ostripped = _strip_dotted_keys(copy.deepcopy(config), overlay_keys)
+            if _ostripped:
+                print(
+                    f"Note: {len(_ostripped)} overlay setting(s) were not saved "
+                    f"(pinned in config.d): {', '.join(sorted(_ostripped))}",
                     file=sys.stderr,
                 )
         from utils import atomic_yaml_write

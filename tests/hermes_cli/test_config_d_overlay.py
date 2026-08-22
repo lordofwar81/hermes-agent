@@ -120,6 +120,52 @@ def test_managed_scope_still_wins_over_overlay(tmp_path):
     assert result["skin"] == "managed-skin"
 
 
+def test_yml_extension_loaded(tmp_path):
+    home = _make_home(tmp_path)
+    (home / "config.d" / "02-a.yml").write_text("overlay_probe: from-yml\n", encoding="utf-8")
+    assert _run_load(home)["overlay_probe"] == "from-yml"
+
+
+def test_save_config_strips_overlay_pinned_keys(tmp_path):
+    home = _make_home(tmp_path)
+    (home / "config.d" / "02-x.yaml").write_text(
+        "compression:\n  threshold_tokens: 48000\n", encoding="utf-8"
+    )
+    code = textwrap.dedent(
+        f"""
+        import json, sys
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        from hermes_cli import config as C
+        cfg = C.load_config()
+        cfg["compression"]["threshold_tokens"] = 99000
+        cfg["overlay_probe"] = "changed"
+        C.save_config(cfg)
+        raw = C.read_raw_config()
+        result = {{
+            "raw_threshold": (raw.get("compression") or {{}}).get("threshold_tokens", "absent"),
+            "raw_probe": raw.get("overlay_probe"),
+        }}
+        print("OVERLAY_RESULT=" + json.dumps(result))
+        """
+    )
+    env = dict(os.environ)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env["HERMES_HOME"] = str(home)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, env=env, cwd=str(home), timeout=120,
+    )
+    assert proc.returncode == 0, f"subprocess failed:\n{proc.stdout}\n{proc.stderr}"
+    line = [l for l in proc.stdout.splitlines() if l.startswith("OVERLAY_RESULT=")][0]
+    result = json.loads(line[len("OVERLAY_RESULT="):])
+    # pinned key not baked into config.yaml; free key persisted
+    assert result["raw_threshold"] == "absent"
+    assert result["raw_probe"] == "changed"
+    # and the overlay still wins at load time
+    assert _run_load(home)["threshold_tokens"] == 48000
+
+
 def test_cache_invalidates_on_overlay_edit(tmp_path):
     home = _make_home(tmp_path)
     overlay = home / "config.d" / "02-x.yaml"

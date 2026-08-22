@@ -246,7 +246,7 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # editing the managed-scope config.yaml invalidates the cache (see
 # managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
 # changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]], Tuple[Tuple[str, int, int], ...]]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -3538,6 +3538,19 @@ def apply_terminal_config_to_env(
     return target
 
 
+def _overlay_config_paths(config_path: Path) -> List[Path]:
+    """Fork overlay files for a config path: <config dir>/config.d/*.yaml, sorted.
+
+    Sorted by filename so ``00-*.yaml`` ... ``04-*.yaml`` apply in order and a
+    later file overrides an earlier one at the leaf. Relative to the config
+    file itself, so a profile-switched HERMES_HOME gets its own overlay dir.
+    """
+    try:
+        return sorted((config_path.parent / "config.d").glob("*.yaml"))
+    except OSError:
+        return []
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
@@ -3563,6 +3576,19 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         except OSError:
             managed_sig = (0, 0)
 
+        # Fork overlay layer: <config dir>/config.d/*.yaml, merged between the
+        # user config and the managed scope. Each file's (name, mtime_ns, size)
+        # joins the cache signature so overlay edits invalidate exactly like
+        # config.yaml edits. Non-*.yaml names (*.bak-*, notes) never match.
+        overlay_files = _overlay_config_paths(config_path)
+        overlay_sig: Tuple[Tuple[str, int, int], ...] = ()
+        for _op in overlay_files:
+            try:
+                _ost = _op.stat()
+            except OSError:
+                continue
+            overlay_sig = overlay_sig + ((_op.name, _ost.st_mtime_ns, _ost.st_size),)
+
         # Combined cache signature: user file + managed file. None only when the
         # user config is absent AND no managed file exists (nothing to cache on).
         if user_sig is not None:
@@ -3578,7 +3604,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             cache_sig = None
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if (
+            cached is not None
+            and cache_sig is not None
+            and cached[:4] == cache_sig
+            and cached[6] == overlay_sig
+        ):
             # File signatures match, but the cached expansion is only valid if
             # every ${VAR} it was expanded against still has the same value.
             # Without this, a load_config() that ran before load_hermes_dotenv()
@@ -3640,12 +3671,34 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         _LOAD_CONFIG_CACHE[path_key] = (
                             cache_sig[0], cache_sig[1],
                             cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
+                            lkg_copy, _empty_env, overlay_sig,
                         )
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
+        # Fork overlay layer: config.d/*.yaml deep-merged in filename order on
+        # top of the user config, still under the managed scope. A broken or
+        # non-mapping overlay file is skipped with a warning — one bad fragment
+        # must not take the whole config down (same philosophy as the user-file
+        # last-known-good path). Managed values keep winning at the leaf.
+        overlay_env_refs: Dict[str, Optional[str]] = {}
+        for overlay_path in overlay_files:
+            try:
+                with open(overlay_path, encoding="utf-8") as f:
+                    overlay_cfg = fast_safe_load(f) or {}
+                if not isinstance(overlay_cfg, dict):
+                    raise ValueError(
+                        f"overlay root is {type(overlay_cfg).__name__}, expected mapping"
+                    )
+                overlay_normalized = _normalize_root_model_keys(overlay_cfg)
+                if isinstance(overlay_normalized.get("model"), str):
+                    overlay_normalized = dict(overlay_normalized)
+                    overlay_normalized["model"] = {"default": overlay_normalized["model"]}
+                expanded = _deep_merge(expanded, _expand_env_vars(overlay_normalized))
+                _env_ref_snapshot(overlay_normalized, overlay_env_refs)
+            except Exception as e:
+                _warn_config_parse_failure(overlay_path, e, fallback="skip-overlay")
         # Managed scope wins at the leaf. Applied AFTER user expansion so a user
         # ${VAR} cannot shadow a managed literal: managed values are expanded only
         # against the process environment, never against user-config-defined refs.
@@ -3680,7 +3733,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            if overlay_env_refs:
+                env_snapshot.update(overlay_env_refs)
+            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot, overlay_sig)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
             # object" invariant that callers may rely on for identity checks.

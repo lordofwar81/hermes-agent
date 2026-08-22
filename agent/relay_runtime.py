@@ -855,6 +855,16 @@ class RelayHostRegistry:
                 return host
             try:
                 host = RelayRuntime(profile_key=key)
+            except ModuleNotFoundError as exc:
+                # Optional binding absent (nemo_relay not installed on this
+                # host): expected configuration, not a failure — one clean
+                # line instead of a per-boot traceback. Noop fallback below
+                # is the designed degradation path.
+                logger.info(
+                    "Relay binding unavailable (%s) — Relay disabled, Noop runtime active",
+                    exc,
+                )
+                host = NoopRelayRuntime(profile_key=key, reason=str(exc))
             except Exception as exc:
                 logger.warning(
                     "Hermes Relay runtime initialization failed", exc_info=True

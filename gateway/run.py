@@ -17477,6 +17477,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "optimize":
+            # /optimize is a skill-activation shim, not an inline command:
+            # optimization is an LLM task, so rewrite the message and fall
+            # through to the agent loop (same pattern as /moa). Lost to
+            # upstream merges 4x -- auto-restored by
+            # ~/.hermes/scripts/restore_optimize.py (cron watchdog).
+            _opt_args = event.get_command_args().strip()
+            if _opt_args:
+                event.text = (
+                    "ACTIVATION: /optimize intercepted. Load the prompt-optimizer skill "
+                    "(skill_view name='prompt-optimizer') FIRST, then follow its Core Workflow "
+                    "exactly: Step 0 resolve external references, parse intent, optimize "
+                    "(default: medium), present as Original Prompt / Optimized Prompt / "
+                    "Changes Made, then WAIT for approval before executing.\n\n"
+                    f"Prompt to optimize:\n{_opt_args}"
+                )
+            else:
+                event.text = (
+                    "ACTIVATION: /optimize intercepted with no arguments. Load the "
+                    "prompt-optimizer skill (skill_view name='prompt-optimizer') and ask "
+                    "which prompt I want to optimize."
+                )
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 

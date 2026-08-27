@@ -685,3 +685,20 @@ def register(ctx) -> None:
     config = _load_plugin_config()
     provider = HolographicMemoryProvider(config=config)
     ctx.register_memory_provider(provider)
+
+    # Warm the cross-encoder in the background so the first turn's memory
+    # prefetch doesn't pay the >8s cold model load and time out.
+    import threading as _threading
+    from . import reranker as _reranker_mod
+
+    def _warm_reranker() -> None:
+        try:
+            _reranker_mod._load()
+        except Exception:
+            # _load()'s own cooldown gate handles retry timing; warmup
+            # failures must never break registration.
+            pass
+
+    _threading.Thread(
+        target=_warm_reranker, name="bge-reranker-warmup", daemon=True
+    ).start()

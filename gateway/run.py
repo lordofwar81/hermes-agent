@@ -17455,6 +17455,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 moa_cfg = normalize_moa_config({})
             preset = moa_cfg["default_preset"]
+            # Optional leading preset name: "/moa <preset> <prompt>" selects that
+            # preset and strips the name; "/moa <prompt>" keeps the default.
+            # Only an exact match against a configured preset qualifies — anything
+            # else stays prompt text (never error on a near-miss word).
+            _split = moa_payload.split(None, 1)
+            if (
+                len(_split) == 2
+                and _split[0] in moa_cfg["presets"]
+            ):
+                preset = _split[0]
+                moa_payload = _split[1].strip()
             try:
                 event.text = moa_payload
                 _moa_state = self._session_state(_quick_key)

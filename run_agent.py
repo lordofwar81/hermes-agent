@@ -2038,6 +2038,7 @@ class AIAgent:
         messages: List[Dict],
         conversation_history: Optional[List[Dict]] = None,
         _adoption_budget: int = 1,
+        _conn_retry_budget: int = 1,
     ):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -2400,6 +2401,33 @@ class AIAgent:
                 self._compression_adoption_failed = True
                 logger.warning("Session DB append_message failed: %s", e)
                 return False
+            if (
+                _conn_retry_budget > 0
+                and isinstance(e, AttributeError)
+                and "NoneType" in str(e)
+                and "execute" in str(e)
+            ):
+                # PLAT-3 (2026-08-27): the store's sqlite handle was reaped
+                # mid-turn by another thread's close (NoneType.execute).
+                # Rebuild the SessionDB connection and retry the flush
+                # exactly once — same budget discipline as the compression-
+                # tip adoption above.
+                logger.warning(
+                    "Session DB connection lost mid-flush (NoneType.execute); "
+                    "rebuilding SessionDB and retrying once"
+                )
+                try:
+                    self._session_db.close()
+                except Exception:
+                    pass
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+                return self._flush_messages_to_session_db_unlocked(
+                    messages,
+                    conversation_history,
+                    _adoption_budget=_adoption_budget,
+                    _conn_retry_budget=0,
+                )
             logger.warning("Session DB append_message failed: %s", e)
             return False
 

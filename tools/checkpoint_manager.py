@@ -352,6 +352,30 @@ def _repair_bare_repo_dirs(store: Path) -> None:
                 )
 
 
+def _unreadable_top_entries(root: Path) -> List[str]:
+    """Top-level directories under ``root`` the current user cannot traverse.
+
+    F7 2026-08-23: ``git add -A`` against a work tree containing root-owned
+    unreadable dirs (e.g. ``~/snap-private-tmp`` on Ubuntu) exits rc=128 with
+    "could not open directory", failing the whole checkpoint. These dirs are
+    excluded via pathspec at the ``add -A`` call sites instead.
+    """
+    unreadable: List[str] = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return unreadable
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False) and not os.access(
+                entry.path, os.R_OK | os.X_OK
+            ):
+                unreadable.append(entry.name)
+        except OSError:
+            unreadable.append(entry.name)
+    return sorted(unreadable)
+
+
 def _run_git(
     args: List[str],
     store: Path,
@@ -379,6 +403,14 @@ def _run_git(
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
+
+    # F7 2026-08-23: exclude unreadable top-level dirs from bulk adds so a
+    # root-owned artifact of the OS (snap-private-tmp) can't fail the
+    # checkpoint with rc=128 "could not open directory".
+    if args[:2] == ["add", "-A"]:
+        excluded = _unreadable_top_entries(normalized_working_dir)
+        if excluded:
+            cmd += ["--", "."] + [f":(exclude){name}" for name in excluded]
 
     try:
         result = subprocess.run(

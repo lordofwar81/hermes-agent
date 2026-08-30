@@ -2690,8 +2690,7 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_keys = self._discord_channel_keys(message, parent_id)
             free_channels = self._discord_free_response_channels()
             in_bot_thread = (
-                isinstance(message.channel, discord.Thread)
-                and str(message.channel.id) in self._threads
+                str(message.channel.id) in self._threads
                 and not self._discord_thread_require_mention()
             )
             if (
@@ -3565,6 +3564,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
+                # The bot has now participated in this conversation surface;
+                # marking it lets plain-text follow-ups pass the mention gate.
+                # Nonconversational sends (history backfill of old bot
+                # messages) do not activate a channel.
+                if not nonconversational:
+                    try:
+                        self._threads.mark(str(_target_id))
+                    except Exception:
+                        logger.debug(
+                            "[%s] Failed to mark conversation participation",
+                            self.name, exc_info=True,
+                        )
 
             result = SendResult(
                 success=True,
@@ -6761,6 +6772,49 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
+    def _is_reply_to_own_message(self, message) -> bool:
+        """True when the message is a Discord reply to one of our own messages.
+
+        Cheap check: the resolved reference when discord.py already has it
+        cached, then the per-channel last-self-message registry. Never fetches
+        over the network — an unresolved reference simply doesn't count.
+        """
+        ref = getattr(message, "reference", None)
+        if ref is None:
+            return False
+        resolved = getattr(ref, "resolved", None)
+        if resolved is not None:
+            author = getattr(resolved, "author", None)
+            if (
+                author is not None
+                and self._client.user is not None
+                and author.id == self._client.user.id
+            ):
+                return True
+        ref_mid = getattr(ref, "message_id", None)
+        if ref_mid is not None:
+            channel_id = str(getattr(message.channel, "id", "") or "")
+            last_own = self._last_self_message_id.get(channel_id)
+            if last_own is not None and str(ref_mid) == str(last_own):
+                return True
+        return False
+
+    async def _send_local_ack(self, channel_id: str) -> None:
+        """Send a minimal ack for a bare-ping conversation opener.
+
+        No LLM turn — just a visible reply so the user knows the channel is
+        live and plain text will work from here on.
+        """
+        try:
+            channel = self._client.get_channel(int(channel_id))
+            if channel is None:
+                return
+            await channel.send(
+                content="Ready — plain messages work in this channel now."
+            )
+        except Exception:
+            logger.debug("[%s] Local ack send failed", self.name, exc_info=True)
+
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
 
@@ -8150,14 +8204,34 @@ class DiscordAdapter(BasePlatformAdapter):
             # — UNLESS thread_require_mention is enabled, in which case threads
             # are gated the same as channels.  Useful when multiple bots share
             # a thread.
+            # Participation covers both tracked threads and any channel the
+            # bot has replied in (marked on outbound send): after the bot's
+            # first reply, plain text continues the conversation without a
+            # fresh @mention.
+            conversation_channel_id = (
+                thread_id if is_thread else str(message.channel.id)
+            )
             in_bot_thread = (
-                is_thread
-                and thread_id in self._threads
+                bool(conversation_channel_id)
+                and conversation_channel_id in self._threads
                 and not self._discord_thread_require_mention()
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                if (
+                    not self._self_is_explicitly_mentioned(message)
+                    and not mention_prefix
+                    and not self._is_reply_to_own_message(message)
+                ):
+                    logger.info(
+                        "[%s] Ignoring no-mention message from %s in %s "
+                        "(require_mention=true; channel is not free-response "
+                        "or bot-participated)",
+                        self.name,
+                        getattr(message.author, "display_name",
+                                getattr(message.author, "name", "unknown")),
+                        conversation_channel_id,
+                    )
                     return False
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -8503,6 +8577,24 @@ class DiscordAdapter(BasePlatformAdapter):
                     getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
                     getattr(message.channel, "id", "unknown"),
                 )
+                # A bare ping in a channel we haven't participated in yet is a
+                # conversation opener, not junk: mark the channel so plain
+                # text passes the mention gate from here on, and ack locally
+                # (no LLM turn).
+                opener_channel = thread_id or str(
+                    getattr(message.channel, "id", "") or ""
+                )
+                if opener_channel and opener_channel not in self._threads:
+                    try:
+                        self._threads.mark(opener_channel)
+                        asyncio.create_task(
+                            self._send_local_ack(opener_channel)
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[%s] Failed to establish conversation on bare ping",
+                            self.name, exc_info=True,
+                        )
                 return False
             event_text = "(The user sent a message with no text content)"
 
